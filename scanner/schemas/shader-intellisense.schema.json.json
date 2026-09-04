@@ -1,0 +1,369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/unity-shader-intellisense.schema.json",
+  "title": "Unity Shader IntelliSense Database",
+  "description": "Generated symbol database for Unity ShaderLab, HLSL and Compute shaders.",
+  "type": "object",
+  "required": [
+    "Version",
+    "GeneratedAtUtc",
+    "Includes",
+    "Functions",
+    "Structs",
+    "Macros",
+    "Variables",
+    "SourceFiles"
+  ],
+  "properties": {
+    "Version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "GeneratedAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "Unity": {
+      "$ref": "#/$defs/unity"
+    },
+    "Urp": {
+      "$ref": "#/$defs/urp"
+    },
+    "Includes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/include"
+      }
+    },
+    "Functions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/function"
+      }
+    },
+    "Structs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/struct"
+      }
+    },
+    "Macros": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/macro"
+      }
+    },
+    "Variables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      }
+    },
+    "SourceFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "unity": {
+      "type": "object",
+      "properties": {
+        "Version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "urp": {
+      "type": "object",
+      "properties": {
+        "Version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "PackagePath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "symbol": {
+      "type": "object",
+      "required": [
+        "Name"
+      ],
+      "properties": {
+        "Name": {
+          "type": "string"
+        },
+        "File": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "Line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "Documentation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "include": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/symbol"
+        },
+        {
+          "type": "object",
+          "required": [
+            "Path",
+            "Aliases",
+            "IsUnityInclude",
+            "IsUrpInclude"
+          ],
+          "properties": {
+            "Path": {
+              "type": "string"
+            },
+            "ResolvedPath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "Package": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "Aliases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "IsUnityInclude": {
+              "type": "boolean"
+            },
+            "IsUrpInclude": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "function": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/symbol"
+        },
+        {
+          "type": "object",
+          "required": [
+            "ReturnType",
+            "Parameters"
+          ],
+          "properties": {
+            "ReturnType": {
+              "type": "string"
+            },
+            "Parameters": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/parameter"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "parameter": {
+      "type": "object",
+      "required": [
+        "Name",
+        "Type"
+      ],
+      "properties": {
+        "Name": {
+          "type": "string"
+        },
+        "Type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "struct": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/symbol"
+        },
+        {
+          "type": "object",
+          "required": [
+            "Members"
+          ],
+          "properties": {
+            "Members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/structMember"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "structMember": {
+      "type": "object",
+      "required": [
+        "Name",
+        "Type"
+      ],
+      "properties": {
+        "Name": {
+          "type": "string"
+        },
+        "Type": {
+          "type": "string"
+        },
+        "Semantic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "File": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "Line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "macro": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/symbol"
+        },
+        {
+          "type": "object",
+          "required": [
+            "Parameters"
+          ],
+          "properties": {
+            "Parameters": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "Value": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "variable": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/symbol"
+        },
+        {
+          "type": "object",
+          "required": [
+            "Type"
+          ],
+          "properties": {
+            "Type": {
+              "type": "string"
+            },
+            "ElementType": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "Register": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "BufferType": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "TextureDimension": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "CBuffer": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "IsReadOnly": {
+              "type": "boolean"
+            },
+            "IsWriteOnly": {
+              "type": "boolean"
+            },
+            "IsTexture": {
+              "type": "boolean"
+            },
+            "IsSampler": {
+              "type": "boolean"
+            },
+            "IsBuffer": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}
