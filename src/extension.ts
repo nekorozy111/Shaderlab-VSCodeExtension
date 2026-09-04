@@ -1,26 +1,140 @@
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
-export function activate(context: vscode.ExtensionContext) {
+import {
+    SymbolDatabase
+} from "./symbolDatabase";
 
-	// Use the console to output diagnostic information (console.log) and errors (console.error)
-	// This line of code will only be executed once when your extension is activated
-	console.log('Congratulations, your extension "my-extension" is now active!');
+import {
+    ShaderCompletionProvider
+} from "./completionProvider";
 
-	// The command has been defined in the package.json file
-	// Now provide the implementation of the command with registerCommand
-	// The commandId parameter must match the command field in package.json
-	const disposable = vscode.commands.registerCommand('my-extension.helloWorld', () => {
-		// The code you place here will be executed every time your command is executed
-		// Display a message box to the user
-		vscode.window.showInformationMessage('Hello World from my-extension!');
-	});
+import {
+    ShaderHoverProvider
+} from "./hoverProvider";
 
-	context.subscriptions.push(disposable);
+import {
+    ShaderDefinitionProvider
+} from "./definitionProvider";
+
+import {
+    ShaderParser
+} from "./shaderParser";
+
+import {
+    ShaderDocument
+} from "./shaderDocument";
+
+let database:
+    SymbolDatabase | undefined;
+
+let shaderDocument:
+    ShaderDocument | undefined;
+
+export function activate(
+    context: vscode.ExtensionContext
+): void {
+    database =
+        new SymbolDatabase();
+
+    database.load(
+        context
+    );
+
+    context.subscriptions.push(
+        database
+    );
+
+    /*
+     * Local shader parser
+     */
+    const parser =
+        new ShaderParser();
+
+    shaderDocument =
+        new ShaderDocument(
+            parser
+        );
+
+    context.subscriptions.push(
+        shaderDocument
+    );
+
+    /*
+     * Providers
+     */
+    const completionProvider =
+        new ShaderCompletionProvider(
+            database,
+            shaderDocument
+        );
+
+    const hoverProvider =
+        new ShaderHoverProvider(
+            database
+        );
+
+    const definitionProvider =
+        new ShaderDefinitionProvider(
+            database
+        );
+
+    const selector:
+        vscode.DocumentSelector = [
+            {
+                language: "shaderlab"
+            },
+            {
+                language: "hlsl"
+            },
+            {
+                language: "compute"
+            }
+        ];
+
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider(
+            selector,
+            completionProvider,
+            "#",
+            "\"",
+            "<",
+            "."
+        )
+    );
+
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            selector,
+            hoverProvider
+        )
+    );
+
+    context.subscriptions.push(
+        vscode.languages.registerDefinitionProvider(
+            selector,
+            definitionProvider
+        )
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand(
+            "unityShaderIntellisense.reloadDatabase",
+            () => {
+                database?.reload();
+
+                vscode.window.showInformationMessage(
+                    "Unity Shader IntelliSense database reloaded."
+                );
+            }
+        )
+    );
 }
 
-// This method is called when your extension is deactivated
-export function deactivate() {}
+export function deactivate(): void {
+    database?.dispose();
+
+    shaderDocument?.dispose();
+
+    database = undefined;
+    shaderDocument = undefined;
+}
