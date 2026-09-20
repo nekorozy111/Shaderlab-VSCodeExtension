@@ -19,6 +19,12 @@ import {
     DocumentManager
 } from "./language/documentManager";
 
+import {
+    ShaderSymbol
+} from "./symbol/symbol";
+
+import { DefinitionProvider } from "./language/definitionProvider";
+
 const connection =
     createConnection(
         ProposedFeatures.all
@@ -32,48 +38,73 @@ const documents =
 const documentManager =
     new DocumentManager();
 
-connection.onInitialize(
-    (
-        _params:
-            InitializeParams
-    ): InitializeResult => {
+    const definitionProvider =
+    new DefinitionProvider(
+        documentManager
+    );
 
-        return {
-            capabilities: {
+connection.onInitialize((params) => {
+    documentManager.initializeProject(params);
 
-                textDocumentSync:
-                    TextDocumentSyncKind
-                        .Incremental,
+    const rootPath =
+        documentManager
+            .getProjectService()
+            .getRootPath();
 
-                completionProvider: {
-                    resolveProvider:
-                        false
-                },
+    connection.console.log(
+        `[URP ShaderLab] Project Root: ${rootPath ?? "(none)"}`
+    );
 
-                hoverProvider:
-                    true,
+    return {
+        capabilities: {
+            textDocumentSync: {
+                openClose: true,
+                change: 2
+            },
 
-                definitionProvider:
-                    true,
+            completionProvider: {
+                resolveProvider: false
+            },
 
-                referencesProvider:
-                    true
-            }
-        };
+            hoverProvider: true,
+
+            definitionProvider: true,
+
+            referencesProvider: true
+        }
+    };
+});
+
+connection.onDefinition(
+    (params) => {
+        return definitionProvider.provideDefinition(
+            params.textDocument.uri,
+            params.position
+        );
     }
 );
 
 documents.onDidOpen(
     event => {
 
-        const parsed =
-            documentManager.open(
-                event.document
-            );
+const parsed = documentManager.open(event.document);
 
-        logParsedDocument(
-            parsed
-        );
+connection.console.log(
+    `[URP ShaderLab] Opened: ${event.document.uri}`
+);
+
+connection.console.log(
+    `[URP ShaderLab] Symbols: ` +
+    `${documentManager
+        .getWorkspaceIndex()
+        .getSymbolCount()}`
+);
+
+logIncludeResolution(
+    documentManager,
+    "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl",
+    event.document.uri
+);
     }
 );
 
@@ -88,6 +119,8 @@ documents.onDidChangeContent(
         logParsedDocument(
             parsed
         );
+
+        logWorkspaceIndex();
     }
 );
 
@@ -101,6 +134,8 @@ documents.onDidClose(
         connection.console.log(
             `[URP ShaderLab] Closed: ${event.document.uri}`
         );
+
+        logWorkspaceIndex();
     }
 );
 
@@ -163,6 +198,101 @@ function logParsedDocument(
             "[URP ShaderLab] Parsed HLSL",
             `Declarations=${parsed.ast.declarations.length}`
         ].join(" | ")
+    );
+}
+
+function logWorkspaceIndex(): void {
+
+    const index =
+        documentManager
+            .getWorkspaceIndex();
+
+    connection.console.log(
+        [
+            "[URP ShaderLab] Workspace Index",
+            `Documents=${index.getDocumentCount()}`,
+            `Symbols=${index.getSymbolCount()}`
+        ].join(" | ")
+    );
+
+    const interestingNames = [
+        "Attributes",
+        "Varyings",
+        "vert",
+        "TestColor",
+        "_BaseColor",
+        "_Metallic"
+    ];
+
+for (const name of interestingNames) {
+    const matches =
+        index.findExact(name);
+
+    connection.console.log(
+        `[URP ShaderLab] ` +
+        `Find "${name}": ` +
+        `${matches.length}`
+    );
+
+    for (const match of matches) {
+        connection.console.log(
+            `[URP ShaderLab]   ` +
+            `${match.symbol.name} ` +
+            `[${match.symbol.kind}] ` +
+            `${match.uri} ` +
+            `@ ` +
+            `${match.symbol.location.selectionRange.start.line}:` +
+            `${match.symbol.location.selectionRange.start.character}`
+        );
+    }
+}
+}
+
+function formatSymbol(
+    symbol: ShaderSymbol,
+    uri: string
+): string {
+
+    const location =
+        symbol.location
+            .range
+            .start;
+
+    return [
+        "[URP ShaderLab] Symbol",
+        `name="${symbol.name}"`,
+        `kind=${symbol.kind}`,
+        `uri="${uri}"`,
+        `line=${location.line + 1}`,
+        `character=${location.character + 1}`
+    ].join(" | ");
+}
+
+function logIncludeResolution(
+    documentManager: DocumentManager,
+    includePath: string,
+    fromUri: string
+): void {
+    const result = documentManager
+        .getProjectService()
+        .resolveInclude(
+            includePath,
+            fromUri
+        );
+
+    if (!result) {
+        connection.console.log(
+            `[URP ShaderLab] Include NOT FOUND: ${includePath}`
+        );
+
+        return;
+    }
+
+    connection.console.log(
+        `[URP ShaderLab] Include: ` +
+        `${includePath} -> ` +
+        `${result.resolvedPath} ` +
+        `[${result.source}]`
     );
 }
 
