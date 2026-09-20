@@ -11,7 +11,7 @@ export class DefinitionProvider {
 
     constructor(
         private readonly documentManager: DocumentManager
-    ) {}
+    ) { }
 
     public provideDefinition(
         uri: string,
@@ -43,7 +43,20 @@ export class DefinitionProvider {
             );
             return null;
         }
-
+        if (this.isBuiltinHlslType(word) || this.isHlslSemantic(word)) {
+            return null;
+        }
+        if (
+            /*
+            this.isAfterDot(
+                document,
+                position
+            ) &&
+            */
+            this.isHlslSwizzle(word)
+        ) {
+            return null;
+        }
         console.log(
             `[DefinitionProvider] Request "${word}" in ${uri}`
         );
@@ -168,86 +181,71 @@ export class DefinitionProvider {
         rootUri: string
     ): void {
 
-        console.log(
-            `[DefinitionProvider] loadIncludedDocuments(${rootUri})`
-        );
-
         const visited =
             new Set<string>();
 
-        const rootDocument =
+        const parsed =
             this.documentManager
-                .getWorkspaceIndex()
-                .getDocument(rootUri);
+                .getParsed(rootUri);
 
-        if (!rootDocument) {
-
-            console.log(
-                `[DefinitionProvider] Root parsed document not found: ${rootUri}`
-            );
-
+        if (!parsed) {
             return;
         }
 
         this.loadIncludedDocumentsRecursive(
             rootUri,
-            rootDocument,
+            parsed,
             visited
-        );
-
-        console.log(
-            `[DefinitionProvider] Include traversal finished. Visited=${visited.size}`
         );
     }
 
     private loadIncludedDocumentsRecursive(
         uri: string,
         parsed: ParsedDocument,
-        visited: Set<string>
+        visited: Set<string>,
+        source?: string
     ): void {
 
-        console.log(
-            `[DefinitionProvider] Traversing: ${uri}`
-        );
-
         if (visited.has(uri)) {
-
-            console.log(
-                `[DefinitionProvider] Already visited: ${uri}`
-            );
-
             return;
         }
 
         visited.add(uri);
 
         console.log(
-            `[DefinitionProvider] Parsed document found: ${uri} (${parsed.languageId})`
+            `[DefinitionProvider] Traversing: ${uri}`
         );
 
-        /*
-         * ---------------------------------------------------------
-         * 現在のファイルから include を収集
-         * ---------------------------------------------------------
-         */
+        let includePaths: string[];
 
-        const includePaths =
-            this.collectIncludes(parsed);
+        if (
+            parsed.languageId === "hlsl" &&
+            source !== undefined
+        ) {
+            includePaths =
+                this.collectRawHlslIncludes(
+                    source
+                );
+
+            console.log(
+                `[DefinitionProvider] Raw HLSL includes: ` +
+                `${includePaths.length}`
+            );
+        } else {
+            includePaths =
+                this.collectIncludes(parsed);
+        }
 
         console.log(
-            `[DefinitionProvider] Includes in ${uri}: ${includePaths.length}`
+            `[DefinitionProvider] Includes in ${uri}: ` +
+            `${includePaths.length}`
         );
-
-        /*
-         * ---------------------------------------------------------
-         * include を1つずつ解決
-         * ---------------------------------------------------------
-         */
 
         for (const includePath of includePaths) {
 
             console.log(
-                `[DefinitionProvider] Resolving include: ${includePath} from ${uri}`
+                `[DefinitionProvider] Resolving include: ` +
+                `${includePath}`
             );
 
             const resolved =
@@ -259,23 +257,18 @@ export class DefinitionProvider {
                     );
 
             if (!resolved) {
-
                 console.log(
-                    `[DefinitionProvider] Include not resolved: ${includePath}`
+                    `[DefinitionProvider] Include not resolved: ` +
+                    `${includePath}`
                 );
 
                 continue;
             }
 
             console.log(
-                `[DefinitionProvider] Include resolved: ${includePath} -> ${resolved.uri}`
+                `[DefinitionProvider] Include resolved: ` +
+                `${includePath} -> ${resolved.uri}`
             );
-
-            /*
-             * -----------------------------------------------------
-             * 外部ファイルをParse
-             * -----------------------------------------------------
-             */
 
             const externalDocument =
                 this.documentManager
@@ -283,119 +276,33 @@ export class DefinitionProvider {
                         resolved.uri
                     );
 
-const resolvedText = this.documentManager
-    .getProjectService()
-    .readFile(resolved.resolvedPath);
-
-console.log(
-    `[DefinitionProvider] Resolved file text length: ${
-        resolvedText?.length ?? 0
-    }`
-);
-
-if (
-    resolvedText &&
-    resolvedText.includes("SpaceTransforms.hlsl")
-) {
-    console.log(
-        "[DefinitionProvider] ★ RAW FILE contains SpaceTransforms.hlsl"
-    );
-}
-
-            console.log(
-                `[DefinitionProvider] External document: ${resolved.uri} -> ${
-                    externalDocument
-                        ? externalDocument.languageId
-                        : "FAILED"
-                }`
-            );
-
             if (!externalDocument) {
+                console.log(
+                    `[DefinitionProvider] Failed to load external document: ` +
+                    `${resolved.uri}`
+                );
+
                 continue;
             }
 
-            /*
-             * -----------------------------------------------------
-             * シンボル確認
-             * -----------------------------------------------------
-             */
+            console.log(
+                `[DefinitionProvider] External document: ` +
+                `${resolved.uri} -> ` +
+                `${externalDocument.languageId}`
+            );
 
-            const externalSymbols =
+            const externalSource =
                 this.documentManager
-                    .getWorkspaceIndex()
-                    .getDocumentSymbols(
-                        resolved.uri
+                    .getProjectService()
+                    .readFile(
+                        resolved.resolvedPath
                     );
-
-            console.log(
-                `[DefinitionProvider] External symbols: ${resolved.uri} -> ${externalSymbols.length}`
-            );
-
-            /*
-             * -----------------------------------------------------
-             * ★ 重要
-             *
-             * ensureExternalDocument() で取得した
-             * ParsedDocument をそのまま次の再帰へ渡す。
-             *
-             * WorkspaceIndexから再取得しない。
-             * -----------------------------------------------------
-             */
-
-            const externalIncludes =
-                this.collectIncludes(
-                    externalDocument
-                );
-console.log(
-    `[DefinitionProvider] Parsed AST includes: ${
-        externalIncludes.join(", ")
-    }`
-);
-if (
-    resolvedText &&
-    resolvedText.includes("SpaceTransforms.hlsl")
-) {
-    console.log(
-        "[DefinitionProvider] ===== Input.hlsl include inspection ====="
-    );
-
-    const lines = resolvedText.split(/\r?\n/);
-
-    for (let i = 0; i < lines.length; i++) {
-        if (
-            lines[i].includes("#include") ||
-            lines[i].includes("SpaceTransforms.hlsl")
-        ) {
-            console.log(
-                `[DefinitionProvider] RAW ${i + 1}: ${lines[i]}`
-            );
-        }
-    }
-
-    console.log(
-        "[DefinitionProvider] ===== End Input.hlsl inspection ====="
-    );
-}
-            console.log(
-                `[DefinitionProvider] External includes: ${
-                    externalIncludes.join(", ")
-                }`
-            );
-
-            /*
-             * -----------------------------------------------------
-             * 再帰
-             * -----------------------------------------------------
-             */
-
-            console.log(
-                `[DefinitionProvider] Recursing into: ${resolved.uri}`
-            );
 
             this.loadIncludedDocumentsRecursive(
                 resolved.uri,
                 externalDocument,
-                visited
+                visited,
+                externalSource
             );
         }
     }
@@ -423,8 +330,7 @@ if (
         if (parsed.ast.kind === "ShaderDocument") {
 
             console.log(
-                `[DefinitionProvider] ShaderDocument subShaders=${
-                    parsed.ast.subShaders?.length ?? 0
+                `[DefinitionProvider] ShaderDocument subShaders=${parsed.ast.subShaders?.length ?? 0
                 }`
             );
 
@@ -442,14 +348,12 @@ if (
         }
 
         console.log(
-            `[DefinitionProvider] collectIncludes result: ${
-                result.length
+            `[DefinitionProvider] collectIncludes result: ${result.length
             }`
         );
 
         console.log(
-            `[DefinitionProvider] include paths: ${
-                result.join(", ")
+            `[DefinitionProvider] include paths: ${result.join(", ")
             }`
         );
 
@@ -466,16 +370,14 @@ if (
         }
 
         console.log(
-            `[DefinitionProvider] collectHlslIncludes: ast.kind=${
-                ast.kind ?? "undefined"
+            `[DefinitionProvider] collectHlslIncludes: ast.kind=${ast.kind ?? "undefined"
             }`
         );
 
         console.log(
-            `[DefinitionProvider] collectHlslIncludes: declarations=${
-                Array.isArray(ast.declarations)
-                    ? ast.declarations.length
-                    : 0
+            `[DefinitionProvider] collectHlslIncludes: declarations=${Array.isArray(ast.declarations)
+                ? ast.declarations.length
+                : 0
             }`
         );
 
@@ -490,8 +392,7 @@ if (
             }
 
             console.log(
-                `[DefinitionProvider] HLSL declaration: ${
-                    declaration.kind
+                `[DefinitionProvider] HLSL declaration: ${declaration.kind
                 }`
             );
 
@@ -501,8 +402,7 @@ if (
             ) {
 
                 console.log(
-                    `[DefinitionProvider] HLSL function: ${
-                        declaration.name
+                    `[DefinitionProvider] HLSL function: ${declaration.name
                     }`
                 );
 
@@ -523,8 +423,7 @@ if (
             ) {
 
                 console.log(
-                    `[DefinitionProvider] HLSL include found: ${
-                        declaration.path
+                    `[DefinitionProvider] HLSL include found: ${declaration.path
                     }`
                 );
 
@@ -551,14 +450,12 @@ if (
         }
 
         console.log(
-            `[DefinitionProvider] ShaderDocument.hlslBlocks=${
-                ast.hlslBlocks?.length ?? 0
+            `[DefinitionProvider] ShaderDocument.hlslBlocks=${ast.hlslBlocks?.length ?? 0
             }`
         );
 
         console.log(
-            `[DefinitionProvider] ShaderDocument.subShaders=${
-                ast.subShaders?.length ?? 0
+            `[DefinitionProvider] ShaderDocument.subShaders=${ast.subShaders?.length ?? 0
             }`
         );
 
@@ -567,8 +464,7 @@ if (
             for (const block of ast.hlslBlocks) {
 
                 console.log(
-                    `[DefinitionProvider] Root HLSL block: ${
-                        block?.blockType
+                    `[DefinitionProvider] Root HLSL block: ${block?.blockType
                     }`
                 );
 
@@ -590,14 +486,12 @@ if (
             );
 
             console.log(
-                `[DefinitionProvider] SubShader hlslBlocks=${
-                    subShader?.hlslBlocks?.length ?? 0
+                `[DefinitionProvider] SubShader hlslBlocks=${subShader?.hlslBlocks?.length ?? 0
                 }`
             );
 
             console.log(
-                `[DefinitionProvider] SubShader passes=${
-                    subShader?.passes?.length ?? 0
+                `[DefinitionProvider] SubShader passes=${subShader?.passes?.length ?? 0
                 }`
             );
 
@@ -609,8 +503,7 @@ if (
                 ) {
 
                     console.log(
-                        `[DefinitionProvider] SubShader HLSL block: ${
-                            block?.blockType
+                        `[DefinitionProvider] SubShader HLSL block: ${block?.blockType
                         }`
                     );
 
@@ -632,8 +525,7 @@ if (
                 );
 
                 console.log(
-                    `[DefinitionProvider] Pass hlslBlocks=${
-                        pass?.hlslBlocks?.length ?? 0
+                    `[DefinitionProvider] Pass hlslBlocks=${pass?.hlslBlocks?.length ?? 0
                     }`
                 );
 
@@ -651,8 +543,7 @@ if (
                 ) {
 
                     console.log(
-                        `[DefinitionProvider] Pass HLSL block: ${
-                            block?.blockType
+                        `[DefinitionProvider] Pass HLSL block: ${block?.blockType
                         }`
                     );
 
@@ -663,6 +554,39 @@ if (
                 }
             }
         }
+    }
+
+    private collectRawHlslIncludes(
+        source: string
+    ): string[] {
+
+        const includes: string[] = [];
+
+        const lines =
+            source.split(/\r?\n/);
+
+        for (const line of lines) {
+
+            const match =
+                line.match(
+                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/
+                );
+
+            if (!match) {
+                continue;
+            }
+
+            const includePath =
+                match[1] ?? match[2];
+
+            if (!includePath) {
+                continue;
+            }
+
+            includes.push(includePath);
+        }
+
+        return includes;
     }
 
     /*
@@ -696,23 +620,23 @@ if (
             const localPriority:
                 ShaderSymbol["kind"][] = [
 
-                "parameter",
-                "variable",
-                "field",
+                    "parameter",
+                    "variable",
+                    "field",
 
-                "function",
-                "struct",
-                "cbuffer",
+                    "function",
+                    "struct",
+                    "cbuffer",
 
-                "property",
+                    "property",
 
-                "pass",
-                "subShader",
-                "shader",
+                    "pass",
+                    "subShader",
+                    "shader",
 
-                "macro",
-                "include"
-            ];
+                    "macro",
+                    "include"
+                ];
 
             const selected =
                 this.selectByPriority(
@@ -732,18 +656,18 @@ if (
         const externalPriority:
             ShaderSymbol["kind"][] = [
 
-            "function",
-            "struct",
-            "field",
-            "variable",
-            "cbuffer",
-            "macro",
+                "function",
+                "struct",
+                "field",
+                "variable",
+                "cbuffer",
+                "macro",
 
-            "property",
-            "parameter",
+                "property",
+                "parameter",
 
-            "include"
-        ];
+                "include"
+            ];
 
         return this.selectByPriority(
             symbols,
@@ -773,6 +697,212 @@ if (
         }
 
         return symbols[0] ?? null;
+    }
+
+    private isBuiltinHlslType(
+        word: string
+    ): boolean {
+
+        const builtinTypes = new Set([
+            "void",
+
+            "bool",
+            "bool2",
+            "bool3",
+            "bool4",
+
+            "int",
+            "int2",
+            "int3",
+            "int4",
+
+            "uint",
+            "uint2",
+            "uint3",
+            "uint4",
+
+            "half",
+            "half2",
+            "half3",
+            "half4",
+
+            "float",
+            "float2",
+            "float3",
+            "float4",
+
+            "double",
+            "double2",
+            "double3",
+            "double4",
+
+            "min16float",
+            "min16float2",
+            "min16float3",
+            "min16float4",
+
+            "min16int",
+            "min16int2",
+            "min16int3",
+            "min16int4",
+
+            "min16uint",
+            "min16uint2",
+            "min16uint3",
+            "min16uint4"
+        ]);
+
+        return builtinTypes.has(word);
+    }
+
+    private isHlslSemantic(
+        word: string
+    ): boolean {
+
+        const semantic =
+            word.toUpperCase();
+
+        if (
+            /^TEXCOORD\d+$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^COLOR\d+$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^SV_[A-Z0-9_]+$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^POSITION\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^NORMAL\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^TANGENT\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^BINORMAL\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^BLENDINDICES\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^BLENDWEIGHT\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^PSIZE\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        if (
+            /^FOG\d*$/.test(semantic)
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private isHlslSwizzle(
+        word: string
+    ): boolean {
+
+        if (
+            word.length < 1 ||
+            word.length > 4
+        ) {
+            return false;
+        }
+
+        const lower =
+            word.toLowerCase();
+
+        /*
+         * HLSL vector swizzle
+         *
+         * xyzw
+         * rgba
+         * stpq
+         */
+        const swizzleCharacters =
+            new Set([
+                "x",
+                "y",
+                "z",
+                "w",
+
+                "r",
+                "g",
+                "b",
+                "a",
+
+                "s",
+                "t",
+                "p",
+                "q"
+            ]);
+
+        for (
+            const character of lower
+        ) {
+            if (
+                !swizzleCharacters.has(
+                    character
+                )
+            ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private isAfterDot(
+        document: any,
+        position: Position
+    ): boolean {
+
+        const line =
+            document.getText({
+                start: {
+                    line: position.line,
+                    character: 0
+                },
+                end: {
+                    line: position.line,
+                    character: position.character
+                }
+            });
+
+        return /\.\s*$/.test(line);
     }
 
     /*
