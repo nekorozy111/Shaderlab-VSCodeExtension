@@ -190,6 +190,32 @@ export class WorkspaceIndex {
         return this.documents.size;
     }
 
+    public findPrefix(
+        prefix: string
+    ): SymbolMatch[] {
+
+        const normalized =
+            prefix.toLowerCase();
+
+        const results:
+            SymbolMatch[] = [];
+
+        for (
+            const [uri, symbols]
+            of this.symbols
+        ) {
+
+            this.collectPrefixSymbols(
+                uri,
+                symbols,
+                normalized,
+                results
+            );
+        }
+
+        return results;
+    }
+
     private collectMatchingSymbols(
         uri: string,
         symbols: ShaderSymbol[],
@@ -227,6 +253,47 @@ export class WorkspaceIndex {
             }
         }
     }
+
+    private collectPrefixSymbols(
+        uri: string,
+        symbols: ShaderSymbol[],
+        prefix: string,
+        results: SymbolMatch[]
+    ): void {
+
+        for (
+            const symbol
+            of symbols
+        ) {
+
+            if (
+                prefix.length === 0 ||
+                symbol.name
+                    .toLowerCase()
+                    .startsWith(prefix)
+            ) {
+
+                results.push({
+                    symbol,
+                    uri
+                });
+            }
+
+            if (
+                symbol.children.length > 0
+            ) {
+
+                this.collectPrefixSymbols(
+                    uri,
+                    symbol.children,
+                    prefix,
+                    results
+                );
+            }
+        }
+    }
+
+
 
     private collectAllSymbols(
         uri: string,

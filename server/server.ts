@@ -27,6 +27,11 @@ import { DefinitionProvider } from "./language/definitionProvider";
 import {
     HoverProvider
 } from "./language/hoverProvider";
+
+import {
+    CompletionProvider
+} from "./language/completionProvider";
+
 const connection =
     createConnection(
         ProposedFeatures.all
@@ -51,6 +56,10 @@ const hoverProvider =
         definitionProvider
     );
 
+const completionProvider =
+    new CompletionProvider(
+        documentManager
+    );
 connection.onInitialize((params) => {
     documentManager.initializeProject(params);
 
@@ -98,6 +107,16 @@ connection.onHover((params) => {
         params.position
     );
 });
+
+connection.onCompletion(
+    params => {
+        return completionProvider.provideCompletion(
+            params.textDocument.uri,
+            params.position
+        );
+    }
+);
+
 documents.onDidOpen(
     event => {
 
