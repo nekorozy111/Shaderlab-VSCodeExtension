@@ -43,22 +43,28 @@ export class HlslParser {
         const declarations:
             HlslDeclarationNode[] = [];
 
-        while (!this.isAtEnd()) {
+while (!this.isAtEnd()) {
+    console.log(
+        `[HlslParser] declaration token: ${this.current().kind} "${this.current().value}" ` +
+        `line=${this.current().range.start.line + 1}`
+    );
 
-            const declaration =
-                this.parseDeclaration();
+    const declaration = this.parseDeclaration();
 
-            if (declaration !== undefined) {
-
-                declarations.push(
-                    declaration
-                );
-
-                continue;
-            }
-
-            this.advance();
-        }
+    if (declaration) {
+        console.log(
+            `[HlslParser] parsed declaration: ${declaration.kind}`
+        );
+        declarations.push(declaration);
+    } else {
+        console.log(
+            `[HlslParser] failed declaration, advancing from ` +
+            `"${this.current().value}" ` +
+            `line=${this.current().range.start.line + 1}`
+        );
+        this.advance();
+    }
+}
 
         return {
             kind: "HlslDocument",

@@ -22,6 +22,9 @@ export class DefinitionProvider {
             this.documentManager.get(uri);
 
         if (!document) {
+            console.log(
+                `[DefinitionProvider] Document not found: ${uri}`
+            );
             return null;
         }
 
@@ -35,6 +38,9 @@ export class DefinitionProvider {
             );
 
         if (!word) {
+            console.log(
+                `[DefinitionProvider] No word at position`
+            );
             return null;
         }
 
@@ -44,7 +50,7 @@ export class DefinitionProvider {
 
         /*
          * ---------------------------------------------------------
-         * 1. 現在のファイルを検索
+         * 1. 現在のファイル
          * ---------------------------------------------------------
          */
 
@@ -56,6 +62,10 @@ export class DefinitionProvider {
                     match =>
                         match.uri === uri
                 );
+
+        console.log(
+            `[DefinitionProvider] Local matches: ${localMatches.length}`
+        );
 
         if (localMatches.length > 0) {
 
@@ -84,11 +94,19 @@ export class DefinitionProvider {
 
         /*
          * ---------------------------------------------------------
-         * 2. #include 先を読み込む
+         * 2. include を再帰的にロード
          * ---------------------------------------------------------
          */
 
+        console.log(
+            `[DefinitionProvider] Loading includes from ${uri}`
+        );
+
         this.loadIncludedDocuments(uri);
+
+        console.log(
+            `[DefinitionProvider] Finished loading includes`
+        );
 
         /*
          * ---------------------------------------------------------
@@ -104,6 +122,13 @@ export class DefinitionProvider {
         console.log(
             `[DefinitionProvider] Global search "${word}" -> ${matches.length}`
         );
+
+        for (const match of matches) {
+
+            console.log(
+                `[DefinitionProvider] Match: ${match.symbol.kind} ${match.symbol.name} @ ${match.uri}`
+            );
+        }
 
         if (matches.length === 0) {
             return null;
@@ -143,44 +168,87 @@ export class DefinitionProvider {
         rootUri: string
     ): void {
 
+        console.log(
+            `[DefinitionProvider] loadIncludedDocuments(${rootUri})`
+        );
+
         const visited =
             new Set<string>();
 
+        const rootDocument =
+            this.documentManager
+                .getWorkspaceIndex()
+                .getDocument(rootUri);
+
+        if (!rootDocument) {
+
+            console.log(
+                `[DefinitionProvider] Root parsed document not found: ${rootUri}`
+            );
+
+            return;
+        }
+
         this.loadIncludedDocumentsRecursive(
             rootUri,
+            rootDocument,
             visited
+        );
+
+        console.log(
+            `[DefinitionProvider] Include traversal finished. Visited=${visited.size}`
         );
     }
 
     private loadIncludedDocumentsRecursive(
         uri: string,
+        parsed: ParsedDocument,
         visited: Set<string>
     ): void {
 
+        console.log(
+            `[DefinitionProvider] Traversing: ${uri}`
+        );
+
         if (visited.has(uri)) {
+
+            console.log(
+                `[DefinitionProvider] Already visited: ${uri}`
+            );
+
             return;
         }
 
         visited.add(uri);
 
-        const parsed =
-            this.documentManager
-                .getWorkspaceIndex()
-                .getDocument(uri);
+        console.log(
+            `[DefinitionProvider] Parsed document found: ${uri} (${parsed.languageId})`
+        );
 
-        if (!parsed) {
-            return;
-        }
+        /*
+         * ---------------------------------------------------------
+         * 現在のファイルから include を収集
+         * ---------------------------------------------------------
+         */
 
         const includePaths =
-            this.collectIncludes(
-                parsed
-            );
+            this.collectIncludes(parsed);
 
-        for (
-            const includePath
-            of includePaths
-        ) {
+        console.log(
+            `[DefinitionProvider] Includes in ${uri}: ${includePaths.length}`
+        );
+
+        /*
+         * ---------------------------------------------------------
+         * include を1つずつ解決
+         * ---------------------------------------------------------
+         */
+
+        for (const includePath of includePaths) {
+
+            console.log(
+                `[DefinitionProvider] Resolving include: ${includePath} from ${uri}`
+            );
 
             const resolved =
                 this.documentManager
@@ -200,30 +268,133 @@ export class DefinitionProvider {
             }
 
             console.log(
-                `[DefinitionProvider] Include: ${includePath} -> ${resolved.uri}`
+                `[DefinitionProvider] Include resolved: ${includePath} -> ${resolved.uri}`
             );
 
             /*
-             * External HLSL を
-             *
-             * Parser
-             *   ↓
-             * SymbolExtractor
-             *   ↓
-             * WorkspaceIndex
-             *
-             * まで登録する。
+             * -----------------------------------------------------
+             * 外部ファイルをParse
+             * -----------------------------------------------------
              */
-            this.documentManager
-                .ensureExternalDocument(
-                    resolved.uri
-                );
+
+            const externalDocument =
+                this.documentManager
+                    .ensureExternalDocument(
+                        resolved.uri
+                    );
+
+const resolvedText = this.documentManager
+    .getProjectService()
+    .readFile(resolved.resolvedPath);
+
+console.log(
+    `[DefinitionProvider] Resolved file text length: ${
+        resolvedText?.length ?? 0
+    }`
+);
+
+if (
+    resolvedText &&
+    resolvedText.includes("SpaceTransforms.hlsl")
+) {
+    console.log(
+        "[DefinitionProvider] ★ RAW FILE contains SpaceTransforms.hlsl"
+    );
+}
+
+            console.log(
+                `[DefinitionProvider] External document: ${resolved.uri} -> ${
+                    externalDocument
+                        ? externalDocument.languageId
+                        : "FAILED"
+                }`
+            );
+
+            if (!externalDocument) {
+                continue;
+            }
 
             /*
-             * include 先のさらに先も探索する。
+             * -----------------------------------------------------
+             * シンボル確認
+             * -----------------------------------------------------
              */
+
+            const externalSymbols =
+                this.documentManager
+                    .getWorkspaceIndex()
+                    .getDocumentSymbols(
+                        resolved.uri
+                    );
+
+            console.log(
+                `[DefinitionProvider] External symbols: ${resolved.uri} -> ${externalSymbols.length}`
+            );
+
+            /*
+             * -----------------------------------------------------
+             * ★ 重要
+             *
+             * ensureExternalDocument() で取得した
+             * ParsedDocument をそのまま次の再帰へ渡す。
+             *
+             * WorkspaceIndexから再取得しない。
+             * -----------------------------------------------------
+             */
+
+            const externalIncludes =
+                this.collectIncludes(
+                    externalDocument
+                );
+console.log(
+    `[DefinitionProvider] Parsed AST includes: ${
+        externalIncludes.join(", ")
+    }`
+);
+if (
+    resolvedText &&
+    resolvedText.includes("SpaceTransforms.hlsl")
+) {
+    console.log(
+        "[DefinitionProvider] ===== Input.hlsl include inspection ====="
+    );
+
+    const lines = resolvedText.split(/\r?\n/);
+
+    for (let i = 0; i < lines.length; i++) {
+        if (
+            lines[i].includes("#include") ||
+            lines[i].includes("SpaceTransforms.hlsl")
+        ) {
+            console.log(
+                `[DefinitionProvider] RAW ${i + 1}: ${lines[i]}`
+            );
+        }
+    }
+
+    console.log(
+        "[DefinitionProvider] ===== End Input.hlsl inspection ====="
+    );
+}
+            console.log(
+                `[DefinitionProvider] External includes: ${
+                    externalIncludes.join(", ")
+                }`
+            );
+
+            /*
+             * -----------------------------------------------------
+             * 再帰
+             * -----------------------------------------------------
+             */
+
+            console.log(
+                `[DefinitionProvider] Recursing into: ${resolved.uri}`
+            );
+
             this.loadIncludedDocumentsRecursive(
                 resolved.uri,
+                externalDocument,
                 visited
             );
         }
@@ -236,32 +407,51 @@ export class DefinitionProvider {
      */
 
     private collectIncludes(
-        document: ParsedDocument
+        parsed: ParsedDocument
     ): string[] {
 
         const result: string[] = [];
 
-        if (
-            document.languageId === "hlsl"
-        ) {
+        console.log(
+            `[DefinitionProvider] collectIncludes: uri=${parsed.uri}`
+        );
 
-            this.collectHlslIncludes(
-                document.ast,
-                result
+        console.log(
+            `[DefinitionProvider] collectIncludes: ast.kind=${parsed.ast.kind}`
+        );
+
+        if (parsed.ast.kind === "ShaderDocument") {
+
+            console.log(
+                `[DefinitionProvider] ShaderDocument subShaders=${
+                    parsed.ast.subShaders?.length ?? 0
+                }`
             );
-
-            return result;
-        }
-
-        if (
-            document.languageId === "shaderlab"
-        ) {
 
             this.collectShaderLabIncludes(
-                document.ast,
+                parsed.ast,
+                result
+            );
+
+        } else {
+
+            this.collectHlslIncludes(
+                parsed.ast,
                 result
             );
         }
+
+        console.log(
+            `[DefinitionProvider] collectIncludes result: ${
+                result.length
+            }`
+        );
+
+        console.log(
+            `[DefinitionProvider] include paths: ${
+                result.join(", ")
+            }`
+        );
 
         return result;
     }
@@ -275,33 +465,78 @@ export class DefinitionProvider {
             return;
         }
 
-        if (
-            !Array.isArray(
-                ast.declarations
-            )
-        ) {
+        console.log(
+            `[DefinitionProvider] collectHlslIncludes: ast.kind=${
+                ast.kind ?? "undefined"
+            }`
+        );
+
+        console.log(
+            `[DefinitionProvider] collectHlslIncludes: declarations=${
+                Array.isArray(ast.declarations)
+                    ? ast.declarations.length
+                    : 0
+            }`
+        );
+
+        if (!Array.isArray(ast.declarations)) {
             return;
         }
 
-        for (
-            const declaration
-            of ast.declarations
-        ) {
+        for (const declaration of ast.declarations) {
 
-            if (
-                declaration.kind !== "include"
-            ) {
+            if (!declaration) {
                 continue;
             }
 
+            console.log(
+                `[DefinitionProvider] HLSL declaration: ${
+                    declaration.kind
+                }`
+            );
+
             if (
-                typeof declaration.path ===
-                "string"
+                declaration.kind ===
+                "HlslFunction"
             ) {
 
-                result.push(
-                    declaration.path
+                console.log(
+                    `[DefinitionProvider] HLSL function: ${
+                        declaration.name
+                    }`
                 );
+
+                if (
+                    declaration.name ===
+                    "TransformObjectToHClip"
+                ) {
+
+                    console.log(
+                        "[DefinitionProvider] ★ TransformObjectToHClip FOUND"
+                    );
+                }
+            }
+
+            if (
+                declaration.kind ===
+                "HlslInclude"
+            ) {
+
+                console.log(
+                    `[DefinitionProvider] HLSL include found: ${
+                        declaration.path
+                    }`
+                );
+
+                if (
+                    typeof declaration.path ===
+                    "string"
+                ) {
+
+                    result.push(
+                        declaration.path
+                    );
+                }
             }
         }
     }
@@ -315,96 +550,116 @@ export class DefinitionProvider {
             return;
         }
 
-        /*
-         * ShaderLab トップレベルの HLSL
-         */
-        if (
-            Array.isArray(
-                ast.hlslBlocks
-            )
-        ) {
+        console.log(
+            `[DefinitionProvider] ShaderDocument.hlslBlocks=${
+                ast.hlslBlocks?.length ?? 0
+            }`
+        );
 
-            for (
-                const block
-                of ast.hlslBlocks
-            ) {
+        console.log(
+            `[DefinitionProvider] ShaderDocument.subShaders=${
+                ast.subShaders?.length ?? 0
+            }`
+        );
+
+        if (Array.isArray(ast.hlslBlocks)) {
+
+            for (const block of ast.hlslBlocks) {
+
+                console.log(
+                    `[DefinitionProvider] Root HLSL block: ${
+                        block?.blockType
+                    }`
+                );
 
                 this.collectHlslIncludes(
-                    block.hlsl,
+                    block?.hlsl,
                     result
                 );
             }
         }
 
-        /*
-         * SubShader
-         */
-        if (
-            Array.isArray(
-                ast.subShaders
-            )
-        ) {
+        if (!Array.isArray(ast.subShaders)) {
+            return;
+        }
 
-            for (
-                const subShader
-                of ast.subShaders
-            ) {
+        for (const subShader of ast.subShaders) {
 
-                /*
-                 * SubShader直下のHLSL
-                 */
-                if (
-                    Array.isArray(
-                        subShader.hlslBlocks
-                    )
+            console.log(
+                `[DefinitionProvider] SubShader found`
+            );
+
+            console.log(
+                `[DefinitionProvider] SubShader hlslBlocks=${
+                    subShader?.hlslBlocks?.length ?? 0
+                }`
+            );
+
+            console.log(
+                `[DefinitionProvider] SubShader passes=${
+                    subShader?.passes?.length ?? 0
+                }`
+            );
+
+            if (Array.isArray(subShader.hlslBlocks)) {
+
+                for (
+                    const block
+                    of subShader.hlslBlocks
                 ) {
 
-                    for (
-                        const block
-                        of subShader.hlslBlocks
-                    ) {
+                    console.log(
+                        `[DefinitionProvider] SubShader HLSL block: ${
+                            block?.blockType
+                        }`
+                    );
 
-                        this.collectHlslIncludes(
-                            block.hlsl,
-                            result
-                        );
-                    }
+                    this.collectHlslIncludes(
+                        block?.hlsl,
+                        result
+                    );
                 }
+            }
 
-                /*
-                 * Pass
-                 */
+            if (!Array.isArray(subShader.passes)) {
+                continue;
+            }
+
+            for (const pass of subShader.passes) {
+
+                console.log(
+                    `[DefinitionProvider] Pass found`
+                );
+
+                console.log(
+                    `[DefinitionProvider] Pass hlslBlocks=${
+                        pass?.hlslBlocks?.length ?? 0
+                    }`
+                );
+
                 if (
                     !Array.isArray(
-                        subShader.passes
+                        pass.hlslBlocks
                     )
                 ) {
                     continue;
                 }
 
                 for (
-                    const pass
-                    of subShader.passes
+                    const block
+                    of pass.hlslBlocks
                 ) {
 
-                    if (
-                        !Array.isArray(
-                            pass.hlslBlocks
-                        )
-                    ) {
-                        continue;
-                    }
+                    console.log(
+                        `[DefinitionProvider] Pass HLSL block: ${
+                            block?.blockType
+                        }`
+                    );
 
-                    for (
-                        const block
-                        of pass.hlslBlocks
-                    ) {
-
-                        this.collectHlslIncludes(
-                            block.hlsl,
-                            result
-                        );
-                    }
+                    this.collectHlslIncludes(
+                        block?.hlsl,
+                        result
+                    );
                 }
             }
         }
@@ -428,6 +683,7 @@ export class DefinitionProvider {
         /*
          * 現在のファイル
          */
+
         const localSymbols =
             symbols.filter(
                 symbol =>
@@ -472,6 +728,7 @@ export class DefinitionProvider {
         /*
          * 別ファイル
          */
+
         const externalPriority:
             ShaderSymbol["kind"][] = [
 
