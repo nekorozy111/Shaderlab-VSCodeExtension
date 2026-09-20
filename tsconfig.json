@@ -1,23 +1,28 @@
 {
     "compilerOptions": {
-        "module": "commonjs",
         "target": "ES2022",
-        "outDir": "out",
+        "module": "commonjs",
         "lib": [
             "ES2022"
         ],
+        "outDir": "out",
+        "rootDir": ".",
+        "strict": true,
+        "sourceMap": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
         "types": [
             "node",
-            "mocha",
-        ],
-        "sourceMap": true,
-        "rootDir": "src",
-        "strict": true,
-        "esModuleInterop": true,
-        "skipLibCheck": true
+            "vscode"
+        ]
     },
+    "include": [
+        "src/**/*.ts",
+        "server/**/*.ts"
+    ],
     "exclude": [
         "node_modules",
+        "out",
         ".vscode-test"
-  ]
+    ]
 }
