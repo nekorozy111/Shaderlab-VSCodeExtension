@@ -1,140 +1,38 @@
 import * as vscode from "vscode";
 
 import {
-    SymbolDatabase
-} from "./symbolDatabase";
+    startLanguageClient,
+    stopLanguageClient
+} from "./client/languageClient";
 
-import {
-    ShaderCompletionProvider
-} from "./completionProvider";
+let clientStarted = false;
 
-import {
-    ShaderHoverProvider
-} from "./hoverProvider";
-
-import {
-    ShaderDefinitionProvider
-} from "./definitionProvider";
-
-import {
-    ShaderParser
-} from "./shaderParser";
-
-import {
-    ShaderDocument
-} from "./shaderDocument";
-
-let database:
-    SymbolDatabase | undefined;
-
-let shaderDocument:
-    ShaderDocument | undefined;
-
-export function activate(
+export async function activate(
     context: vscode.ExtensionContext
-): void {
-    database =
-        new SymbolDatabase();
+): Promise<void> {
 
-    database.load(
-        context
-    );
+    const configuration =
+        vscode.workspace.getConfiguration("urpShaderLab");
 
-    context.subscriptions.push(
-        database
-    );
+    const enabled =
+        configuration.get<boolean>("enable", true);
 
-    /*
-     * Local shader parser
-     */
-    const parser =
-        new ShaderParser();
+    if (!enabled) {
+        return;
+    }
 
-    shaderDocument =
-        new ShaderDocument(
-            parser
-        );
+    await startLanguageClient(context);
 
-    context.subscriptions.push(
-        shaderDocument
-    );
-
-    /*
-     * Providers
-     */
-    const completionProvider =
-        new ShaderCompletionProvider(
-            database,
-            shaderDocument
-        );
-
-    const hoverProvider =
-        new ShaderHoverProvider(
-            database
-        );
-
-    const definitionProvider =
-        new ShaderDefinitionProvider(
-            database
-        );
-
-    const selector:
-        vscode.DocumentSelector = [
-            {
-                language: "shaderlab"
-            },
-            {
-                language: "hlsl"
-            },
-            {
-                language: "compute"
-            }
-        ];
-
-    context.subscriptions.push(
-        vscode.languages.registerCompletionItemProvider(
-            selector,
-            completionProvider,
-            "#",
-            "\"",
-            "<",
-            "."
-        )
-    );
-
-    context.subscriptions.push(
-        vscode.languages.registerHoverProvider(
-            selector,
-            hoverProvider
-        )
-    );
-
-    context.subscriptions.push(
-        vscode.languages.registerDefinitionProvider(
-            selector,
-            definitionProvider
-        )
-    );
-
-    context.subscriptions.push(
-        vscode.commands.registerCommand(
-            "unityShaderIntellisense.reloadDatabase",
-            () => {
-                database?.reload();
-
-                vscode.window.showInformationMessage(
-                    "Unity Shader IntelliSense database reloaded."
-                );
-            }
-        )
-    );
+    clientStarted = true;
 }
 
-export function deactivate(): void {
-    database?.dispose();
+export async function deactivate(): Promise<void> {
 
-    shaderDocument?.dispose();
+    if (!clientStarted) {
+        return;
+    }
 
-    database = undefined;
-    shaderDocument = undefined;
+    await stopLanguageClient();
+
+    clientStarted = false;
 }
