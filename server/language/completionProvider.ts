@@ -394,11 +394,20 @@ export class CompletionProvider {
          *
          * これで input. も従来通り動く。
          */
-        if (!typeName) {
-            const objectMatches =
-                index.findExact(
-                    objectName
-                );
+if (!typeName) {
+    const relatedUris =
+        this.documentManager
+            .getRelatedIncludeUris(uri);
+
+    const objectMatches =
+        index
+            .findExact(objectName)
+            .filter(
+                match =>
+                    relatedUris.has(
+                        match.uri
+                    )
+            );
 
             /*
              * 現在のファイルを優先。
@@ -1122,6 +1131,7 @@ export class CompletionProvider {
         );
     }
 
+    
     private getBuiltinTypes():
         string[] {
         return [
