@@ -59,9 +59,9 @@ export class DefinitionProvider {
          * 1. Built-in type / semantic
          * ---------------------------------------------------------
          */
-console.log(
-    `[DefinitionProvider] builtin=${this.isBuiltinHlslType(word)} semantic=${this.isHlslSemantic(word)} word="${word}"`
-);
+        console.log(
+            `[DefinitionProvider] builtin=${this.isBuiltinHlslType(word)} semantic=${this.isHlslSemantic(word)} word="${word}"`
+        );
         if (
             this.isBuiltinHlslType(word) ||
             this.isHlslSemantic(word)
@@ -466,6 +466,418 @@ console.log(
         );
     }
 
+public resolveSymbolAtPosition(
+    uri: string,
+    position: Position
+): ShaderSymbol | null {
+
+    const document =
+        this.documentManager.get(uri);
+
+    if (!document) {
+        return null;
+    }
+
+    const text =
+        document.getText();
+
+    const offset =
+        document.offsetAt(position);
+
+    const word =
+        this.getWordAtPosition(
+            text,
+            offset
+        );
+
+    if (!word) {
+        return null;
+    }
+
+    console.log(
+        `[DefinitionProvider] Resolve symbol "${word}"`
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * 1. Member access
+     *
+     * a.position
+     * b.position
+     * input.position
+     * ---------------------------------------------------------
+     */
+
+    const memberAccess =
+        this.getMemberAccessAtPosition(
+            text,
+            offset
+        );
+
+    if (memberAccess) {
+
+        console.log(
+            `[DefinitionProvider] Resolve member: ` +
+            `${memberAccess.objectName}.${memberAccess.memberName}`
+        );
+
+        /*
+         * HLSL swizzle は symbol ではない。
+         */
+        if (
+            this.isHlslSwizzle(
+                memberAccess.memberName
+            )
+        ) {
+            return null;
+        }
+
+        /*
+         * -----------------------------------------------------
+         * 1-1. 現在のソースから object を探す
+         * -----------------------------------------------------
+         */
+
+        const localObject =
+            this.findVariableDeclarationInSource(
+                document,
+                memberAccess.objectName,
+                offset
+            );
+
+        if (localObject) {
+
+            console.log(
+                `[DefinitionProvider] Hover local object: ` +
+                `${localObject.name} : ${localObject.typeName}`
+            );
+
+            const member =
+                this.findStructField(
+                    localObject.typeName,
+                    memberAccess.memberName
+                );
+
+            if (member) {
+
+                console.log(
+                    `[DefinitionProvider] Hover local member -> ` +
+                    `${member.location.uri} ` +
+                    `${member.name}`
+                );
+
+                return member;
+            }
+        }
+
+        /*
+         * -----------------------------------------------------
+         * 1-2. WorkspaceIndex の variable / parameter
+         * -----------------------------------------------------
+         */
+
+        const objectMatches =
+            this.documentManager
+                .getWorkspaceIndex()
+                .findExact(
+                    memberAccess.objectName
+                )
+                .filter(
+                    match =>
+                        match.symbol.kind === "variable" ||
+                        match.symbol.kind === "parameter"
+                );
+
+        if (
+            objectMatches.length > 0
+        ) {
+
+            const objectSymbol =
+                this.selectBestObjectSymbol(
+                    uri,
+                    offset,
+                    objectMatches.map(
+                        match => match.symbol
+                    )
+                );
+
+            if (
+                objectSymbol &&
+                objectSymbol.typeName
+            ) {
+
+                console.log(
+                    `[DefinitionProvider] Hover indexed object: ` +
+                    `${objectSymbol.name} : ` +
+                    `${objectSymbol.typeName}`
+                );
+
+                const member =
+                    this.findStructField(
+                        objectSymbol.typeName,
+                        memberAccess.memberName
+                    );
+
+                if (member) {
+
+                    console.log(
+                        `[DefinitionProvider] Hover indexed member -> ` +
+                        `${member.location.uri} ` +
+                        `${member.name}`
+                    );
+
+                    return member;
+                }
+            }
+        }
+
+        /*
+         * -----------------------------------------------------
+         * 1-3. include を読み込む
+         * -----------------------------------------------------
+         */
+
+        this.loadIncludedDocuments(uri);
+
+        /*
+         * -----------------------------------------------------
+         * 1-4. include 後に WorkspaceIndex を再検索
+         * -----------------------------------------------------
+         */
+
+        const externalObjectMatches =
+            this.documentManager
+                .getWorkspaceIndex()
+                .findExact(
+                    memberAccess.objectName
+                )
+                .filter(
+                    match =>
+                        match.symbol.kind === "variable" ||
+                        match.symbol.kind === "parameter"
+                );
+
+        if (
+            externalObjectMatches.length > 0
+        ) {
+
+            const objectSymbol =
+                this.selectBestObjectSymbol(
+                    uri,
+                    offset,
+                    externalObjectMatches.map(
+                        match => match.symbol
+                    )
+                );
+
+            if (
+                objectSymbol &&
+                objectSymbol.typeName
+            ) {
+
+                console.log(
+                    `[DefinitionProvider] Hover external object: ` +
+                    `${objectSymbol.name} : ` +
+                    `${objectSymbol.typeName}`
+                );
+
+                const member =
+                    this.findStructField(
+                        objectSymbol.typeName,
+                        memberAccess.memberName
+                    );
+
+                if (member) {
+
+                    console.log(
+                        `[DefinitionProvider] Hover external member -> ` +
+                        `${member.location.uri} ` +
+                        `${member.name}`
+                    );
+
+                    return member;
+                }
+            }
+        }
+
+        /*
+         * Member access を通常の名前検索には
+         * 落とさない。
+         *
+         * 例:
+         *
+         * data.unknown
+         *
+         * の unknown を別の同名 symbol に
+         * 誤って解決しないため。
+         */
+        return null;
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2. 通常の symbol
+     *
+     * variable
+     * parameter
+     * struct
+     * field
+     * function
+     * property
+     * etc.
+     * ---------------------------------------------------------
+     */
+
+    const matches =
+        this.documentManager
+            .getWorkspaceIndex()
+            .findExact(
+                word
+            );
+
+    if (
+        matches.length === 0
+    ) {
+
+        /*
+         * include をロードしてから再検索。
+         */
+        this.loadIncludedDocuments(uri);
+
+        const retryMatches =
+            this.documentManager
+                .getWorkspaceIndex()
+                .findExact(
+                    word
+                );
+
+        if (
+            retryMatches.length === 0
+        ) {
+            return null;
+        }
+
+        return this.selectBestSymbolAtPosition(
+            retryMatches.map(
+                match => match.symbol
+            ),
+            position
+        );
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2-1. 現在ファイルの symbol を優先
+     * ---------------------------------------------------------
+     */
+
+    const currentFileMatches =
+        matches.filter(
+            match =>
+                match.symbol.location.uri === uri
+        );
+
+    if (
+        currentFileMatches.length > 0
+    ) {
+
+        const selected =
+            this.selectBestSymbolAtPosition(
+                currentFileMatches.map(
+                    match => match.symbol
+                ),
+                position
+            );
+
+        if (selected) {
+            return selected;
+        }
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2-2. Workspace 全体
+     * ---------------------------------------------------------
+     */
+
+    return this.selectBestSymbolAtPosition(
+        matches.map(
+            match => match.symbol
+        ),
+        position
+    );
+}
+    private selectBestSymbolAtPosition(
+        symbols: ShaderSymbol[],
+        position: Position
+    ): ShaderSymbol | null {
+
+        /*
+         * まずカーソル位置が symbol の range 内に
+         * 入っているものを探す。
+         *
+         * これが最優先。
+         */
+        for (const symbol of symbols) {
+
+            const range =
+                symbol.location.range;
+
+            if (
+                position.line < range.start.line ||
+                position.line > range.end.line
+            ) {
+                continue;
+            }
+
+            if (
+                position.line === range.start.line &&
+                position.character < range.start.character
+            ) {
+                continue;
+            }
+
+            if (
+                position.line === range.end.line &&
+                position.character > range.end.character
+            ) {
+                continue;
+            }
+
+            return symbol;
+        }
+
+        /*
+         * range に入っていない場合は、
+         * 現在位置より前にある symbol を候補にする。
+         */
+        let best: ShaderSymbol | null = null;
+
+        let bestLineDistance =
+            Number.MAX_SAFE_INTEGER;
+
+        for (const symbol of symbols) {
+
+            const line =
+                symbol.location.range.start.line;
+
+            if (line > position.line) {
+                continue;
+            }
+
+            const distance =
+                position.line - line;
+
+            if (
+                distance < bestLineDistance
+            ) {
+                bestLineDistance = distance;
+                best = symbol;
+            }
+        }
+
+        return best;
+    }
     /*
      * -------------------------------------------------------------
      * Member access取得
@@ -487,113 +899,113 @@ console.log(
      * -------------------------------------------------------------
      */
 
-private getMemberAccessAtPosition(
-    text: string,
-    offset: number
-): {
-    objectName: string;
-    memberName: string;
-} | null {
+    private getMemberAccessAtPosition(
+        text: string,
+        offset: number
+    ): {
+        objectName: string;
+        memberName: string;
+    } | null {
 
-    if (text.length === 0) {
-        return null;
-    }
+        if (text.length === 0) {
+            return null;
+        }
 
-    offset = Math.max(
-        0,
-        Math.min(offset, text.length)
-    );
+        offset = Math.max(
+            0,
+            Math.min(offset, text.length)
+        );
 
-    const isIdentifierCharacter = (char: string): boolean => {
-        return /[A-Za-z0-9_]/.test(char);
-    };
+        const isIdentifierCharacter = (char: string): boolean => {
+            return /[A-Za-z0-9_]/.test(char);
+        };
 
-    // カーソル位置から member 名の範囲を探す
-    let memberStart = offset;
+        // カーソル位置から member 名の範囲を探す
+        let memberStart = offset;
 
-    while (
-        memberStart > 0 &&
-        isIdentifierCharacter(text[memberStart - 1])
-    ) {
-        memberStart--;
-    }
+        while (
+            memberStart > 0 &&
+            isIdentifierCharacter(text[memberStart - 1])
+        ) {
+            memberStart--;
+        }
 
-    let memberEnd = offset;
+        let memberEnd = offset;
 
-    while (
-        memberEnd < text.length &&
-        isIdentifierCharacter(text[memberEnd])
-    ) {
-        memberEnd++;
-    }
+        while (
+            memberEnd < text.length &&
+            isIdentifierCharacter(text[memberEnd])
+        ) {
+            memberEnd++;
+        }
 
-    if (memberStart === memberEnd) {
-        return null;
-    }
+        if (memberStart === memberEnd) {
+            return null;
+        }
 
-    const memberName = text.substring(
-        memberStart,
-        memberEnd
-    );
+        const memberName = text.substring(
+            memberStart,
+            memberEnd
+        );
 
-    // member の左側にある空白を飛ばす
-    let dotOffset = memberStart;
+        // member の左側にある空白を飛ばす
+        let dotOffset = memberStart;
 
-    while (
-        dotOffset > 0 &&
-        /\s/.test(text[dotOffset - 1])
-    ) {
+        while (
+            dotOffset > 0 &&
+            /\s/.test(text[dotOffset - 1])
+        ) {
+            dotOffset--;
+        }
+
+        // "." がなければメンバーアクセスではない
+        if (
+            dotOffset <= 0 ||
+            text[dotOffset - 1] !== "."
+        ) {
+            return null;
+        }
+
         dotOffset--;
+
+        // "." の左側の空白を飛ばす
+        let objectEnd = dotOffset;
+
+        while (
+            objectEnd > 0 &&
+            /\s/.test(text[objectEnd - 1])
+        ) {
+            objectEnd--;
+        }
+
+        // object 名を探す
+        let objectStart = objectEnd;
+
+        while (
+            objectStart > 0 &&
+            isIdentifierCharacter(text[objectStart - 1])
+        ) {
+            objectStart--;
+        }
+
+        if (objectStart === objectEnd) {
+            return null;
+        }
+
+        const objectName = text.substring(
+            objectStart,
+            objectEnd
+        );
+
+        console.log(
+            `[DefinitionProvider] getMemberAccessAtPosition -> ${objectName}.${memberName}`
+        );
+
+        return {
+            objectName,
+            memberName
+        };
     }
-
-    // "." がなければメンバーアクセスではない
-    if (
-        dotOffset <= 0 ||
-        text[dotOffset - 1] !== "."
-    ) {
-        return null;
-    }
-
-    dotOffset--;
-
-    // "." の左側の空白を飛ばす
-    let objectEnd = dotOffset;
-
-    while (
-        objectEnd > 0 &&
-        /\s/.test(text[objectEnd - 1])
-    ) {
-        objectEnd--;
-    }
-
-    // object 名を探す
-    let objectStart = objectEnd;
-
-    while (
-        objectStart > 0 &&
-        isIdentifierCharacter(text[objectStart - 1])
-    ) {
-        objectStart--;
-    }
-
-    if (objectStart === objectEnd) {
-        return null;
-    }
-
-    const objectName = text.substring(
-        objectStart,
-        objectEnd
-    );
-
-    console.log(
-        `[DefinitionProvider] getMemberAccessAtPosition -> ${objectName}.${memberName}`
-    );
-
-    return {
-        objectName,
-        memberName
-    };
-}
 
     /*
      * -------------------------------------------------------------
@@ -606,127 +1018,263 @@ private getMemberAccessAtPosition(
      * -------------------------------------------------------------
      */
 
-private findVariableDeclarationInSource(
-    document: TextDocument,
-    variableName: string,
-    usageOffset: number
-): {
-    name: string;
-    typeName: string;
-    uri: string;
-    range: {
-        start: {
-            line: number;
-            character: number;
+    private findVariableDeclarationInSource(
+        document: TextDocument,
+        variableName: string,
+        usageOffset: number
+    ): {
+        name: string;
+        typeName: string;
+        uri: string;
+        range: {
+            start: {
+                line: number;
+                character: number;
+            };
+            end: {
+                line: number;
+                character: number;
+            };
         };
-        end: {
-            line: number;
-            character: number;
-        };
-    };
-} | null {
+    } | null {
 
-    const text =
-        document.getText();
+        const text =
+            document.getText();
 
-    const escapedName =
-        variableName.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-        );
-
-    /*
-     * ---------------------------------------------------------
-     * 1. 通常の変数宣言
-     *
-     * float4 color;
-     * float3 position;
-     * MyStruct data;
-     * const MyStruct data;
-     * static MyStruct data;
-     * ---------------------------------------------------------
-     */
-
-    const variablePattern =
-        new RegExp(
-            "\\b" +
-            "(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*" +
-            "([A-Za-z_][A-Za-z0-9_]*)" +
-            "\\s+" +
-            escapedName +
-            "\\s*(?==|;|,|\\[|:)",
-            "g"
-        );
-
-    let best:
-        {
-            name: string;
-            typeName: string;
-            startOffset: number;
-            endOffset: number;
-        } | null = null;
-
-    let match:
-        RegExpExecArray | null;
-
-    while (
-        (match = variablePattern.exec(text)) !== null
-    ) {
-
-        const startOffset =
-            match.index;
-
-        if (
-            startOffset >= usageOffset
-        ) {
-            continue;
-        }
-
-        const typeName =
-            match[1];
-
-        if (
-            this.isVariableDeclarationKeyword(
-                typeName
-            )
-        ) {
-            continue;
-        }
-
-        const nameStart =
-            text.indexOf(
-                variableName,
-                startOffset
+        const escapedName =
+            variableName.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
             );
 
-        if (
-            nameStart < 0
+        /*
+         * ---------------------------------------------------------
+         * 1. 通常の変数宣言
+         *
+         * float4 color;
+         * float3 position;
+         * MyStruct data;
+         * const MyStruct data;
+         * static MyStruct data;
+         * ---------------------------------------------------------
+         */
+
+        const variablePattern =
+            new RegExp(
+                "\\b" +
+                "(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*" +
+                "([A-Za-z_][A-Za-z0-9_]*)" +
+                "\\s+" +
+                escapedName +
+                "\\s*(?==|;|,|\\[|:)",
+                "g"
+            );
+
+        let best:
+            {
+                name: string;
+                typeName: string;
+                startOffset: number;
+                endOffset: number;
+            } | null = null;
+
+        let match:
+            RegExpExecArray | null;
+
+        while (
+            (match = variablePattern.exec(text)) !== null
         ) {
-            continue;
+
+            const startOffset =
+                match.index;
+
+            if (
+                startOffset >= usageOffset
+            ) {
+                continue;
+            }
+
+            const typeName =
+                match[1];
+
+            if (
+                this.isVariableDeclarationKeyword(
+                    typeName
+                )
+            ) {
+                continue;
+            }
+
+            const nameStart =
+                text.indexOf(
+                    variableName,
+                    startOffset
+                );
+
+            if (
+                nameStart < 0
+            ) {
+                continue;
+            }
+
+            if (
+                !best ||
+                startOffset >
+                best.startOffset
+            ) {
+                best = {
+                    name:
+                        variableName,
+
+                    typeName,
+
+                    startOffset:
+                        nameStart,
+
+                    endOffset:
+                        nameStart +
+                        variableName.length
+                };
+            }
         }
 
-        if (
-            !best ||
-            startOffset >
-            best.startOffset
-        ) {
-            best = {
+        if (best) {
+            return {
                 name:
-                    variableName,
+                    best.name,
 
-                typeName,
+                typeName:
+                    best.typeName,
 
-                startOffset:
-                    nameStart,
+                uri:
+                    document.uri,
 
-                endOffset:
-                    nameStart +
-                    variableName.length
+                range:
+                    this.rangeFromOffsets(
+                        document,
+                        best.startOffset,
+                        best.endOffset
+                    )
             };
         }
-    }
 
-    if (best) {
+        /*
+         * ---------------------------------------------------------
+         * 2. 関数パラメータ
+         *
+         * float4 Test(MyStruct a, MyStruct b)
+         *
+         * a.position
+         * b.position
+         *
+         * ここを現在の実装では拾えていなかった。
+         * ---------------------------------------------------------
+         */
+
+        const parameterPattern =
+            new RegExp(
+                "\\b" +
+                "([A-Za-z_][A-Za-z0-9_]*)" +
+                "\\s+" +
+                escapedName +
+                "\\s*(?=[,)])",
+                "g"
+            );
+
+        while (
+            (match =
+                parameterPattern.exec(text)) !== null
+        ) {
+
+            const startOffset =
+                match.index;
+
+            if (
+                startOffset >= usageOffset
+            ) {
+                continue;
+            }
+
+            const typeName =
+                match[1];
+
+            if (
+                this.isVariableDeclarationKeyword(
+                    typeName
+                )
+            ) {
+                continue;
+            }
+
+            /*
+             * structのフィールドなどを
+             * parameterと誤認しないため、
+             * 直前が "(" または "," のケースを優先する。
+             */
+
+            let before =
+                startOffset - 1;
+
+            while (
+                before >= 0 &&
+                /\s/.test(text[before])
+            ) {
+                before--;
+            }
+
+            if (
+                before < 0
+            ) {
+                continue;
+            }
+
+            const beforeChar =
+                text[before];
+
+            if (
+                beforeChar !== "(" &&
+                beforeChar !== ","
+            ) {
+                continue;
+            }
+
+            const nameStart =
+                text.indexOf(
+                    variableName,
+                    startOffset
+                );
+
+            if (
+                nameStart < 0
+            ) {
+                continue;
+            }
+
+            if (
+                !best ||
+                startOffset >
+                best.startOffset
+            ) {
+                best = {
+                    name:
+                        variableName,
+
+                    typeName,
+
+                    startOffset:
+                        nameStart,
+
+                    endOffset:
+                        nameStart +
+                        variableName.length
+                };
+            }
+        }
+
+        if (!best) {
+            return null;
+        }
+
         return {
             name:
                 best.name,
@@ -747,206 +1295,70 @@ private findVariableDeclarationInSource(
     }
 
     /*
-     * ---------------------------------------------------------
-     * 2. 関数パラメータ
-     *
-     * float4 Test(MyStruct a, MyStruct b)
-     *
-     * a.position
-     * b.position
-     *
-     * ここを現在の実装では拾えていなかった。
-     * ---------------------------------------------------------
-     */
-
-    const parameterPattern =
-        new RegExp(
-            "\\b" +
-            "([A-Za-z_][A-Za-z0-9_]*)" +
-            "\\s+" +
-            escapedName +
-            "\\s*(?=[,)])",
-            "g"
-        );
-
-    while (
-        (match =
-            parameterPattern.exec(text)) !== null
-    ) {
-
-        const startOffset =
-            match.index;
-
-        if (
-            startOffset >= usageOffset
-        ) {
-            continue;
-        }
-
-        const typeName =
-            match[1];
-
-        if (
-            this.isVariableDeclarationKeyword(
-                typeName
-            )
-        ) {
-            continue;
-        }
-
-        /*
-         * structのフィールドなどを
-         * parameterと誤認しないため、
-         * 直前が "(" または "," のケースを優先する。
-         */
-
-        let before =
-            startOffset - 1;
-
-        while (
-            before >= 0 &&
-            /\s/.test(text[before])
-        ) {
-            before--;
-        }
-
-        if (
-            before < 0
-        ) {
-            continue;
-        }
-
-        const beforeChar =
-            text[before];
-
-        if (
-            beforeChar !== "(" &&
-            beforeChar !== ","
-        ) {
-            continue;
-        }
-
-        const nameStart =
-            text.indexOf(
-                variableName,
-                startOffset
-            );
-
-        if (
-            nameStart < 0
-        ) {
-            continue;
-        }
-
-        if (
-            !best ||
-            startOffset >
-            best.startOffset
-        ) {
-            best = {
-                name:
-                    variableName,
-
-                typeName,
-
-                startOffset:
-                    nameStart,
-
-                endOffset:
-                    nameStart +
-                    variableName.length
-            };
-        }
-    }
-
-    if (!best) {
-        return null;
-    }
-
-    return {
-        name:
-            best.name,
-
-        typeName:
-            best.typeName,
-
-        uri:
-            document.uri,
-
-        range:
-            this.rangeFromOffsets(
-                document,
-                best.startOffset,
-                best.endOffset
-            )
-    };
-}
-
-    /*
      * -------------------------------------------------------------
      * struct.field を検索
      * -------------------------------------------------------------
      */
 
-private findStructField(
-    typeName: string,
-    memberName: string
-): ShaderSymbol | null {
+    private findStructField(
+        typeName: string,
+        memberName: string
+    ): ShaderSymbol | null {
 
-    const normalizedType =
-        typeName
-            .replace(
-                /\b(const|static|uniform|volatile|in|out|inout)\b/g,
-                ""
-            )
-            .trim();
+        const normalizedType =
+            typeName
+                .replace(
+                    /\b(const|static|uniform|volatile|in|out|inout)\b/g,
+                    ""
+                )
+                .trim();
 
-    const structMatches =
-        this.documentManager
-            .getWorkspaceIndex()
-            .findByKind(
-                normalizedType,
-                "struct"
-            );
+        const structMatches =
+            this.documentManager
+                .getWorkspaceIndex()
+                .findByKind(
+                    normalizedType,
+                    "struct"
+                );
 
-    console.log(
-        `[DefinitionProvider] Struct lookup: ` +
-        `${normalizedType} -> ${structMatches.length}`
-    );
+        console.log(
+            `[DefinitionProvider] Struct lookup: ` +
+            `${normalizedType} -> ${structMatches.length}`
+        );
 
-    const normalizedMember =
-        memberName.toLowerCase();
+        const normalizedMember =
+            memberName.toLowerCase();
 
-    for (
-        const match
-        of structMatches
-    ) {
+        for (
+            const match
+            of structMatches
+        ) {
 
-        const struct =
-            match.symbol;
+            const struct =
+                match.symbol;
 
-        const field =
-            struct.children.find(
-                child =>
-                    child.kind === "field" &&
-                    child.name.toLowerCase() ===
-                    normalizedMember
-            );
+            const field =
+                struct.children.find(
+                    child =>
+                        child.kind === "field" &&
+                        child.name.toLowerCase() ===
+                        normalizedMember
+                );
 
-        if (field) {
+            if (field) {
 
-            console.log(
-                `[DefinitionProvider] Field resolved: ` +
-                `${normalizedType}.${memberName} @ ` +
-                `${field.location.uri}`
-            );
+                console.log(
+                    `[DefinitionProvider] Field resolved: ` +
+                    `${normalizedType}.${memberName} @ ` +
+                    `${field.location.uri}`
+                );
 
-            return field;
+                return field;
+            }
         }
-    }
 
-    return null;
-}
+        return null;
+    }
 
     /*
      * -------------------------------------------------------------
@@ -1283,7 +1695,7 @@ private findStructField(
 
             const match =
                 line.match(
-                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/ 
+                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/
                 );
 
             if (!match) {
@@ -1336,19 +1748,19 @@ private findStructField(
             const priority:
                 ShaderSymbol["kind"][] = [
 
-                "parameter",
-                "variable",
-                "field",
-                "function",
-                "struct",
-                "cbuffer",
-                "property",
-                "pass",
-                "subShader",
-                "shader",
-                "macro",
-                "include"
-            ];
+                    "parameter",
+                    "variable",
+                    "field",
+                    "function",
+                    "struct",
+                    "cbuffer",
+                    "property",
+                    "pass",
+                    "subShader",
+                    "shader",
+                    "macro",
+                    "include"
+                ];
 
             const selected =
                 this.selectByPriority(
@@ -1364,16 +1776,16 @@ private findStructField(
         const externalPriority:
             ShaderSymbol["kind"][] = [
 
-            "function",
-            "struct",
-            "field",
-            "variable",
-            "cbuffer",
-            "macro",
-            "property",
-            "parameter",
-            "include"
-        ];
+                "function",
+                "struct",
+                "field",
+                "variable",
+                "cbuffer",
+                "macro",
+                "property",
+                "parameter",
+                "include"
+            ];
 
         return this.selectByPriority(
             symbols,
@@ -1478,27 +1890,27 @@ private findStructField(
      * -------------------------------------------------------------
      */
 
-private isHlslSemantic(word: string): boolean {
-    // HLSL semantic は大文字表記だけを対象にする。
-    // "position" のような通常の変数名・field 名は semantic として扱わない。
-    if (word !== word.toUpperCase()) {
-        return false;
-    }
+    private isHlslSemantic(word: string): boolean {
+        // HLSL semantic は大文字表記だけを対象にする。
+        // "position" のような通常の変数名・field 名は semantic として扱わない。
+        if (word !== word.toUpperCase()) {
+            return false;
+        }
 
-    return (
-        /^SV_[A-Z0-9_]+$/.test(word) ||
-        /^POSITION\d*$/.test(word) ||
-        /^NORMAL\d*$/.test(word) ||
-        /^TANGENT\d*$/.test(word) ||
-        /^BINORMAL\d*$/.test(word) ||
-        /^BLENDINDICES\d*$/.test(word) ||
-        /^BLENDWEIGHT\d*$/.test(word) ||
-        /^TEXCOORD\d*$/.test(word) ||
-        /^COLOR\d*$/.test(word) ||
-        /^PSIZE\d*$/.test(word) ||
-        /^FOG\d*$/.test(word)
-    );
-}
+        return (
+            /^SV_[A-Z0-9_]+$/.test(word) ||
+            /^POSITION\d*$/.test(word) ||
+            /^NORMAL\d*$/.test(word) ||
+            /^TANGENT\d*$/.test(word) ||
+            /^BINORMAL\d*$/.test(word) ||
+            /^BLENDINDICES\d*$/.test(word) ||
+            /^BLENDWEIGHT\d*$/.test(word) ||
+            /^TEXCOORD\d*$/.test(word) ||
+            /^COLOR\d*$/.test(word) ||
+            /^PSIZE\d*$/.test(word) ||
+            /^FOG\d*$/.test(word)
+        );
+    }
     /*
      * -------------------------------------------------------------
      * HLSL Swizzle

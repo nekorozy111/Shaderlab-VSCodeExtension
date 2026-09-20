@@ -24,7 +24,9 @@ import {
 } from "./symbol/symbol";
 
 import { DefinitionProvider } from "./language/definitionProvider";
-
+import {
+    HoverProvider
+} from "./language/hoverProvider";
 const connection =
     createConnection(
         ProposedFeatures.all
@@ -41,6 +43,12 @@ const documentManager =
     const definitionProvider =
     new DefinitionProvider(
         documentManager
+    );
+
+const hoverProvider =
+    new HoverProvider(
+        documentManager,
+        definitionProvider
     );
 
 connection.onInitialize((params) => {
@@ -83,7 +91,13 @@ connection.onDefinition(
         );
     }
 );
+connection.onHover((params) => {
 
+    return hoverProvider.provideHover(
+        params.textDocument.uri,
+        params.position
+    );
+});
 documents.onDidOpen(
     event => {
 
