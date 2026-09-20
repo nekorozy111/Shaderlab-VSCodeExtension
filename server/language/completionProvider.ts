@@ -150,10 +150,20 @@ export class CompletionProvider {
          *
          * Prefer symbols from the current file.
          */
+        const relatedUris =
+            this.documentManager
+                .getRelatedIncludeUris(uri);
+
         const matches =
             this.documentManager
                 .getWorkspaceIndex()
-                .findPrefix(word);
+                .findPrefix(word)
+                .filter(
+                    match =>
+                        relatedUris.has(
+                            match.uri
+                        )
+                );
 
         const currentUri =
             uri;
@@ -330,116 +340,84 @@ export class CompletionProvider {
         }
     }
 
-private provideMemberCompletion(
-    uri: string,
-    objectName: string,
-    prefix: string,
-    offset: number
-): CompletionItem[] {
-    const index =
-        this.documentManager
-            .getWorkspaceIndex();
+    private provideMemberCompletion(
+        uri: string,
+        objectName: string,
+        prefix: string,
+        offset: number
+    ): CompletionItem[] {
+        const index =
+            this.documentManager
+                .getWorkspaceIndex();
 
-    let typeName:
-        string | undefined;
-
-    /*
-     * ============================================================
-     * 1. 現在位置のローカル変数を探す
-     * ============================================================
-     *
-     * 例:
-     *
-     * Varyings output;
-     *
-     * output.
-     *
-     * → output = Varyings
-     */
-    const localVariable =
-        this.findLocalVariableDeclaration(
-            uri,
-            objectName,
-            offset
-        );
-
-    if (localVariable) {
-        typeName =
-            localVariable.typeName;
-
-        console.log(
-            `[CompletionProvider] ` +
-            `Local variable resolved: ` +
-            `${objectName} -> ${typeName}`
-        );
-    }
-
-    /*
-     * ============================================================
-     * 2. WorkspaceIndex から探す
-     * ============================================================
-     *
-     * local variable が見つからない場合、
-     * parameter / variable を探す。
-     *
-     * これで input. も従来通り動く。
-     */
-    if (!typeName) {
-        const objectMatches =
-            index.findExact(
-                objectName
-            );
+        let typeName:
+            string | undefined;
 
         /*
-         * 現在のファイルを優先。
+         * ============================================================
+         * 1. 現在位置のローカル変数を探す
+         * ============================================================
+         *
+         * 例:
+         *
+         * Varyings output;
+         *
+         * output.
+         *
+         * → output = Varyings
          */
-        for (
-            const match
-            of objectMatches
-        ) {
-            if (
-                match.uri !== uri
-            ) {
-                continue;
-            }
+        const localVariable =
+            this.findLocalVariableDeclaration(
+                uri,
+                objectName,
+                offset
+            );
 
-            if (
-                match.symbol.kind !==
-                    "variable" &&
-                match.symbol.kind !==
-                    "parameter"
-            ) {
-                continue;
-            }
-
+        if (localVariable) {
             typeName =
-                match.symbol.typeName;
+                localVariable.typeName;
 
-            if (typeName) {
-                console.log(
-                    `[CompletionProvider] ` +
-                    `Indexed object resolved: ` +
-                    `${objectName} -> ${typeName}`
-                );
-
-                break;
-            }
+            console.log(
+                `[CompletionProvider] ` +
+                `Local variable resolved: ` +
+                `${objectName} -> ${typeName}`
+            );
         }
 
         /*
-         * 現在のファイルになければ
-         * Workspace 全体から探す。
+         * ============================================================
+         * 2. WorkspaceIndex から探す
+         * ============================================================
+         *
+         * local variable が見つからない場合、
+         * parameter / variable を探す。
+         *
+         * これで input. も従来通り動く。
          */
         if (!typeName) {
+            const objectMatches =
+                index.findExact(
+                    objectName
+                );
+
+            /*
+             * 現在のファイルを優先。
+             */
             for (
                 const match
                 of objectMatches
             ) {
                 if (
+                    match.uri !== uri
+                ) {
+                    continue;
+                }
+
+                if (
                     match.symbol.kind !==
-                        "variable" &&
+                    "variable" &&
                     match.symbol.kind !==
-                        "parameter"
+                    "parameter"
                 ) {
                     continue;
                 }
@@ -450,391 +428,432 @@ private provideMemberCompletion(
                 if (typeName) {
                     console.log(
                         `[CompletionProvider] ` +
-                        `Workspace object resolved: ` +
+                        `Indexed object resolved: ` +
                         `${objectName} -> ${typeName}`
                     );
 
                     break;
                 }
             }
-        }
-    }
 
-    /*
-     * ============================================================
-     * 3. 型が見つからなければ終了
-     * ============================================================
-     */
-    if (!typeName) {
-        console.log(
-            `[CompletionProvider] ` +
-            `Object not found: ${objectName}`
-        );
+            /*
+             * 現在のファイルになければ
+             * Workspace 全体から探す。
+             */
+            if (!typeName) {
+                for (
+                    const match
+                    of objectMatches
+                ) {
+                    if (
+                        match.symbol.kind !==
+                        "variable" &&
+                        match.symbol.kind !==
+                        "parameter"
+                    ) {
+                        continue;
+                    }
 
-        return [];
-    }
+                    typeName =
+                        match.symbol.typeName;
 
-    console.log(
-        `[CompletionProvider] ` +
-        `Resolving members of type: ` +
-        `${typeName}`
-    );
+                    if (typeName) {
+                        console.log(
+                            `[CompletionProvider] ` +
+                            `Workspace object resolved: ` +
+                            `${objectName} -> ${typeName}`
+                        );
 
-    /*
-     * ============================================================
-     * 4. 型名から struct / cbuffer を探す
-     * ============================================================
-     */
-    const typeMatches =
-        index.findExact(
-            typeName
-        );
-
-    const items:
-        CompletionItem[] = [];
-
-    const seen =
-        new Set<string>();
-
-    for (
-        const match
-        of typeMatches
-    ) {
-        const symbol =
-            match.symbol;
-
-        if (
-            symbol.kind !== "struct" &&
-            symbol.kind !== "cbuffer"
-        ) {
-            continue;
+                        break;
+                    }
+                }
+            }
         }
 
         /*
-         * struct / cbuffer の children が
-         * field になっている。
+         * ============================================================
+         * 3. 型が見つからなければ終了
+         * ============================================================
          */
+        if (!typeName) {
+            console.log(
+                `[CompletionProvider] ` +
+                `Object not found: ${objectName}`
+            );
+
+            return [];
+        }
+
+        console.log(
+            `[CompletionProvider] ` +
+            `Resolving members of type: ` +
+            `${typeName}`
+        );
+
+        /*
+         * ============================================================
+         * 4. 型名から struct / cbuffer を探す
+         * ============================================================
+         */
+        const relatedUris =
+            this.documentManager
+                .getRelatedIncludeUris(uri);
+
+        const typeMatches =
+            index
+                .findExact(typeName)
+                .filter(
+                    match =>
+                        relatedUris.has(
+                            match.uri
+                        )
+                );
+
+        const items:
+            CompletionItem[] = [];
+
+        const seen =
+            new Set<string>();
+
         for (
-            const field
-            of symbol.children
+            const match
+            of typeMatches
         ) {
+            const symbol =
+                match.symbol;
+
             if (
-                field.kind !== "field"
+                symbol.kind !== "struct" &&
+                symbol.kind !== "cbuffer"
             ) {
                 continue;
             }
 
             /*
-             * prefix がある場合は
-             * field 名でフィルタする。
-             *
-             * 例:
-             *
-             * output.po
-             *
-             * → positionCS
+             * struct / cbuffer の children が
+             * field になっている。
              */
-            if (
-                prefix.length > 0 &&
-                !field.name
-                    .toLowerCase()
-                    .startsWith(
-                        prefix.toLowerCase()
-                    )
+            for (
+                const field
+                of symbol.children
             ) {
-                continue;
+                if (
+                    field.kind !== "field"
+                ) {
+                    continue;
+                }
+
+                /*
+                 * prefix がある場合は
+                 * field 名でフィルタする。
+                 *
+                 * 例:
+                 *
+                 * output.po
+                 *
+                 * → positionCS
+                 */
+                if (
+                    prefix.length > 0 &&
+                    !field.name
+                        .toLowerCase()
+                        .startsWith(
+                            prefix.toLowerCase()
+                        )
+                ) {
+                    continue;
+                }
+
+                if (
+                    seen.has(field.name)
+                ) {
+                    continue;
+                }
+
+                seen.add(
+                    field.name
+                );
+
+                items.push({
+                    label:
+                        field.name,
+
+                    kind:
+                        CompletionItemKind.Field,
+
+                    detail:
+                        field.typeName
+                            ? `${this.completionSource} • ` +
+                            `field: ${field.typeName}`
+                            : `${this.completionSource} • ` +
+                            `HLSL field`
+                });
             }
-
-            if (
-                seen.has(field.name)
-            ) {
-                continue;
-            }
-
-            seen.add(
-                field.name
-            );
-
-            items.push({
-                label:
-                    field.name,
-
-                kind:
-                    CompletionItemKind.Field,
-
-                detail:
-                    field.typeName
-                        ? `${this.completionSource} • ` +
-                          `field: ${field.typeName}`
-                        : `${this.completionSource} • ` +
-                          `HLSL field`
-            });
         }
-    }
 
-    console.log(
-        `[CompletionProvider] ` +
-        `Member candidates: ${items.length}`
-    );
-
-    return items;
-}
-
-
-private findLocalVariableDeclaration(
-    uri: string,
-    variableName: string,
-    offset: number
-): {
-    name: string;
-    typeName: string;
-    range: {
-        start: {
-            line: number;
-            character: number;
-            offset: number;
-        };
-        end: {
-            line: number;
-            character: number;
-            offset: number;
-        };
-    };
-} | null {
-    const document =
-        this.documentManager.get(uri);
-
-    if (!document) {
-        return null;
-    }
-
-    const source =
-        document.getText();
-
-    const safeOffset =
-        Math.max(
-            0,
-            Math.min(
-                offset,
-                source.length
-            )
-        );
-
-    /*
-     * カーソルより前だけを検索する。
-     */
-    const beforeCursor =
-        source.substring(
-            0,
-            safeOffset
-        );
-
-    /*
-     * コメントを除去する。
-     *
-     * 改行・文字数は維持する。
-     */
-    const cleanSource =
-        this.maskComments(
-            beforeCursor
-        );
-
-    const escapedName =
-        variableName.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-        );
-
-    /*
-     * 例:
-     *
-     * A a;
-     * B b;
-     * Varyings output;
-     * Varyings output = ...;
-     * float3 position;
-     */
-    const pattern =
-        new RegExp(
-            `\\b([A-Za-z_][A-Za-z0-9_]*)\\s+` +
-            `${escapedName}\\s*` +
-            `(?:;|=|\\[|,)`,
-            "g"
-        );
-
-    let lastMatch:
-        RegExpExecArray | null = null;
-
-    let match:
-        RegExpExecArray | null;
-
-    while (
-        (match = pattern.exec(cleanSource))
-        !== null
-    ) {
-        lastMatch = match;
-    }
-
-    if (!lastMatch) {
         console.log(
             `[CompletionProvider] ` +
-            `Local declaration not found: ` +
-            `${variableName}`
+            `Member candidates: ${items.length}`
         );
 
-        return null;
+        return items;
     }
 
-    const typeName =
-        lastMatch[1];
 
-    const declarationStart =
-        lastMatch.index;
+    private findLocalVariableDeclaration(
+        uri: string,
+        variableName: string,
+        offset: number
+    ): {
+        name: string;
+        typeName: string;
+        range: {
+            start: {
+                line: number;
+                character: number;
+                offset: number;
+            };
+            end: {
+                line: number;
+                character: number;
+                offset: number;
+            };
+        };
+    } | null {
+        const document =
+            this.documentManager.get(uri);
 
-    const declarationEnd =
-        declarationStart +
-        lastMatch[0].length;
+        if (!document) {
+            return null;
+        }
 
-    const startPosition =
-        document.positionAt(
-            declarationStart
-        );
+        const source =
+            document.getText();
 
-    const endPosition =
-        document.positionAt(
-            declarationEnd
-        );
+        const safeOffset =
+            Math.max(
+                0,
+                Math.min(
+                    offset,
+                    source.length
+                )
+            );
 
-    const range = {
-        start: {
-            line:
-                startPosition.line,
-            character:
-                startPosition.character,
-            offset:
+        /*
+         * カーソルより前だけを検索する。
+         */
+        const beforeCursor =
+            source.substring(
+                0,
+                safeOffset
+            );
+
+        /*
+         * コメントを除去する。
+         *
+         * 改行・文字数は維持する。
+         */
+        const cleanSource =
+            this.maskComments(
+                beforeCursor
+            );
+
+        const escapedName =
+            variableName.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
+            );
+
+        /*
+         * 例:
+         *
+         * A a;
+         * B b;
+         * Varyings output;
+         * Varyings output = ...;
+         * float3 position;
+         */
+        const pattern =
+            new RegExp(
+                `\\b([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+                `${escapedName}\\s*` +
+                `(?:;|=|\\[|,)`,
+                "g"
+            );
+
+        let lastMatch:
+            RegExpExecArray | null = null;
+
+        let match:
+            RegExpExecArray | null;
+
+        while (
+            (match = pattern.exec(cleanSource))
+            !== null
+        ) {
+            lastMatch = match;
+        }
+
+        if (!lastMatch) {
+            console.log(
+                `[CompletionProvider] ` +
+                `Local declaration not found: ` +
+                `${variableName}`
+            );
+
+            return null;
+        }
+
+        const typeName =
+            lastMatch[1];
+
+        const declarationStart =
+            lastMatch.index;
+
+        const declarationEnd =
+            declarationStart +
+            lastMatch[0].length;
+
+        const startPosition =
+            document.positionAt(
                 declarationStart
-        },
+            );
 
-        end: {
-            line:
-                endPosition.line,
-            character:
-                endPosition.character,
-            offset:
+        const endPosition =
+            document.positionAt(
                 declarationEnd
-        }
-    };
+            );
 
-    console.log(
-        `[CompletionProvider] ` +
-        `Local declaration found: ` +
-        `${variableName}: ${typeName}`
-    );
+        const range = {
+            start: {
+                line:
+                    startPosition.line,
+                character:
+                    startPosition.character,
+                offset:
+                    declarationStart
+            },
 
-    return {
-        name: variableName,
-        typeName,
-        range
-    };
-}
+            end: {
+                line:
+                    endPosition.line,
+                character:
+                    endPosition.character,
+                offset:
+                    declarationEnd
+            }
+        };
 
-private maskComments(
-    source: string
-): string {
-    let result = "";
-    let i = 0;
+        console.log(
+            `[CompletionProvider] ` +
+            `Local declaration found: ` +
+            `${variableName}: ${typeName}`
+        );
 
-    let inBlockComment = false;
-    let inLineComment = false;
-
-    while (i < source.length) {
-        const current =
-            source[i];
-
-        const next =
-            i + 1 < source.length
-                ? source[i + 1]
-                : "";
-
-        /*
-         * // コメント
-         */
-        if (!inBlockComment &&
-            !inLineComment &&
-            current === "/" &&
-            next === "/") {
-            result += " ";
-            result += " ";
-            i += 2;
-            inLineComment = true;
-            continue;
-        }
-
-        /*
-         * /* コメント開始
-         */
-        if (!inLineComment &&
-            !inBlockComment &&
-            current === "/" &&
-            next === "*") {
-            result += " ";
-            result += " ";
-            i += 2;
-            inBlockComment = true;
-            continue;
-        }
-
-        /*
-         * 行コメント終了
-         */
-        if (
-            inLineComment &&
-            current === "\n"
-        ) {
-            result += "\n";
-            i++;
-            inLineComment = false;
-            continue;
-        }
-
-        /*
-         * ブロックコメント終了
-         */
-        if (
-            inBlockComment &&
-            current === "*" &&
-            next === "/"
-        ) {
-            result += " ";
-            result += " ";
-            i += 2;
-            inBlockComment = false;
-            continue;
-        }
-
-        /*
-         * コメント内部は空白にする。
-         * 改行だけは維持する。
-         */
-        if (
-            inLineComment ||
-            inBlockComment
-        ) {
-            result +=
-                current === "\n"
-                    ? "\n"
-                    : " ";
-
-            i++;
-            continue;
-        }
-
-        result += current;
-        i++;
+        return {
+            name: variableName,
+            typeName,
+            range
+        };
     }
 
-    return result;
-}
+    private maskComments(
+        source: string
+    ): string {
+        let result = "";
+        let i = 0;
+
+        let inBlockComment = false;
+        let inLineComment = false;
+
+        while (i < source.length) {
+            const current =
+                source[i];
+
+            const next =
+                i + 1 < source.length
+                    ? source[i + 1]
+                    : "";
+
+            /*
+             * // コメント
+             */
+            if (!inBlockComment &&
+                !inLineComment &&
+                current === "/" &&
+                next === "/") {
+                result += " ";
+                result += " ";
+                i += 2;
+                inLineComment = true;
+                continue;
+            }
+
+            /*
+             * /* コメント開始
+             */
+            if (!inLineComment &&
+                !inBlockComment &&
+                current === "/" &&
+                next === "*") {
+                result += " ";
+                result += " ";
+                i += 2;
+                inBlockComment = true;
+                continue;
+            }
+
+            /*
+             * 行コメント終了
+             */
+            if (
+                inLineComment &&
+                current === "\n"
+            ) {
+                result += "\n";
+                i++;
+                inLineComment = false;
+                continue;
+            }
+
+            /*
+             * ブロックコメント終了
+             */
+            if (
+                inBlockComment &&
+                current === "*" &&
+                next === "/"
+            ) {
+                result += " ";
+                result += " ";
+                i += 2;
+                inBlockComment = false;
+                continue;
+            }
+
+            /*
+             * コメント内部は空白にする。
+             * 改行だけは維持する。
+             */
+            if (
+                inLineComment ||
+                inBlockComment
+            ) {
+                result +=
+                    current === "\n"
+                        ? "\n"
+                        : " ";
+
+                i++;
+                continue;
+            }
+
+            result += current;
+            i++;
+        }
+
+        return result;
+    }
 
     private positionFromOffset(
         text: string,
@@ -1074,7 +1093,6 @@ private maskComments(
         };
 
     }
-
 
     private getWordBeforeCursor(
         text: string,
