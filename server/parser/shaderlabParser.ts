@@ -175,7 +175,7 @@ export class ShaderLabParser {
 
         const closingBrace =
             this.tokens[
-                closingIndex
+            closingIndex
             ];
 
         const contentStart =
@@ -205,98 +205,150 @@ export class ShaderLabParser {
         return result;
     }
 
-    private parsePropertyText(
-        text: string,
-        baseOffset: number
-    ): ShaderPropertyNode[] {
+private parsePropertyText(
+    text: string,
+    baseOffset: number
+): ShaderPropertyNode[] {
+    const result:
+        ShaderPropertyNode[] = [];
 
-        const result:
-            ShaderPropertyNode[] = [];
+    /*
+     * Unity ShaderLab Property:
+     *
+     *   _Name ("Display Name", Type) = Default
+     *
+     *   [Attribute] _Name ("Display Name", Type) = Default
+     *
+     * Type can contain parentheses, for example:
+     *
+     *   Range(0, 1)
+     *   Range(0, 8)
+     *
+     * Default value can also contain arbitrary characters:
+     *
+     *   (1,1,1,1)
+     *   "white"
+     *   0
+     *   1
+     *
+     * Therefore, parsing the whole line with a single
+     * greedy regex is fragile.
+     */
 
-        const lineRegex =
-            /(?:\[((?:[^\]])+)\]\s*)*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*"([^"]*)"\s*,\s*([^)]+)\)\s*=\s*([^\r\n]+)/g;
+    const lines =
+        text.split(/\r?\n/);
 
-        let match:
-            RegExpExecArray |
-            null;
+    let offset = 0;
 
-        while (
-            (
-                match =
-                    lineRegex.exec(text)
-            ) !== null
-        ) {
+    for (const line of lines) {
+        const lineStartOffset =
+            baseOffset + offset;
 
-            const fullText =
-                match[0];
+        const trimmed =
+            line.trim();
 
-            const attributesText =
-                match[1];
-
-            const name =
-                match[2];
-
-            const displayName =
-                match[3];
-
-            const propertyType =
-                match[4].trim();
-
-            const defaultValue =
-                match[5].trim();
-
-            const attributes =
-                attributesText !== undefined
-                    ? attributesText
-                        .split(",")
-                        .map(
-                            value =>
-                                value.trim()
-                        )
-                        .filter(
-                            value =>
-                                value.length > 0
-                        )
-                    : [];
-
-            const startOffset =
-                baseOffset +
-                match.index;
-
-            const endOffset =
-                startOffset +
-                fullText.length;
-
-            result.push({
-                kind:
-                    "ShaderProperty",
-
-                name,
-
-                displayName,
-
-                propertyType,
-
-                defaultValue,
-
-                attributes,
-
-                range: {
-                    start:
-                        this.positionFromOffset(
-                            startOffset
-                        ),
-
-                    end:
-                        this.positionFromOffset(
-                            endOffset
-                        )
-                }
-            });
+        if (trimmed.length === 0) {
+            offset += line.length + 1;
+            continue;
         }
 
-        return result;
+        /*
+         * Match:
+         *
+         *   [Attribute] _Name ("Display Name", Type) = Default
+         *
+         * Attribute is optional.
+         */
+        const match = line.match(
+            /^\s*(?:\[([^\]]+)\]\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*"([^"]*)"\s*,\s*(.+?)\s*\)\s*=\s*(.+?)\s*$/
+        );
+
+        if (!match) {
+            offset += line.length + 1;
+            continue;
+        }
+
+        const attributesText =
+            match[1];
+
+        const name =
+            match[2];
+
+        const displayName =
+            match[3];
+
+        const propertyType =
+            match[4].trim();
+
+        const defaultValue =
+            match[5].trim();
+
+        const attributes =
+            attributesText !== undefined
+                ? attributesText
+                    .split(",")
+                    .map(
+                        value =>
+                            value.trim()
+                    )
+                    .filter(
+                        value =>
+                            value.length > 0
+                    )
+                : [];
+
+        /*
+         * Find the actual property start.
+         *
+         * We do not use the whole trimmed line because
+         * the range should include an optional attribute.
+         */
+        const leadingWhitespaceLength =
+            line.length -
+            line.trimStart().length;
+
+        const startOffset =
+            lineStartOffset +
+            leadingWhitespaceLength;
+
+        const endOffset =
+            lineStartOffset +
+            line.length;
+
+        result.push({
+            kind:
+                "ShaderProperty",
+
+            name,
+
+            displayName,
+
+            propertyType,
+
+            defaultValue,
+
+            attributes,
+
+            range: {
+                start:
+                    this.positionFromOffset(
+                        startOffset
+                    ),
+
+                end:
+                    this.positionFromOffset(
+                        endOffset
+                    )
+            }
+        });
+
+        offset +=
+            line.length + 1;
     }
+
+    return result;
+}
+
 
     private parseSubShader():
         ShaderSubShaderNode |
@@ -619,9 +671,9 @@ export class ShaderLabParser {
 
         if (
             blockType !==
-                "HLSLPROGRAM" &&
+            "HLSLPROGRAM" &&
             blockType !==
-                "HLSLINCLUDE"
+            "HLSLINCLUDE"
         ) {
             return undefined;
         }
@@ -652,50 +704,46 @@ export class ShaderLabParser {
                         contentEnd
                     );
 
-const localAst =
-    new HlslParser(
-        source
-    ).parse();
+                const localAst =
+                    new HlslParser(
+                        source
+                    ).parse();
 
-console.log(
-    `[ShaderLabParser] HLSL block: ${blockType}`
-);
+                console.log(
+                    `[ShaderLabParser] HLSL block: ${blockType}`
+                );
 
-console.log(
-    `[ShaderLabParser] HLSL source contains #include: ${
-        source.includes("#include")
-    }`
-);
+                console.log(
+                    `[ShaderLabParser] HLSL source contains #include: ${source.includes("#include")
+                    }`
+                );
 
-console.log(
-    `[ShaderLabParser] HLSL declarations: ${
-        localAst.declarations.length
-    }`
-);
+                console.log(
+                    `[ShaderLabParser] HLSL declarations: ${localAst.declarations.length
+                    }`
+                );
 
-console.log(
-    `[ShaderLabParser] HLSL declaration kinds: ${
-        localAst.declarations
-            .map(declaration => declaration.kind)
-            .join(", ")
-    }`
-);
+                console.log(
+                    `[ShaderLabParser] HLSL declaration kinds: ${localAst.declarations
+                        .map(declaration => declaration.kind)
+                        .join(", ")
+                    }`
+                );
 
-console.log(
-    `[ShaderLabParser] HLSL includes: ${
-        localAst.declarations
-            .filter(
-                declaration =>
-                    declaration.kind ===
-                    "HlslInclude"
-            )
-            .map(
-                declaration =>
-                    declaration.path
-            )
-            .join(", ")
-    }`
-);
+                console.log(
+                    `[ShaderLabParser] HLSL includes: ${localAst.declarations
+                        .filter(
+                            declaration =>
+                                declaration.kind ===
+                                "HlslInclude"
+                        )
+                        .map(
+                            declaration =>
+                                declaration.path
+                        )
+                        .join(", ")
+                    }`
+                );
 
                 const hlsl =
                     this.shiftHlslDocument(
@@ -780,10 +828,10 @@ console.log(
             range:
                 {
                     start:
-                        SourcePosition;
+                    SourcePosition;
 
                     end:
-                        SourcePosition;
+                    SourcePosition;
                 }
         ) => {
 
@@ -880,7 +928,7 @@ console.log(
                 openingBraceIndex;
 
             index <
-                this.tokens.length;
+            this.tokens.length;
 
             index++
         ) {
