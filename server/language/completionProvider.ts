@@ -125,32 +125,32 @@ export class CompletionProvider {
         }
 
         const builtinSemantics =
-    this.getBuiltinSemantics();
+            this.getBuiltinSemantics();
 
-for (const semantic of builtinSemantics) {
-    if (
-        semantic
-            .toLowerCase()
-            .startsWith(
-                word.toLowerCase()
-            )
-    ) {
-        result.push({
-            label: semantic,
-            kind: CompletionItemKind.Keyword,
-            detail:
-                "HLSL Semantic",
-            documentation:
-                `${semantic} semantic`,
-            sortText:
-                `2_${semantic}`,
-            data: {
-                source:
-                    this.completionSource
+        for (const semantic of builtinSemantics) {
+            if (
+                semantic
+                    .toLowerCase()
+                    .startsWith(
+                        word.toLowerCase()
+                    )
+            ) {
+                result.push({
+                    label: semantic,
+                    kind: CompletionItemKind.Keyword,
+                    detail:
+                        "HLSL Semantic",
+                    documentation:
+                        `${semantic} semantic`,
+                    sortText:
+                        `2_${semantic}`,
+                    data: {
+                        source:
+                            this.completionSource
+                    }
+                });
             }
-        });
-    }
-}
+        }
 
         /*
          * Workspace symbols
@@ -175,8 +175,8 @@ for (const semantic of builtinSemantics) {
                 );
 
         this.addSymbolCompletions(
-            matches,
             result,
+            matches,
             new Set<string>()
         );
 
@@ -184,31 +184,39 @@ for (const semantic of builtinSemantics) {
     }
 
     private addSymbolCompletions(
-        matches: Array<{
-            symbol: ShaderSymbol;
-            uri: string;
-        }>,
-        items: CompletionItem[],
+        result: CompletionItem[],
+        matches: any[],
         seen: Set<string>
     ): void {
-        for (
-            const match
-            of matches
-        ) {
+
+        for (const match of matches) {
+
             const symbol =
                 match.symbol;
 
-            if (
-                seen.has(symbol.name)
-            ) {
+            if (!symbol) {
                 continue;
             }
 
-            seen.add(symbol.name);
+            const name =
+                symbol.name;
 
-            items.push({
-                label:
-                    symbol.name,
+            if (!name) {
+                continue;
+            }
+
+            /*
+             * 同じ名前の Completion は
+             * 1件だけ表示する。
+             */
+            if (seen.has(name)) {
+                continue;
+            }
+
+            seen.add(name);
+
+            result.push({
+                label: name,
 
                 kind:
                     this.getCompletionKind(
@@ -216,11 +224,20 @@ for (const semantic of builtinSemantics) {
                     ),
 
                 detail:
-                    `${this.completionSource} • ` +
                     this.getSymbolDetail(
                         symbol
-                    )
+                    ),
 
+                documentation: {
+                    kind: "markdown",
+                    value:
+                        this.getSymbolDocumentation(
+                            symbol
+                        )
+                },
+
+                sortText:
+                    `3_${name}`
             });
         }
     }
@@ -1212,6 +1229,47 @@ for (const semantic of builtinSemantics) {
             prefix
         };
 
+    }
+
+    private getSymbolDocumentation(
+        symbol: ShaderSymbol
+    ): string {
+
+        const lines: string[] = [];
+
+        lines.push(
+            `**${symbol.kind}**`
+        );
+
+        lines.push(
+            `\`${symbol.name}\``
+        );
+
+        if (symbol.typeName) {
+            lines.push(
+                `Type: \`${symbol.typeName}\``
+            );
+        }
+
+        if (symbol.returnType) {
+            lines.push(
+                `Return type: \`${symbol.returnType}\``
+            );
+        }
+
+        if (symbol.semantic) {
+            lines.push(
+                `Semantic: \`${symbol.semantic}\``
+            );
+        }
+
+        if (symbol.parentName) {
+            lines.push(
+                `Parent: \`${symbol.parentName}\``
+            );
+        }
+
+        return lines.join("\n\n");
     }
 
     private getWordBeforeCursor(
