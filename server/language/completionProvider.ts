@@ -62,6 +62,20 @@ export class CompletionProvider {
                 offset
             );
 
+        if (
+            !this.isInsideHlslContext(
+                text,
+                offset
+            )
+        ) {
+            console.log(
+                `[CompletionProvider] ` +
+                `Outside HLSL context -> no completion`
+            );
+
+            return [];
+        }
+
         console.log(
             `[CompletionProvider] ` +
             `Request "${word}"`
@@ -395,10 +409,19 @@ export class CompletionProvider {
          * これで input. も従来通り動く。
          */
         if (!typeName) {
+            const relatedUris =
+                this.documentManager
+                    .getRelatedIncludeUris(uri);
+
             const objectMatches =
-                index.findExact(
-                    objectName
-                );
+                index
+                    .findExact(objectName)
+                    .filter(
+                        match =>
+                            relatedUris.has(
+                                match.uri
+                            )
+                    );
 
             /*
              * 現在のファイルを優先。
@@ -1121,6 +1144,69 @@ export class CompletionProvider {
             offset
         );
     }
+
+private isInsideHlslContext(
+    text: string,
+    offset: number
+): boolean {
+    const beforeCursor =
+        text.substring(
+            0,
+            Math.max(
+                0,
+                Math.min(
+                    offset,
+                    text.length
+                )
+            )
+        );
+
+    const hlslStart =
+        beforeCursor.lastIndexOf(
+            "HLSLPROGRAM"
+        );
+
+    const hlslEnd =
+        beforeCursor.lastIndexOf(
+            "ENDHLSL"
+        );
+
+    const cgStart =
+        beforeCursor.lastIndexOf(
+            "CGPROGRAM"
+        );
+
+    const cgEnd =
+        beforeCursor.lastIndexOf(
+            "ENDCG"
+        );
+
+    const hlslIncludeStart =
+        beforeCursor.lastIndexOf(
+            "HLSLINCLUDE"
+        );
+
+    const hlslIncludeEnd =
+        beforeCursor.lastIndexOf(
+            "ENDHLSL"
+        );
+
+    const insideHlslProgram =
+        hlslStart > hlslEnd;
+
+    const insideCgProgram =
+        cgStart > cgEnd;
+
+    const insideHlslInclude =
+        hlslIncludeStart >
+        hlslIncludeEnd;
+
+    return (
+        insideHlslProgram ||
+        insideCgProgram ||
+        insideHlslInclude
+    );
+}
 
     private getBuiltinTypes():
         string[] {

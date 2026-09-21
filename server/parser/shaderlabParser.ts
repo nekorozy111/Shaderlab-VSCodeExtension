@@ -205,149 +205,149 @@ export class ShaderLabParser {
         return result;
     }
 
-private parsePropertyText(
-    text: string,
-    baseOffset: number
-): ShaderPropertyNode[] {
-    const result:
-        ShaderPropertyNode[] = [];
-
-    /*
-     * Unity ShaderLab Property:
-     *
-     *   _Name ("Display Name", Type) = Default
-     *
-     *   [Attribute] _Name ("Display Name", Type) = Default
-     *
-     * Type can contain parentheses, for example:
-     *
-     *   Range(0, 1)
-     *   Range(0, 8)
-     *
-     * Default value can also contain arbitrary characters:
-     *
-     *   (1,1,1,1)
-     *   "white"
-     *   0
-     *   1
-     *
-     * Therefore, parsing the whole line with a single
-     * greedy regex is fragile.
-     */
-
-    const lines =
-        text.split(/\r?\n/);
-
-    let offset = 0;
-
-    for (const line of lines) {
-        const lineStartOffset =
-            baseOffset + offset;
-
-        const trimmed =
-            line.trim();
-
-        if (trimmed.length === 0) {
-            offset += line.length + 1;
-            continue;
-        }
+    private parsePropertyText(
+        text: string,
+        baseOffset: number
+    ): ShaderPropertyNode[] {
+        const result:
+            ShaderPropertyNode[] = [];
 
         /*
-         * Match:
+         * Unity ShaderLab Property:
+         *
+         *   _Name ("Display Name", Type) = Default
          *
          *   [Attribute] _Name ("Display Name", Type) = Default
          *
-         * Attribute is optional.
+         * Type can contain parentheses, for example:
+         *
+         *   Range(0, 1)
+         *   Range(0, 8)
+         *
+         * Default value can also contain arbitrary characters:
+         *
+         *   (1,1,1,1)
+         *   "white"
+         *   0
+         *   1
+         *
+         * Therefore, parsing the whole line with a single
+         * greedy regex is fragile.
          */
-        const match = line.match(
-            /^\s*(?:\[([^\]]+)\]\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*"([^"]*)"\s*,\s*(.+?)\s*\)\s*=\s*(.+?)\s*$/
-        );
 
-        if (!match) {
-            offset += line.length + 1;
-            continue;
+        const lines =
+            text.split(/\r?\n/);
+
+        let offset = 0;
+
+        for (const line of lines) {
+            const lineStartOffset =
+                baseOffset + offset;
+
+            const trimmed =
+                line.trim();
+
+            if (trimmed.length === 0) {
+                offset += line.length + 1;
+                continue;
+            }
+
+            /*
+             * Match:
+             *
+             *   [Attribute] _Name ("Display Name", Type) = Default
+             *
+             * Attribute is optional.
+             */
+            const match = line.match(
+                /^\s*(?:\[([^\]]+)\]\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*"([^"]*)"\s*,\s*(.+?)\s*\)\s*=\s*(.+?)\s*$/
+            );
+
+            if (!match) {
+                offset += line.length + 1;
+                continue;
+            }
+
+            const attributesText =
+                match[1];
+
+            const name =
+                match[2];
+
+            const displayName =
+                match[3];
+
+            const propertyType =
+                match[4].trim();
+
+            const defaultValue =
+                match[5].trim();
+
+            const attributes =
+                attributesText !== undefined
+                    ? attributesText
+                        .split(",")
+                        .map(
+                            value =>
+                                value.trim()
+                        )
+                        .filter(
+                            value =>
+                                value.length > 0
+                        )
+                    : [];
+
+            /*
+             * Find the actual property start.
+             *
+             * We do not use the whole trimmed line because
+             * the range should include an optional attribute.
+             */
+            const leadingWhitespaceLength =
+                line.length -
+                line.trimStart().length;
+
+            const startOffset =
+                lineStartOffset +
+                leadingWhitespaceLength;
+
+            const endOffset =
+                lineStartOffset +
+                line.length;
+
+            result.push({
+                kind:
+                    "ShaderProperty",
+
+                name,
+
+                displayName,
+
+                propertyType,
+
+                defaultValue,
+
+                attributes,
+
+                range: {
+                    start:
+                        this.positionFromOffset(
+                            startOffset
+                        ),
+
+                    end:
+                        this.positionFromOffset(
+                            endOffset
+                        )
+                }
+            });
+
+            offset +=
+                line.length + 1;
         }
 
-        const attributesText =
-            match[1];
-
-        const name =
-            match[2];
-
-        const displayName =
-            match[3];
-
-        const propertyType =
-            match[4].trim();
-
-        const defaultValue =
-            match[5].trim();
-
-        const attributes =
-            attributesText !== undefined
-                ? attributesText
-                    .split(",")
-                    .map(
-                        value =>
-                            value.trim()
-                    )
-                    .filter(
-                        value =>
-                            value.length > 0
-                    )
-                : [];
-
-        /*
-         * Find the actual property start.
-         *
-         * We do not use the whole trimmed line because
-         * the range should include an optional attribute.
-         */
-        const leadingWhitespaceLength =
-            line.length -
-            line.trimStart().length;
-
-        const startOffset =
-            lineStartOffset +
-            leadingWhitespaceLength;
-
-        const endOffset =
-            lineStartOffset +
-            line.length;
-
-        result.push({
-            kind:
-                "ShaderProperty",
-
-            name,
-
-            displayName,
-
-            propertyType,
-
-            defaultValue,
-
-            attributes,
-
-            range: {
-                start:
-                    this.positionFromOffset(
-                        startOffset
-                    ),
-
-                end:
-                    this.positionFromOffset(
-                        endOffset
-                    )
-            }
-        });
-
-        offset +=
-            line.length + 1;
+        return result;
     }
-
-    return result;
-}
 
 
     private parseSubShader():
@@ -670,10 +670,9 @@ private parsePropertyText(
             startToken.value;
 
         if (
-            blockType !==
-            "HLSLPROGRAM" &&
-            blockType !==
-            "HLSLINCLUDE"
+            blockType !== "HLSLPROGRAM" &&
+            blockType !== "HLSLINCLUDE" &&
+            blockType !== "CGPROGRAM"
         ) {
             return undefined;
         }
@@ -683,11 +682,15 @@ private parsePropertyText(
 
         this.advance();
 
-        while (!this.isAtEnd()) {
+            const blockEndToken =
+    blockType === "CGPROGRAM"
+        ? "ENDCG"
+        : "ENDHLSL";
 
+        while (!this.isAtEnd()) {
             if (
                 this.checkIdentifier(
-                    "ENDHLSL"
+                    blockEndToken
                 )
             ) {
 
@@ -956,12 +959,9 @@ private parsePropertyText(
     private isHlslStart(): boolean {
 
         return (
-            this.checkIdentifier(
-                "HLSLPROGRAM"
-            ) ||
-            this.checkIdentifier(
-                "HLSLINCLUDE"
-            )
+            this.checkIdentifier("HLSLPROGRAM") ||
+            this.checkIdentifier("HLSLINCLUDE") ||
+            this.checkIdentifier("CGPROGRAM")
         );
     }
 
