@@ -491,6 +491,45 @@ export class CompletionProvider {
                 }
             }
         }
+        // 関数戻り値
+        if (!typeName) {
+
+            const relatedUris =
+                this.documentManager
+                    .getRelatedIncludeUris(uri);
+
+            const functionMatches =
+                this.documentManager
+                    .getWorkspaceIndex()
+                    .findExact(objectName)
+                    .filter(
+                        match =>
+                            relatedUris.has(
+                                match.uri
+                            )
+                    );
+
+            const functionMatch =
+                functionMatches.find(
+                    match =>
+                        match.symbol.kind ===
+                        "function"
+                );
+
+            if (
+                functionMatch &&
+                functionMatch.symbol.returnType
+            ) {
+                typeName =
+                    functionMatch.symbol.returnType;
+
+                console.log(
+                    `[CompletionProvider] ` +
+                    `Function return type resolved: ` +
+                    `${objectName} -> ${typeName}`
+                );
+            }
+        }
 
         /*
          * ============================================================
@@ -1222,43 +1261,47 @@ export class CompletionProvider {
             );
 
         /*
-         * 通常:
+         * Function call:
+         *
+         *     GetColor().
+         *     GetColor().x
+         */
+        const functionMatch =
+            beforeCursor.match(
+                /([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*\.\s*([A-Za-z0-9_]*)$/
+            );
+
+        if (functionMatch) {
+            return {
+                objectName:
+                    functionMatch[1],
+                prefix:
+                    functionMatch[2]
+            };
+        }
+
+        /*
+         * Variable / array:
          *
          *     output.
-         *
-         * 配列:
-         *
          *     color[1].
-         *
-         * 配列の空白も許容:
-         *
-         *     color[ 1 ].
+         *     color[1].xy
          */
-        const match =
+        const variableMatch =
             beforeCursor.match(
                 /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/
             );
 
-        if (!match) {
+        if (!variableMatch) {
             return null;
         }
 
         return {
-            /*
-             * color[1] の場合は、
-             * Workspace / Local variable の型解決には
-             * 元の変数名 "color" を使う。
-             */
-            objectName: match[1],
+            objectName:
+                variableMatch[1],
 
-            /*
-             * "." の直後なら空文字。
-             *
-             * color[1].x
-             *             ^
-             * なら "x"
-             */
-            prefix: match[2]
+            prefix:
+                variableMatch[2]
         };
     }
 
