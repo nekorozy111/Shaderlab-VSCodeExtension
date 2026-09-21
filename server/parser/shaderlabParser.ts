@@ -682,10 +682,10 @@ export class ShaderLabParser {
 
         this.advance();
 
-            const blockEndToken =
-    blockType === "CGPROGRAM"
-        ? "ENDCG"
-        : "ENDHLSL";
+        const blockEndToken =
+            blockType === "CGPROGRAM"
+                ? "ENDCG"
+                : "ENDHLSL";
 
         while (!this.isAtEnd()) {
             if (

@@ -9,10 +9,6 @@ import {
 } from "./documentManager";
 
 import {
-    WorkspaceIndex
-} from "../symbol/workspaceIndex";
-
-import {
     ShaderSymbol
 } from "../symbol/symbol";
 
@@ -22,10 +18,10 @@ import {
 
 export class HoverProvider {
 
-constructor(
-    private readonly documentManager: DocumentManager,
-    private readonly definitionProvider: DefinitionProvider
-) {}
+    constructor(
+        private readonly documentManager: DocumentManager,
+        private readonly definitionProvider: DefinitionProvider
+    ) {}
 
     public provideHover(
         uri: string,
@@ -59,12 +55,37 @@ constructor(
             `[HoverProvider] Request "${word}" in ${uri}`
         );
 
-const symbol =
-    this.definitionProvider
-        .resolveSymbolAtPosition(
-            uri,
-            position
-        );
+        /*
+         * First, try the normal symbol resolver.
+         *
+         * This handles:
+         * - structs
+         * - functions
+         * - globals
+         * - cbuffer fields
+         * - properties
+         * - symbols from includes
+         */
+        let symbol =
+            this.definitionProvider
+                .resolveSymbolAtPosition(
+                    uri,
+                    position
+                );
+
+        /*
+         * Function-local variables are not currently
+         * represented in the HLSL AST, so fall back to
+         * resolving a local variable declaration here.
+         */
+        if (!symbol) {
+            symbol =
+                this.findLocalVariableSymbol(
+                    uri,
+                    word,
+                    offset
+                );
+        }
 
         if (!symbol) {
             console.log(
@@ -82,6 +103,223 @@ const symbol =
             contents: this.createHoverContents(
                 symbol
             )
+        };
+    }
+
+    private findLocalVariableSymbol(
+        uri: string,
+        variableName: string,
+        offset: number
+    ): ShaderSymbol | null {
+
+        const document =
+            this.documentManager.get(uri);
+
+        if (!document) {
+            return null;
+        }
+
+        const text =
+            document.getText();
+
+        const sourceBeforeCursor =
+            text.substring(
+                0,
+                Math.max(
+                    0,
+                    Math.min(
+                        offset,
+                        text.length
+                    )
+                )
+            );
+
+        const maskedSource =
+            this.maskComments(
+                sourceBeforeCursor
+            );
+
+        const escapedName =
+            variableName.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&"
+            );
+
+        /*
+         * Match declarations such as:
+         *
+         *     CGOutput output;
+         *     float3 position;
+         *     float4 color = ...;
+         *     CGOutput output[2];
+         */
+        const pattern =
+            new RegExp(
+                `\\b([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+                `${escapedName}\\s*` +
+                `(?:;|=|\\[|,)`,
+                "g"
+            );
+
+        let lastMatch:
+            RegExpExecArray | null = null;
+
+        let match:
+            RegExpExecArray | null;
+
+        while (
+            (match =
+                pattern.exec(
+                    maskedSource
+                )) !== null
+        ) {
+            lastMatch = match;
+        }
+
+        if (!lastMatch) {
+            return null;
+        }
+
+        const typeName =
+            lastMatch[1];
+
+        /*
+         * Find the declaration position.
+         */
+        const declarationOffset =
+            lastMatch.index;
+
+        const nameOffset =
+            maskedSource.indexOf(
+                variableName,
+                declarationOffset
+            );
+
+        if (nameOffset < 0) {
+            return null;
+        }
+
+        const relatedUris =
+            this.documentManager
+                .getRelatedIncludeUris(uri);
+
+        const typeMatches =
+            this.documentManager
+                .getWorkspaceIndex()
+                .findExact(typeName)
+                .filter(
+                    match =>
+                        relatedUris.has(
+                            match.uri
+                        )
+                );
+
+        /*
+         * Prefer a struct/cbuffer symbol as the
+         * type information for the local variable.
+         */
+        const typeSymbol =
+            typeMatches.find(
+                match =>
+                    match.symbol.kind ===
+                        "struct" ||
+                    match.symbol.kind ===
+                        "cbuffer"
+            );
+
+        console.log(
+            `[HoverProvider] Local variable: ` +
+            `${variableName} -> ${typeName}`
+        );
+
+        return {
+            name: variableName,
+            kind: "variable",
+            typeName,
+            parentName:
+                typeSymbol?.symbol.name,
+            location: {
+                uri,
+                range: {
+                    start:
+                        this.positionFromOffset(
+                            text,
+                            declarationOffset
+                        ),
+                    end:
+                        this.positionFromOffset(
+                            text,
+                            nameOffset +
+                                variableName.length
+                        )
+                },
+                selectionRange: {
+                    start:
+                        this.positionFromOffset(
+                            text,
+                            nameOffset
+                        ),
+                    end:
+                        this.positionFromOffset(
+                            text,
+                            nameOffset +
+                                variableName.length
+                        )
+                }
+            },
+            children: []
+        };
+    }
+
+    private maskComments(
+        text: string
+    ): string {
+
+        return text.replace(
+            /\/\/.*|\/\*[\s\S]*?\*\//g,
+            match =>
+                match.replace(
+                    /[^\r\n]/g,
+                    " "
+                )
+        );
+    }
+
+    private positionFromOffset(
+        text: string,
+        offset: number
+    ) {
+        let line = 0;
+        let character = 0;
+
+        const limit =
+            Math.min(
+                Math.max(
+                    0,
+                    offset
+                ),
+                text.length
+            );
+
+        for (
+            let index = 0;
+            index < limit;
+            index++
+        ) {
+            if (
+                text[index] === "\n"
+            ) {
+                line++;
+                character = 0;
+            } else {
+                character++;
+            }
+        }
+
+        return {
+            offset,
+            line,
+            character
         };
     }
 
@@ -176,25 +414,5 @@ const symbol =
             start,
             end
         );
-    }
-
-    private getLineAtOffset(
-        text: string,
-        offset: number
-    ): number {
-
-        let line = 0;
-
-        for (
-            let i = 0;
-            i < offset;
-            i++
-        ) {
-            if (text[i] === "\n") {
-                line++;
-            }
-        }
-
-        return line;
     }
 }
