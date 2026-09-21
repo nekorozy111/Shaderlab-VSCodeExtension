@@ -142,7 +142,8 @@ export interface ShaderHlslBlockNode
 
     blockType:
         | "HLSLPROGRAM"
-        | "HLSLINCLUDE";
+        | "HLSLINCLUDE"
+        | "CGPROGRAM";
 
     source: string;
 
