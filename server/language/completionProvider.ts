@@ -51,6 +51,15 @@ export class CompletionProvider {
             return [];
         }
 
+        if (
+            this.isInsideString(
+                text,
+                offset
+            )
+        ) {
+            return [];
+        }
+
         const word =
             this.getWordBeforeCursor(
                 text,
@@ -237,7 +246,9 @@ export class CompletionProvider {
                 },
 
                 sortText:
-                    `3_${name}`
+                    this.getCompletionSortText(
+                        symbol
+                    )
             });
         }
     }
@@ -288,39 +299,54 @@ export class CompletionProvider {
     private getSymbolDetail(
         symbol: ShaderSymbol
     ): string {
+
         switch (symbol.kind) {
-            case "property":
-                return "ShaderLab Property";
-
-            case "cbuffer":
-                return "HLSL CBuffer";
-
-            case "struct":
-                return "HLSL struct";
-
-            case "field":
-                if (symbol.typeName) {
-                    return `field: ${symbol.typeName}`;
-                }
-                return "HLSL field";
 
             case "function":
-                if (symbol.returnType) {
-                    return `function: ${symbol.returnType}`;
-                }
-                return "HLSL function";
+                return symbol.returnType
+                    ? `function ${symbol.returnType}`
+                    : "function";
+
+            case "struct":
+                return "struct";
+
+            case "field":
+                return symbol.typeName
+                    ? `field ${symbol.typeName}`
+                    : "field";
 
             case "parameter":
-                if (symbol.typeName) {
-                    return `parameter: ${symbol.typeName}`;
-                }
-                return "HLSL parameter";
+                return symbol.typeName
+                    ? `parameter ${symbol.typeName}`
+                    : "parameter";
 
             case "variable":
-                if (symbol.typeName) {
-                    return `variable: ${symbol.typeName}`;
-                }
-                return "HLSL variable";
+                return symbol.typeName
+                    ? `variable ${symbol.typeName}`
+                    : "variable";
+
+            case "cbuffer":
+                return "cbuffer";
+
+            case "property":
+                return symbol.typeName
+                    ? `property ${symbol.typeName}`
+                    : "property";
+
+            case "macro":
+                return "macro";
+
+            case "include":
+                return "include";
+
+            case "shader":
+                return "shader";
+
+            case "subShader":
+                return "SubShader";
+
+            case "pass":
+                return "Pass";
 
             default:
                 return symbol.kind;
@@ -812,7 +838,9 @@ export class CompletionProvider {
          */
         const pattern =
             new RegExp(
-                `\\b([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+                `\\b` +
+                `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
+                `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
                 `${escapedName}\\s*` +
                 `(?:;|=|\\[|,)`,
                 "g"
@@ -1118,6 +1146,61 @@ export class CompletionProvider {
 
     }
 
+    private isInsideString(
+        text: string,
+        offset: number
+    ): boolean {
+
+        let inString = false;
+        let quote = "";
+
+        let escaped = false;
+
+        for (
+            let index = 0;
+            index < offset;
+            index++
+        ) {
+
+            const char =
+                text[index];
+
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+
+            if (
+                char === "\\"
+            ) {
+                escaped = true;
+                continue;
+            }
+
+            if (!inString) {
+
+                if (
+                    char === '"' ||
+                    char === "'"
+                ) {
+                    inString = true;
+                    quote = char;
+                }
+
+                continue;
+            }
+
+            if (
+                char === quote
+            ) {
+                inString = false;
+                quote = "";
+            }
+        }
+
+        return inString;
+    }
+
     private getMemberAccessAtPosition(
         text: string,
         offset: number
@@ -1126,110 +1209,97 @@ export class CompletionProvider {
         prefix: string;
     } | null {
 
-
-        let cursor = Math.max(
-            0,
-            Math.min(
-                offset,
-                text.length
-            )
-        );
-
-        /*
-         * カーソル直前の識別子を取得。
-         *
-         * 例:
-         *
-         * surface.po
-         *
-         *           ↑ cursor
-         *
-         * prefix = "po"
-         */
-        let prefixStart = cursor;
-
-        while (
-            prefixStart > 0 &&
-            /[A-Za-z0-9_]/.test(
-                text[prefixStart - 1]
-            )
-        ) {
-            prefixStart--;
-        }
-
-        const prefix =
+        const beforeCursor =
             text.substring(
-                prefixStart,
-                cursor
+                0,
+                Math.max(
+                    0,
+                    Math.min(
+                        offset,
+                        text.length
+                    )
+                )
             );
 
         /*
-         * prefix の直前が "." か確認。
+         * 通常:
+         *
+         *     output.
+         *
+         * 配列:
+         *
+         *     color[1].
+         *
+         * 配列の空白も許容:
+         *
+         *     color[ 1 ].
          */
-        let dotPosition =
-            prefixStart - 1;
-
-        while (
-            dotPosition >= 0 &&
-            /\s/.test(
-                text[dotPosition]
-            )
-        ) {
-            dotPosition--;
-        }
-
-        if (
-            dotPosition < 0 ||
-            text[dotPosition] !== "."
-        ) {
-            return null;
-        }
-
-        /*
-         * "." の左側にある object 名を取得。
-         */
-        let objectEnd =
-            dotPosition;
-
-        while (
-            objectEnd > 0 &&
-            /\s/.test(
-                text[objectEnd - 1]
-            )
-        ) {
-            objectEnd--;
-        }
-
-        let objectStart =
-            objectEnd;
-
-        while (
-            objectStart > 0 &&
-            /[A-Za-z0-9_]/.test(
-                text[objectStart - 1]
-            )
-        ) {
-            objectStart--;
-        }
-
-        if (
-            objectStart === objectEnd
-        ) {
-            return null;
-        }
-
-        const objectName =
-            text.substring(
-                objectStart,
-                objectEnd
+        const match =
+            beforeCursor.match(
+                /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/
             );
+
+        if (!match) {
+            return null;
+        }
 
         return {
-            objectName,
-            prefix
-        };
+            /*
+             * color[1] の場合は、
+             * Workspace / Local variable の型解決には
+             * 元の変数名 "color" を使う。
+             */
+            objectName: match[1],
 
+            /*
+             * "." の直後なら空文字。
+             *
+             * color[1].x
+             *             ^
+             * なら "x"
+             */
+            prefix: match[2]
+        };
     }
+
+    private getCompletionSortText(
+        symbol: ShaderSymbol
+    ): string {
+
+        switch (symbol.kind) {
+
+            case "variable":
+                return `1_${symbol.name}`;
+
+            case "parameter":
+                return `1_${symbol.name}`;
+
+            case "field":
+                return `2_${symbol.name}`;
+
+            case "property":
+                return `2_${symbol.name}`;
+
+            case "cbuffer":
+                return `3_${symbol.name}`;
+
+            case "struct":
+                return `3_${symbol.name}`;
+
+            case "function":
+                return `3_${symbol.name}`;
+
+            case "macro":
+                return `3_${symbol.name}`;
+
+            case "include":
+                return `4_${symbol.name}`;
+
+            default:
+                return `5_${symbol.name}`;
+        }
+    }
+
 
     private getSymbolDocumentation(
         symbol: ShaderSymbol
@@ -1237,36 +1307,169 @@ export class CompletionProvider {
 
         const lines: string[] = [];
 
-        lines.push(
-            `**${symbol.kind}**`
-        );
+        switch (symbol.kind) {
 
-        lines.push(
-            `\`${symbol.name}\``
-        );
+            case "function":
 
-        if (symbol.typeName) {
-            lines.push(
-                `Type: \`${symbol.typeName}\``
-            );
-        }
+                lines.push(
+                    `**Function**`
+                );
 
-        if (symbol.returnType) {
-            lines.push(
-                `Return type: \`${symbol.returnType}\``
-            );
-        }
+                lines.push(
+                    `\`${symbol.name}\``
+                );
 
-        if (symbol.semantic) {
-            lines.push(
-                `Semantic: \`${symbol.semantic}\``
-            );
-        }
+                if (symbol.returnType) {
+                    lines.push(
+                        `Return type: \`${symbol.returnType}\``
+                    );
+                }
 
-        if (symbol.parentName) {
-            lines.push(
-                `Parent: \`${symbol.parentName}\``
-            );
+                break;
+
+            case "struct":
+
+                lines.push(
+                    `**Struct**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            case "field":
+
+                lines.push(
+                    `**Field**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                if (symbol.parentName) {
+                    lines.push(
+                        `Parent: \`${symbol.parentName}\``
+                    );
+                }
+
+                if (symbol.semantic) {
+                    lines.push(
+                        `Semantic: \`${symbol.semantic}\``
+                    );
+                }
+
+                break;
+
+            case "parameter":
+
+                lines.push(
+                    `**Parameter**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                break;
+
+            case "variable":
+
+                lines.push(
+                    `**Variable**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                break;
+
+            case "cbuffer":
+
+                lines.push(
+                    `**Constant Buffer**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            case "property":
+
+                lines.push(
+                    `**Shader Property**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                break;
+
+            case "macro":
+
+                lines.push(
+                    `**Macro**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            case "include":
+
+                lines.push(
+                    `**Include**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            default:
+
+                lines.push(
+                    `**${symbol.kind}**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
         }
 
         return lines.join("\n\n");

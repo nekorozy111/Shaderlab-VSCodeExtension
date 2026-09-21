@@ -197,13 +197,15 @@ export class HoverProvider {
          *     float4 color = ...;
          *     CGOutput output[2];
          */
-        const pattern =
-            new RegExp(
-                `\\b([A-Za-z_][A-Za-z0-9_]*)\\s+` +
-                `${escapedName}\\s*` +
-                `(?:;|=|\\[|,)`,
-                "g"
-            );
+const pattern =
+    new RegExp(
+        `\\b` +
+        `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
+        `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+        `${escapedName}\\s*` +
+        `(?:;|=|\\[|,)`,
+        "g"
+    );
 
         let lastMatch:
             RegExpExecArray | null = null;
