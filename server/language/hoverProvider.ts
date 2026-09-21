@@ -21,6 +21,8 @@ import {
     ShaderHlslBlockNode
 } from "../parser/ast";
 
+import { SourceRange } from "../parser/token";
+
 export class HoverProvider {
 
     constructor(
@@ -60,14 +62,103 @@ export class HoverProvider {
             `[HoverProvider] Request "${word}" in ${uri}`
         );
 
+        /*
+         * ---------------------------------------------------------
+         * 1. Function-local variable
+         *
+         * Local variable は、同名の struct field / cbuffer field
+         * より優先する。
+         *
+         * 例:
+         *
+         *     float4 color;
+         *
+         * というローカル変数が存在する場合、
+         *
+         *     LightData.color
+         *
+         * よりも
+         *
+         *     variable color
+         *
+         * を優先する。
+         * ---------------------------------------------------------
+         */
+
+        let symbol =
+            this.findLocalVariableSymbol(
+                uri,
+                word,
+                offset
+            );
+
+        /*
+         * ---------------------------------------------------------
+         * 2. DefinitionProvider の通常の Symbol
+         * ---------------------------------------------------------
+         */
+
+        if (!symbol) {
+            symbol =
+                this.definitionProvider
+                    .resolveSymbolAtPosition(
+                        uri,
+                        position
+                    );
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * 3. Include scope 内の Symbol
+         * ---------------------------------------------------------
+         */
+
+        if (!symbol) {
+            symbol =
+                this.findIncludedSymbol(
+                    uri,
+                    word
+                );
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * Symbol が見つかった場合
+         *
+         * Semantic より Symbol を優先する。
+         * ---------------------------------------------------------
+         */
+
+        if (symbol) {
+            console.log(
+                `[HoverProvider] Symbol found: ` +
+                `${symbol.name} (${symbol.kind})`
+            );
+
+            return {
+                contents:
+                    this.createHoverContents(
+                        symbol
+                    )
+            };
+        }
+
+        /*
+         * ---------------------------------------------------------
+         * 4. Semantic fallback
+         *
+         * Symbol が見つからなかった場合だけ、
+         * POSITION / NORMAL / COLOR / TEXCOORD などを
+         * Semantic として扱う。
+         * ---------------------------------------------------------
+         */
+
         const semanticDescription =
-            this.getSemanticDescription(word);
+            this.getSemanticDescription(
+                word
+            );
 
         if (semanticDescription) {
-            const offset =
-                document.offsetAt(
-                    position
-                );
 
             const field =
                 this.findFieldBySemantic(
@@ -99,220 +190,180 @@ export class HoverProvider {
             };
         }
 
-        let symbol =
-            this.definitionProvider
-                .resolveSymbolAtPosition(
-                    uri,
-                    position
-                );
-
         /*
-         * DefinitionProvider で見つからない場合、
-         * include scope 内の WorkspaceIndex から検索する。
+         * ---------------------------------------------------------
+         * Symbol も Semantic も見つからない
+         * ---------------------------------------------------------
          */
-        if (!symbol) {
-            symbol =
-                this.findIncludedSymbol(
-                    uri,
-                    word
-                );
-        }
-
-        /*
-         * Function-local variables are not currently
-         * represented in the HLSL AST, so fall back to
-         * resolving a local variable declaration here.
-         */
-        if (!symbol) {
-            symbol =
-                this.findLocalVariableSymbol(
-                    uri,
-                    word,
-                    offset
-                );
-        }
-        if (!symbol) {
-            console.log(
-                `[HoverProvider] Symbol not found: "${word}"`
-            );
-
-            return null;
-        }
 
         console.log(
-            `[HoverProvider] Symbol found: ${symbol.name} (${symbol.kind})`
+            `[HoverProvider] Symbol not found: "${word}"`
         );
 
-        return {
-            contents: this.createHoverContents(
-                symbol
-            )
-        };
+        return null;
     }
 
     private findLocalVariableSymbol(
         uri: string,
-        variableName: string,
+        name: string,
         offset: number
     ): ShaderSymbol | null {
-
-        const document =
-            this.documentManager.get(uri);
+        const document = this.documentManager.get(uri);
 
         if (!document) {
             return null;
         }
 
-        const text =
-            document.getText();
+        const text = document.getText();
+        const maskedText = this.maskComments(text);
 
-        const sourceBeforeCursor =
-            text.substring(
-                0,
-                Math.max(
-                    0,
-                    Math.min(
-                        offset,
-                        text.length
-                    )
-                )
-            );
+        // ------------------------------------------------------------
+        // ローカル変数の宣言を検索
+        //
+        // 例:
+        //     float4 color = ...
+        //           ^^^^^
+        //
+        // カーソルが color の途中にあっても検出する。
+        // ------------------------------------------------------------
 
-        const maskedSource =
-            this.maskComments(
-                sourceBeforeCursor
-            );
+        const declarationPattern =
+            /\b(?:(?:const|static|uniform|volatile|inline)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
 
-        const escapedName =
-            variableName.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                "\\$&"
-            );
+        let match: RegExpExecArray | null;
+        let bestMatch: RegExpExecArray | null = null;
 
-        /*
-         * Match declarations such as:
-         *
-         *     CGOutput output;
-         *     float3 position;
-         *     float4 color = ...;
-         *     CGOutput output[2];
-         */
-const pattern =
-    new RegExp(
-        `\\b` +
-        `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
-        `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
-        `${escapedName}\\s*` +
-        `(?:;|=|\\[|,)`,
-        "g"
-    );
+        while ((match = declarationPattern.exec(maskedText)) !== null) {
+            const typeName = match[1];
+            const variableName = match[2];
 
-        let lastMatch:
-            RegExpExecArray | null = null;
+            if (variableName !== name) {
+                continue;
+            }
 
-        let match:
-            RegExpExecArray | null;
+            const variableNameOffset =
+                match.index +
+                match[0].lastIndexOf(variableName);
 
-        while (
-            (match =
-                pattern.exec(
-                    maskedSource
-                )) !== null
-        ) {
-            lastMatch = match;
+            const variableEnd =
+                variableNameOffset + variableName.length;
+
+            // カーソルが変数名そのものにある
+            if (
+                offset >= variableNameOffset &&
+                offset <= variableEnd
+            ) {
+                bestMatch = match;
+                break;
+            }
+
+            // カーソルより前にある宣言を記録
+            if (variableNameOffset < offset) {
+                bestMatch = match;
+            }
         }
 
-        if (!lastMatch) {
+        if (!bestMatch) {
             return null;
         }
 
-        const typeName =
-            lastMatch[1];
+        const typeName = bestMatch[1];
+        const variableName = bestMatch[2];
 
-        /*
-         * Find the declaration position.
-         */
-        const declarationOffset =
-            lastMatch.index;
-
-        const nameOffset =
-            maskedSource.indexOf(
-                variableName,
-                declarationOffset
-            );
-
-        if (nameOffset < 0) {
+        if (variableName !== name) {
             return null;
         }
 
-        const relatedUris =
-            this.documentManager
-                .getRelatedIncludeUris(uri);
+        // ------------------------------------------------------------
+        // ここでは「関数スコープ」の判定はまだ行わない。
+        //
+        // 今回の目的はまず
+        //
+        //     float4 color = ...
+        //
+        // の color 宣言を DefinitionProvider より優先して
+        // local variable として取得すること。
+        // ------------------------------------------------------------
 
-        const typeMatches =
+        const variableNameOffset =
+            bestMatch.index +
+            bestMatch[0].lastIndexOf(variableName);
+
+        const variableEnd =
+            variableNameOffset + variableName.length;
+
+        const startPosition =
+            document.positionAt(variableNameOffset);
+
+        const endPosition =
+            document.positionAt(variableEnd);
+
+        const range: SourceRange = {
+            start: {
+                line: startPosition.line,
+                character: startPosition.character,
+                offset: variableNameOffset
+            },
+            end: {
+                line: endPosition.line,
+                character: endPosition.character,
+                offset: variableEnd
+            }
+        };
+
+        // ------------------------------------------------------------
+        // 型の解決
+        //
+        // include の探索は既存の findIncludedSymbol() に任せる。
+        // ------------------------------------------------------------
+
+        let typeSymbol: ShaderSymbol | null = null;
+
+        const exactMatches =
             this.documentManager
                 .getWorkspaceIndex()
-                .findExact(typeName)
-                .filter(
-                    match =>
-                        relatedUris.has(
-                            match.uri
-                        )
+                .findExact(typeName);
+
+        for (const match of exactMatches) {
+            if (
+                match.symbol.kind === "struct" ||
+                match.symbol.kind === "cbuffer"
+            ) {
+                typeSymbol = match.symbol;
+                break;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // include 側にある型も探す
+        // ------------------------------------------------------------
+
+        if (!typeSymbol) {
+            const includedSymbol =
+                this.findIncludedSymbol(
+                    uri,
+                    typeName
                 );
 
-        /*
-         * Prefer a struct/cbuffer symbol as the
-         * type information for the local variable.
-         */
-        const typeSymbol =
-            typeMatches.find(
-                match =>
-                    match.symbol.kind ===
-                    "struct" ||
-                    match.symbol.kind ===
-                    "cbuffer"
-            );
+            if (includedSymbol) {
+                typeSymbol = includedSymbol;
+            }
+        }
 
-        console.log(
-            `[HoverProvider] Local variable: ` +
-            `${variableName} -> ${typeName}`
-        );
+        // ------------------------------------------------------------
+        // ローカル変数 Symbol
+        // ------------------------------------------------------------
 
         return {
             name: variableName,
             kind: "variable",
-            typeName,
-            parentName:
-                typeSymbol?.symbol.name,
             location: {
                 uri,
-                range: {
-                    start:
-                        this.positionFromOffset(
-                            text,
-                            declarationOffset
-                        ),
-                    end:
-                        this.positionFromOffset(
-                            text,
-                            nameOffset +
-                            variableName.length
-                        )
-                },
-                selectionRange: {
-                    start:
-                        this.positionFromOffset(
-                            text,
-                            nameOffset
-                        ),
-                    end:
-                        this.positionFromOffset(
-                            text,
-                            nameOffset +
-                            variableName.length
-                        )
-                }
+                range,
+                selectionRange: range
             },
+            typeName,
+            parentName: typeSymbol?.name,
             children: []
         };
     }
