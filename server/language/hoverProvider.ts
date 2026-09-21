@@ -55,6 +55,22 @@ export class HoverProvider {
             `[HoverProvider] Request "${word}" in ${uri}`
         );
 
+const semanticDescription =
+    this.getSemanticDescription(
+        word
+    );
+
+if (semanticDescription) {
+    return {
+        contents: {
+            kind: "markdown",
+            value:
+                `**${word}**\n\n` +
+                semanticDescription
+        }
+    };
+}
+
         /*
          * First, try the normal symbol resolver.
          *
@@ -415,4 +431,97 @@ export class HoverProvider {
             end
         );
     }
+private getSemanticDescription(
+    semantic: string
+): string | undefined {
+    const descriptions: Record<string, string> = {
+        POSITION:
+            "Vertex position input/output.",
+
+        NORMAL:
+            "Vertex normal input/output.",
+
+        TANGENT:
+            "Vertex tangent input/output.",
+
+        COLOR:
+            "Vertex color input/output.",
+
+        TEXCOORD0:
+            "Texture coordinate 0.",
+
+        TEXCOORD1:
+            "Texture coordinate 1.",
+
+        TEXCOORD2:
+            "Texture coordinate 2.",
+
+        TEXCOORD3:
+            "Texture coordinate 3.",
+
+        TEXCOORD4:
+            "Texture coordinate 4.",
+
+        TEXCOORD5:
+            "Texture coordinate 5.",
+
+        TEXCOORD6:
+            "Texture coordinate 6.",
+
+        TEXCOORD7:
+            "Texture coordinate 7.",
+
+        SV_POSITION:
+            "System-value semantic for vertex position.",
+
+        SV_TARGET:
+            "System-value semantic for render-target output.",
+
+        SV_TARGET0:
+            "System-value semantic for render-target 0.",
+
+        SV_TARGET1:
+            "System-value semantic for render-target 1.",
+
+        SV_TARGET2:
+            "System-value semantic for render-target 2.",
+
+        SV_TARGET3:
+            "System-value semantic for render-target 3.",
+
+        SV_TARGET4:
+            "System-value semantic for render-target 4.",
+
+        SV_TARGET5:
+            "System-value semantic for render-target 5.",
+
+        SV_TARGET6:
+            "System-value semantic for render-target 6.",
+
+        SV_TARGET7:
+            "System-value semantic for render-target 7.",
+
+        SV_DEPTH:
+            "System-value semantic for depth output.",
+
+        SV_VERTEXID:
+            "System-value semantic containing the vertex ID.",
+
+        SV_INSTANCEID:
+            "System-value semantic containing the instance ID.",
+
+        SV_PRIMITIVEID:
+            "System-value semantic containing the primitive ID.",
+
+        SV_ISFRONTFACE:
+            "System-value semantic indicating whether the primitive is front-facing.",
+
+        SV_SAMPLEINDEX:
+            "System-value semantic containing the sample index."
+    };
+
+    return descriptions[
+        semantic.toUpperCase()
+    ];
+}
 }

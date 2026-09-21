@@ -124,6 +124,34 @@ export class CompletionProvider {
             });
         }
 
+        const builtinSemantics =
+    this.getBuiltinSemantics();
+
+for (const semantic of builtinSemantics) {
+    if (
+        semantic
+            .toLowerCase()
+            .startsWith(
+                word.toLowerCase()
+            )
+    ) {
+        result.push({
+            label: semantic,
+            kind: CompletionItemKind.Keyword,
+            detail:
+                "HLSL Semantic",
+            documentation:
+                `${semantic} semantic`,
+            sortText:
+                `2_${semantic}`,
+            data: {
+                source:
+                    this.completionSource
+            }
+        });
+    }
+}
+
         /*
          * Workspace symbols
          *
@@ -477,41 +505,41 @@ export class CompletionProvider {
          * → z
          * → w
          */
-const builtinMembers =
-    this.getBuiltinTypeMembers(
-        typeName
-    );
+        const builtinMembers =
+            this.getBuiltinTypeMembers(
+                typeName
+            );
 
-if (builtinMembers) {
-    const items: CompletionItem[] = [];
+        if (builtinMembers) {
+            const items: CompletionItem[] = [];
 
-    for (
-        const member
-        of builtinMembers
-    ) {
-        if (
-            prefix.length > 0 &&
-            !member
-                .toLowerCase()
-                .startsWith(
-                    prefix.toLowerCase()
-                )
-        ) {
-            continue;
+            for (
+                const member
+                of builtinMembers
+            ) {
+                if (
+                    prefix.length > 0 &&
+                    !member
+                        .toLowerCase()
+                        .startsWith(
+                            prefix.toLowerCase()
+                        )
+                ) {
+                    continue;
+                }
+
+                items.push({
+                    label: member,
+                    kind:
+                        CompletionItemKind.Field,
+                    detail:
+                        `${this.completionSource} • ` +
+                        `HLSL built-in type member`
+                });
+            }
+
+            return items;
         }
-
-        items.push({
-            label: member,
-            kind:
-                CompletionItemKind.Field,
-            detail:
-                `${this.completionSource} • ` +
-                `HLSL built-in type member`
-        });
-    }
-
-    return items;
-}
 
         /*
          * ============================================================
@@ -1337,230 +1365,230 @@ if (builtinMembers) {
             "float4x4"
         ];
     }
-private getBuiltinTypeMembers(
-    typeName: string
-): string[] | null {
-    const normalizedType =
-        typeName.toLowerCase();
+    private getBuiltinTypeMembers(
+        typeName: string
+    ): string[] | null {
+        const normalizedType =
+            typeName.toLowerCase();
 
-    /*
-     * ============================================================
-     * HLSL numeric base types
-     * ============================================================
-     */
+        /*
+         * ============================================================
+         * HLSL numeric base types
+         * ============================================================
+         */
 
-    const baseTypes = [
-        "float",
-        "half",
-        "double",
-        "int",
-        "uint",
-        "bool",
+        const baseTypes = [
+            "float",
+            "half",
+            "double",
+            "int",
+            "uint",
+            "bool",
 
-        "min10float",
-        "min16float",
+            "min10float",
+            "min16float",
 
-        "min12int",
-        "min16int",
+            "min12int",
+            "min16int",
 
-        "min16uint"
-    ];
+            "min16uint"
+        ];
 
-    /*
-     * ============================================================
-     * Matrix
-     *
-     * float4x4
-     * float3x4
-     * int2x3
-     * min16float4x4
-     * ...
-     * ============================================================
-     */
+        /*
+         * ============================================================
+         * Matrix
+         *
+         * float4x4
+         * float3x4
+         * int2x3
+         * min16float4x4
+         * ...
+         * ============================================================
+         */
 
-    for (
-        const baseType
-        of baseTypes
-    ) {
-        const matrixPattern =
-            new RegExp(
-                `^${baseType}([1-4])x([1-4])$`
-            );
+        for (
+            const baseType
+            of baseTypes
+        ) {
+            const matrixPattern =
+                new RegExp(
+                    `^${baseType}([1-4])x([1-4])$`
+                );
 
-        const matrixMatch =
-            normalizedType.match(
-                matrixPattern
-            );
+            const matrixMatch =
+                normalizedType.match(
+                    matrixPattern
+                );
 
-        if (!matrixMatch) {
-            continue;
-        }
-
-        const rows =
-            Number(matrixMatch[1]);
-
-        const columns =
-            Number(matrixMatch[2]);
-
-        return this.generateMatrixMembers(
-            rows,
-            columns
-        );
-    }
-
-    /*
-     * ============================================================
-     * Vector
-     *
-     * float2
-     * float3
-     * float4
-     * int2
-     * uint4
-     * min16float3
-     * ...
-     * ============================================================
-     */
-
-    for (
-        const baseType
-        of baseTypes
-    ) {
-        const vectorPattern =
-            new RegExp(
-                `^${baseType}([1-4])$`
-            );
-
-        const vectorMatch =
-            normalizedType.match(
-                vectorPattern
-            );
-
-        if (!vectorMatch) {
-            continue;
-        }
-
-        const dimension =
-            Number(vectorMatch[1]);
-
-        return this.generateVectorMembers(
-            dimension
-        );
-    }
-
-    return null;
-}
-private generateVectorMembers(
-    dimension: number
-): string[] {
-    const components =
-        [
-            "x",
-            "y",
-            "z",
-            "w"
-        ].slice(
-            0,
-            dimension
-        );
-
-    const colorComponents =
-        [
-            "r",
-            "g",
-            "b",
-            "a"
-        ].slice(
-            0,
-            dimension
-        );
-
-    const result =
-        new Set<string>();
-
-    const generate =
-        (
-            source: string[],
-            length: number,
-            current: string
-        ): void => {
-            if (
-                current.length ===
-                length
-            ) {
-                result.add(current);
-                return;
+            if (!matrixMatch) {
+                continue;
             }
 
-            for (
-                const component
-                of source
-            ) {
-                generate(
-                    source,
-                    length,
-                    current +
+            const rows =
+                Number(matrixMatch[1]);
+
+            const columns =
+                Number(matrixMatch[2]);
+
+            return this.generateMatrixMembers(
+                rows,
+                columns
+            );
+        }
+
+        /*
+         * ============================================================
+         * Vector
+         *
+         * float2
+         * float3
+         * float4
+         * int2
+         * uint4
+         * min16float3
+         * ...
+         * ============================================================
+         */
+
+        for (
+            const baseType
+            of baseTypes
+        ) {
+            const vectorPattern =
+                new RegExp(
+                    `^${baseType}([1-4])$`
+                );
+
+            const vectorMatch =
+                normalizedType.match(
+                    vectorPattern
+                );
+
+            if (!vectorMatch) {
+                continue;
+            }
+
+            const dimension =
+                Number(vectorMatch[1]);
+
+            return this.generateVectorMembers(
+                dimension
+            );
+        }
+
+        return null;
+    }
+    private generateVectorMembers(
+        dimension: number
+    ): string[] {
+        const components =
+            [
+                "x",
+                "y",
+                "z",
+                "w"
+            ].slice(
+                0,
+                dimension
+            );
+
+        const colorComponents =
+            [
+                "r",
+                "g",
+                "b",
+                "a"
+            ].slice(
+                0,
+                dimension
+            );
+
+        const result =
+            new Set<string>();
+
+        const generate =
+            (
+                source: string[],
+                length: number,
+                current: string
+            ): void => {
+                if (
+                    current.length ===
+                    length
+                ) {
+                    result.add(current);
+                    return;
+                }
+
+                for (
+                    const component
+                    of source
+                ) {
+                    generate(
+                        source,
+                        length,
+                        current +
                         component
+                    );
+                }
+            };
+
+        /*
+         * x / y / z / w
+         */
+        for (
+            let length = 1;
+            length <= 4;
+            length++
+        ) {
+            generate(
+                components,
+                length,
+                ""
+            );
+        }
+
+        /*
+         * r / g / b / a
+         */
+        for (
+            let length = 1;
+            length <= 4;
+            length++
+        ) {
+            generate(
+                colorComponents,
+                length,
+                ""
+            );
+        }
+
+        return Array.from(result);
+    }
+    private generateMatrixMembers(
+        rows: number,
+        columns: number
+    ): string[] {
+        const result: string[] = [];
+
+        for (
+            let row = 0;
+            row < rows;
+            row++
+        ) {
+            for (
+                let column = 0;
+                column < columns;
+                column++
+            ) {
+                result.push(
+                    `_m${row}${column}`
                 );
             }
-        };
-
-    /*
-     * x / y / z / w
-     */
-    for (
-        let length = 1;
-        length <= 4;
-        length++
-    ) {
-        generate(
-            components,
-            length,
-            ""
-        );
-    }
-
-    /*
-     * r / g / b / a
-     */
-    for (
-        let length = 1;
-        length <= 4;
-        length++
-    ) {
-        generate(
-            colorComponents,
-            length,
-            ""
-        );
-    }
-
-    return Array.from(result);
-}
-private generateMatrixMembers(
-    rows: number,
-    columns: number
-): string[] {
-    const result: string[] = [];
-
-    for (
-        let row = 0;
-        row < rows;
-        row++
-    ) {
-        for (
-            let column = 0;
-            column < columns;
-            column++
-        ) {
-            result.push(
-                `_m${row}${column}`
-            );
         }
-    }
 
-    return result;
-}
+        return result;
+    }
     private findPropertyType(
         uri: string,
         propertyName: string
@@ -1622,5 +1650,41 @@ private generateMatrixMembers(
             default:
                 return undefined;
         }
+    }
+    private getBuiltinSemantics(): string[] {
+        return [
+            "POSITION",
+            "NORMAL",
+            "TANGENT",
+            "COLOR",
+
+            "TEXCOORD0",
+            "TEXCOORD1",
+            "TEXCOORD2",
+            "TEXCOORD3",
+            "TEXCOORD4",
+            "TEXCOORD5",
+            "TEXCOORD6",
+            "TEXCOORD7",
+
+            "SV_POSITION",
+
+            "SV_TARGET",
+            "SV_Target0",
+            "SV_Target1",
+            "SV_Target2",
+            "SV_Target3",
+            "SV_Target4",
+            "SV_Target5",
+            "SV_Target6",
+            "SV_Target7",
+
+            "SV_DEPTH",
+            "SV_VERTEXID",
+            "SV_INSTANCEID",
+            "SV_PRIMITIVEID",
+            "SV_ISFRONTFACE",
+            "SV_SAMPLEINDEX"
+        ];
     }
 }
