@@ -99,23 +99,24 @@ export class HoverProvider {
             };
         }
 
-        /*
-         * First, try the normal symbol resolver.
-         *
-         * This handles:
-         * - structs
-         * - functions
-         * - globals
-         * - cbuffer fields
-         * - properties
-         * - symbols from includes
-         */
         let symbol =
             this.definitionProvider
                 .resolveSymbolAtPosition(
                     uri,
                     position
                 );
+
+        /*
+         * DefinitionProvider で見つからない場合、
+         * include scope 内の WorkspaceIndex から検索する。
+         */
+        if (!symbol) {
+            symbol =
+                this.findIncludedSymbol(
+                    uri,
+                    word
+                );
+        }
 
         /*
          * Function-local variables are not currently
@@ -130,7 +131,6 @@ export class HoverProvider {
                     offset
                 );
         }
-
         if (!symbol) {
             console.log(
                 `[HoverProvider] Symbol not found: "${word}"`
@@ -718,4 +718,49 @@ export class HoverProvider {
         return undefined;
     }
 
+    private findIncludedSymbol(
+        uri: string,
+        name: string
+    ): ShaderSymbol | null {
+        const relatedUris =
+            this.documentManager
+                .getRelatedIncludeUris(uri);
+
+        const matches =
+            this.documentManager
+                .getWorkspaceIndex()
+                .findExact(name)
+                .filter(
+                    match =>
+                        relatedUris.has(
+                            match.uri
+                        )
+                );
+
+        if (matches.length === 0) {
+            return null;
+        }
+
+        /*
+         * Prefer the most specific symbol kinds
+         * that normally represent HLSL declarations.
+         */
+        const preferred =
+            matches.find(
+                match =>
+                    match.symbol.kind ===
+                    "function" ||
+                    match.symbol.kind ===
+                    "struct" ||
+                    match.symbol.kind ===
+                    "cbuffer" ||
+                    match.symbol.kind ===
+                    "macro"
+            );
+
+        return (
+            preferred?.symbol ??
+            matches[0].symbol
+        );
+    }
 }
