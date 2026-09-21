@@ -587,6 +587,15 @@ export class CompletionProvider {
          * → z
          * → w
          */
+        /*
+         * Swizzle:
+         *
+         *     color.xy.
+         *     color.xyz.
+         *
+         * のようなケースでは、
+         * swizzle 結果の型を推論する。
+         */
         const builtinMembers =
             this.getBuiltinTypeMembers(
                 typeName
@@ -802,6 +811,7 @@ export class CompletionProvider {
 
         return result;
     }
+
     private findLocalVariableDeclaration(
         uri: string,
         variableName: string,
@@ -1059,42 +1069,6 @@ export class CompletionProvider {
         return result;
     }
 
-    private positionFromOffset(
-        text: string,
-        offset: number
-    ): {
-        offset: number;
-        line: number;
-        character: number;
-    } {
-
-        let line = 0;
-        let character = 0;
-
-        for (
-            let i = 0;
-            i < offset;
-            i++
-        ) {
-            if (
-                text[i] === "\n"
-            ) {
-                line++;
-                character = 0;
-            } else {
-                character++;
-            }
-        }
-
-        return {
-            offset,
-            line,
-            character
-        };
-
-    }
-
-
     private isInsideComment(
         text: string,
         offset: number
@@ -1247,7 +1221,6 @@ export class CompletionProvider {
         objectName: string;
         prefix: string;
     } | null {
-
         const beforeCursor =
             text.substring(
                 0,
@@ -1261,32 +1234,89 @@ export class CompletionProvider {
             );
 
         /*
+         * ---------------------------------------------------------
          * Function call:
          *
          *     GetColor().
-         *     GetColor().x
+         *     GetColor(uv).
+         *     GetColor(GetUV()).
+         *     GetColor(GetUV(uv)).
+         *     GetColor(a, GetUV()).
+         *
+         * ---------------------------------------------------------
          */
-        const functionMatch =
+
+        const functionMemberMatch =
             beforeCursor.match(
-                /([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*\)\s*\.\s*([A-Za-z0-9_]*)$/
+                /\.([A-Za-z0-9_]*)$/
             );
 
-        if (functionMatch) {
-            return {
-                objectName:
-                    functionMatch[1],
-                prefix:
-                    functionMatch[2]
-            };
+        if (functionMemberMatch) {
+            const prefix =
+                functionMemberMatch[1];
+
+            const dotIndex =
+                beforeCursor.length -
+                prefix.length -
+                1;
+
+            let closeParenIndex =
+                dotIndex - 1;
+
+            while (
+                closeParenIndex >= 0 &&
+                /\s/.test(
+                    beforeCursor[closeParenIndex]
+                )
+            ) {
+                closeParenIndex--;
+            }
+
+            if (
+                closeParenIndex >= 0 &&
+                beforeCursor[closeParenIndex] === ")"
+            ) {
+                const openParenIndex =
+                    this.findMatchingOpenParen(
+                        beforeCursor,
+                        closeParenIndex
+                    );
+
+                if (openParenIndex >= 0) {
+                    const functionPrefix =
+                        beforeCursor.substring(
+                            0,
+                            openParenIndex
+                        );
+
+                    const functionMatch =
+                        functionPrefix.match(
+                            /([A-Za-z_][A-Za-z0-9_]*)\s*$/
+                        );
+
+                    if (functionMatch) {
+                        return {
+                            objectName:
+                                functionMatch[1],
+                            prefix
+                        };
+                    }
+                }
+            }
         }
 
         /*
+         * ---------------------------------------------------------
          * Variable / array:
          *
          *     output.
          *     color[1].
          *     color[1].xy
+         *     color[1][2].
+         *
+         * ---------------------------------------------------------
          */
+
         const variableMatch =
             beforeCursor.match(
                 /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/
@@ -1299,10 +1329,79 @@ export class CompletionProvider {
         return {
             objectName:
                 variableMatch[1],
-
             prefix:
                 variableMatch[2]
         };
+    }
+
+    private findMatchingOpenParen(
+        text: string,
+        closeParenIndex: number
+    ): number {
+        let depth = 0;
+
+        let inString = false;
+        let quote = "";
+        let escaped = false;
+
+        for (
+            let index = closeParenIndex;
+            index >= 0;
+            index--
+        ) {
+            const char = text[index];
+
+            /*
+             * 文字列中の括弧は無視する。
+             */
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+
+                if (char === "\\") {
+                    escaped = true;
+                    continue;
+                }
+
+                if (char === quote) {
+                    inString = false;
+                    quote = "";
+                }
+
+                continue;
+            }
+
+            /*
+             * 逆方向に読むので、
+             * quote の開始位置を見つけたら
+             * 文字列中として扱う。
+             */
+            if (
+                char === '"' ||
+                char === "'"
+            ) {
+                inString = true;
+                quote = char;
+                continue;
+            }
+
+            if (char === ")") {
+                depth++;
+                continue;
+            }
+
+            if (char === "(") {
+                depth--;
+
+                if (depth === 0) {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
     }
 
     private getCompletionSortText(
@@ -1342,7 +1441,6 @@ export class CompletionProvider {
                 return `5_${symbol.name}`;
         }
     }
-
 
     private getSymbolDocumentation(
         symbol: ShaderSymbol
