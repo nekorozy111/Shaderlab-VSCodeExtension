@@ -48,11 +48,6 @@ export class CompletionProvider {
                 offset
             )
         ) {
-            console.log(
-                [CompletionProvider] +
-                "Inside comment -> no completion"
-            );
-
             return [];
         }
 
@@ -72,25 +67,9 @@ export class CompletionProvider {
                 `[CompletionProvider] ` +
                 `Outside HLSL context -> no completion`
             );
-
             return [];
         }
 
-        console.log(
-            `[CompletionProvider] ` +
-            `Request "${word}"`
-        );
-
-        /*
-        
-        * Member completion:
-        *
-        * object.
-        * object.fi
-        *
-        * の形式なら、object の型を調べて
-        * struct / cbuffer の field を候補にする。
-          */
         const memberAccess =
             this.getMemberAccessAtPosition(
                 text,
@@ -98,13 +77,6 @@ export class CompletionProvider {
             );
 
         if (memberAccess) {
-            console.log(
-                `[CompletionProvider] ` +
-                `Member request: ` +
-                `${memberAccess.objectName}.` +
-                `${memberAccess.prefix}`
-            );
-
             return this.provideMemberCompletion(
                 uri,
                 memberAccess.objectName,
@@ -113,56 +85,51 @@ export class CompletionProvider {
             );
         }
 
-
-        const items:
-            CompletionItem[] = [];
-
-        const seen =
-            new Set<string>();
+        const result: CompletionItem[] = [];
 
         /*
-         * 1. HLSL built-in types
+         * Local variables
+         */
+        result.push(
+            ...this.findLocalVariableCompletions(
+                uri,
+                word,
+                offset
+            )
+        );
+
+        /*
+         * Built-in HLSL types
          */
         for (
             const typeName
             of this.getBuiltinTypes()
         ) {
             if (
-                word.length > 0 &&
-                !typeName
-                    .toLowerCase()
-                    .startsWith(
-                        word.toLowerCase()
-                    )
+                !typeName.startsWith(
+                    word
+                )
             ) {
                 continue;
             }
 
-            if (
-                seen.has(typeName)
-            ) {
-                continue;
-            }
-
-            seen.add(typeName);
-
-            items.push({
+            result.push({
                 label: typeName,
-
                 kind:
                     CompletionItemKind.Keyword,
-
                 detail:
-                    `${this.completionSource} • ` +
-                    `HLSL built-in type`
-
+                    "HLSL built-in type",
+                documentation:
+                    this.completionSource
             });
         }
 
         /*
-         * 2. Symbols from the workspace.
+         * Workspace symbols
          *
-         * Prefer symbols from the current file.
+         * Only symbols from the current file
+         * and recursively related includes are
+         * available.
          */
         const relatedUris =
             this.documentManager
@@ -179,52 +146,13 @@ export class CompletionProvider {
                         )
                 );
 
-        const currentUri =
-            uri;
-
-        const currentFileMatches:
-            typeof matches = [];
-
-        const otherMatches:
-            typeof matches = [];
-
-        for (
-            const match
-            of matches
-        ) {
-            if (
-                match.uri ===
-                currentUri
-            ) {
-                currentFileMatches.push(
-                    match
-                );
-            } else {
-                otherMatches.push(
-                    match
-                );
-            }
-        }
-
-        /*
-         * Current file first.
-         */
         this.addSymbolCompletions(
-            currentFileMatches,
-            items,
-            seen
+            matches,
+            result,
+            new Set<string>()
         );
 
-        /*
-         * Then other workspace symbols.
-         */
-        this.addSymbolCompletions(
-            otherMatches,
-            items,
-            seen
-        );
-
-        return items;
+        return result;
     }
 
     private addSymbolCompletions(
@@ -622,7 +550,76 @@ export class CompletionProvider {
         return items;
     }
 
+    private findLocalVariableCompletions(
+        uri: string,
+        prefix: string,
+        offset: number
+    ): CompletionItem[] {
+        const document =
+            this.documentManager.get(uri);
 
+        if (!document) {
+            return [];
+        }
+
+        const text =
+            document.getText();
+
+        const sourceBeforeCursor =
+            text.substring(
+                0,
+                Math.max(
+                    0,
+                    Math.min(
+                        offset,
+                        text.length
+                    )
+                )
+            );
+
+        const maskedSource =
+            this.maskComments(
+                sourceBeforeCursor
+            );
+
+        const result: CompletionItem[] = [];
+
+        const pattern =
+            /\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
+
+        let match: RegExpExecArray | null;
+
+        while (
+            (match =
+                pattern.exec(maskedSource)) !== null
+        ) {
+            const typeName =
+                match[1];
+
+            const variableName =
+                match[2];
+
+            if (
+                !variableName.startsWith(
+                    prefix
+                )
+            ) {
+                continue;
+            }
+
+            result.push({
+                label: variableName,
+                kind:
+                    CompletionItemKind.Variable,
+                detail:
+                    `${typeName} ${variableName}`,
+                documentation:
+                    this.completionSource
+            });
+        }
+
+        return result;
+    }
     private findLocalVariableDeclaration(
         uri: string,
         variableName: string,
@@ -1145,68 +1142,68 @@ export class CompletionProvider {
         );
     }
 
-private isInsideHlslContext(
-    text: string,
-    offset: number
-): boolean {
-    const beforeCursor =
-        text.substring(
-            0,
-            Math.max(
+    private isInsideHlslContext(
+        text: string,
+        offset: number
+    ): boolean {
+        const beforeCursor =
+            text.substring(
                 0,
-                Math.min(
-                    offset,
-                    text.length
+                Math.max(
+                    0,
+                    Math.min(
+                        offset,
+                        text.length
+                    )
                 )
-            )
+            );
+
+        const hlslStart =
+            beforeCursor.lastIndexOf(
+                "HLSLPROGRAM"
+            );
+
+        const hlslEnd =
+            beforeCursor.lastIndexOf(
+                "ENDHLSL"
+            );
+
+        const cgStart =
+            beforeCursor.lastIndexOf(
+                "CGPROGRAM"
+            );
+
+        const cgEnd =
+            beforeCursor.lastIndexOf(
+                "ENDCG"
+            );
+
+        const hlslIncludeStart =
+            beforeCursor.lastIndexOf(
+                "HLSLINCLUDE"
+            );
+
+        const hlslIncludeEnd =
+            beforeCursor.lastIndexOf(
+                "ENDHLSL"
+            );
+
+        const insideHlslProgram =
+            hlslStart > hlslEnd;
+
+        const insideCgProgram =
+            cgStart > cgEnd;
+
+        const insideHlslInclude =
+            hlslIncludeStart >
+            hlslIncludeEnd;
+
+        return (
+            insideHlslProgram ||
+            insideCgProgram ||
+            insideHlslInclude
         );
-
-    const hlslStart =
-        beforeCursor.lastIndexOf(
-            "HLSLPROGRAM"
-        );
-
-    const hlslEnd =
-        beforeCursor.lastIndexOf(
-            "ENDHLSL"
-        );
-
-    const cgStart =
-        beforeCursor.lastIndexOf(
-            "CGPROGRAM"
-        );
-
-    const cgEnd =
-        beforeCursor.lastIndexOf(
-            "ENDCG"
-        );
-
-    const hlslIncludeStart =
-        beforeCursor.lastIndexOf(
-            "HLSLINCLUDE"
-        );
-
-    const hlslIncludeEnd =
-        beforeCursor.lastIndexOf(
-            "ENDHLSL"
-        );
-
-    const insideHlslProgram =
-        hlslStart > hlslEnd;
-
-    const insideCgProgram =
-        cgStart > cgEnd;
-
-    const insideHlslInclude =
-        hlslIncludeStart >
-        hlslIncludeEnd;
-
-    return (
-        insideHlslProgram ||
-        insideCgProgram ||
-        insideHlslInclude
-    );
-}
+    }
 
     private getBuiltinTypes():
         string[] {
