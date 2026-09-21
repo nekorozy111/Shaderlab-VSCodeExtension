@@ -427,11 +427,28 @@ export class CompletionProvider {
          * ============================================================
          */
         if (!typeName) {
+            const propertyType =
+                this.findPropertyType(
+                    uri,
+                    objectName
+                );
+
+            if (propertyType) {
+                typeName = propertyType;
+
+                console.log(
+                    `[CompletionProvider] ` +
+                    `Property resolved: ` +
+                    `${objectName} -> ${typeName}`
+                );
+            }
+        }
+
+        if (!typeName) {
             console.log(
                 `[CompletionProvider] ` +
                 `Object not found: ${objectName}`
             );
-
             return [];
         }
 
@@ -443,7 +460,62 @@ export class CompletionProvider {
 
         /*
          * ============================================================
-         * 4. 型名から struct / cbuffer を探す
+         * 4. HLSL 組み込み vector 型
+         * ============================================================
+         *
+         * float2 / float3 / float4
+         * half2  / half3  / half4
+         * double2 / double3 / double4
+         *
+         * 例:
+         *
+         * float4 color;
+         * color.
+         *
+         * → x
+         * → y
+         * → z
+         * → w
+         */
+const builtinMembers =
+    this.getBuiltinTypeMembers(
+        typeName
+    );
+
+if (builtinMembers) {
+    const items: CompletionItem[] = [];
+
+    for (
+        const member
+        of builtinMembers
+    ) {
+        if (
+            prefix.length > 0 &&
+            !member
+                .toLowerCase()
+                .startsWith(
+                    prefix.toLowerCase()
+                )
+        ) {
+            continue;
+        }
+
+        items.push({
+            label: member,
+            kind:
+                CompletionItemKind.Field,
+            detail:
+                `${this.completionSource} • ` +
+                `HLSL built-in type member`
+        });
+    }
+
+    return items;
+}
+
+        /*
+         * ============================================================
+         * 5. 型名から struct / cbuffer を探す
          * ============================================================
          */
         const relatedUris =
@@ -1264,5 +1336,291 @@ export class CompletionProvider {
             "float4x3",
             "float4x4"
         ];
+    }
+private getBuiltinTypeMembers(
+    typeName: string
+): string[] | null {
+    const normalizedType =
+        typeName.toLowerCase();
+
+    /*
+     * ============================================================
+     * HLSL numeric base types
+     * ============================================================
+     */
+
+    const baseTypes = [
+        "float",
+        "half",
+        "double",
+        "int",
+        "uint",
+        "bool",
+
+        "min10float",
+        "min16float",
+
+        "min12int",
+        "min16int",
+
+        "min16uint"
+    ];
+
+    /*
+     * ============================================================
+     * Matrix
+     *
+     * float4x4
+     * float3x4
+     * int2x3
+     * min16float4x4
+     * ...
+     * ============================================================
+     */
+
+    for (
+        const baseType
+        of baseTypes
+    ) {
+        const matrixPattern =
+            new RegExp(
+                `^${baseType}([1-4])x([1-4])$`
+            );
+
+        const matrixMatch =
+            normalizedType.match(
+                matrixPattern
+            );
+
+        if (!matrixMatch) {
+            continue;
+        }
+
+        const rows =
+            Number(matrixMatch[1]);
+
+        const columns =
+            Number(matrixMatch[2]);
+
+        return this.generateMatrixMembers(
+            rows,
+            columns
+        );
+    }
+
+    /*
+     * ============================================================
+     * Vector
+     *
+     * float2
+     * float3
+     * float4
+     * int2
+     * uint4
+     * min16float3
+     * ...
+     * ============================================================
+     */
+
+    for (
+        const baseType
+        of baseTypes
+    ) {
+        const vectorPattern =
+            new RegExp(
+                `^${baseType}([1-4])$`
+            );
+
+        const vectorMatch =
+            normalizedType.match(
+                vectorPattern
+            );
+
+        if (!vectorMatch) {
+            continue;
+        }
+
+        const dimension =
+            Number(vectorMatch[1]);
+
+        return this.generateVectorMembers(
+            dimension
+        );
+    }
+
+    return null;
+}
+private generateVectorMembers(
+    dimension: number
+): string[] {
+    const components =
+        [
+            "x",
+            "y",
+            "z",
+            "w"
+        ].slice(
+            0,
+            dimension
+        );
+
+    const colorComponents =
+        [
+            "r",
+            "g",
+            "b",
+            "a"
+        ].slice(
+            0,
+            dimension
+        );
+
+    const result =
+        new Set<string>();
+
+    const generate =
+        (
+            source: string[],
+            length: number,
+            current: string
+        ): void => {
+            if (
+                current.length ===
+                length
+            ) {
+                result.add(current);
+                return;
+            }
+
+            for (
+                const component
+                of source
+            ) {
+                generate(
+                    source,
+                    length,
+                    current +
+                        component
+                );
+            }
+        };
+
+    /*
+     * x / y / z / w
+     */
+    for (
+        let length = 1;
+        length <= 4;
+        length++
+    ) {
+        generate(
+            components,
+            length,
+            ""
+        );
+    }
+
+    /*
+     * r / g / b / a
+     */
+    for (
+        let length = 1;
+        length <= 4;
+        length++
+    ) {
+        generate(
+            colorComponents,
+            length,
+            ""
+        );
+    }
+
+    return Array.from(result);
+}
+private generateMatrixMembers(
+    rows: number,
+    columns: number
+): string[] {
+    const result: string[] = [];
+
+    for (
+        let row = 0;
+        row < rows;
+        row++
+    ) {
+        for (
+            let column = 0;
+            column < columns;
+            column++
+        ) {
+            result.push(
+                `_m${row}${column}`
+            );
+        }
+    }
+
+    return result;
+}
+    private findPropertyType(
+        uri: string,
+        propertyName: string
+    ): string | undefined {
+        const parsed =
+            this.documentManager.getParsed(uri);
+
+        if (!parsed) {
+            return undefined;
+        }
+
+        const ast = parsed.ast;
+
+        if (
+            ast.kind !==
+            "ShaderDocument"
+        ) {
+            return undefined;
+        }
+
+        const property =
+            ast.properties.find(
+                value =>
+                    value.name ===
+                    propertyName
+            );
+
+        if (!property) {
+            return undefined;
+        }
+
+        const propertyType =
+            property.propertyType;
+
+        if (!propertyType) {
+            return undefined;
+        }
+
+        switch (
+        propertyType.toLowerCase()
+        ) {
+            case "color":
+            case "vector":
+                return "float4";
+
+            case "float":
+            case "range":
+                return "float";
+
+            case "int":
+                return "int";
+
+            case "2d":
+            case "2darray":
+            case "3d":
+            case "cube":
+                return undefined;
+
+            default:
+                return undefined;
+        }
     }
 }
