@@ -16,12 +16,17 @@ import {
     DefinitionProvider
 } from "./definitionProvider";
 
+import {
+    HlslStructNode,
+    ShaderHlslBlockNode
+} from "../parser/ast";
+
 export class HoverProvider {
 
     constructor(
         private readonly documentManager: DocumentManager,
         private readonly definitionProvider: DefinitionProvider
-    ) {}
+    ) { }
 
     public provideHover(
         uri: string,
@@ -54,6 +59,45 @@ export class HoverProvider {
         console.log(
             `[HoverProvider] Request "${word}" in ${uri}`
         );
+
+        const semanticDescription =
+            this.getSemanticDescription(word);
+
+        if (semanticDescription) {
+            const offset =
+                document.offsetAt(
+                    position
+                );
+
+            const field =
+                this.findFieldBySemantic(
+                    uri,
+                    offset,
+                    word
+                );
+
+            if (field) {
+                return {
+                    contents: {
+                        kind: "markdown",
+                        value:
+                            `**${field.name}**\n\n` +
+                            `\`${field.typeName}\` ` +
+                            `\`${field.semantic}\`\n\n` +
+                            semanticDescription
+                    }
+                };
+            }
+
+            return {
+                contents: {
+                    kind: "markdown",
+                    value:
+                        `**${word}**\n\n` +
+                        semanticDescription
+                }
+            };
+        }
 
         /*
          * First, try the normal symbol resolver.
@@ -222,9 +266,9 @@ export class HoverProvider {
             typeMatches.find(
                 match =>
                     match.symbol.kind ===
-                        "struct" ||
+                    "struct" ||
                     match.symbol.kind ===
-                        "cbuffer"
+                    "cbuffer"
             );
 
         console.log(
@@ -250,7 +294,7 @@ export class HoverProvider {
                         this.positionFromOffset(
                             text,
                             nameOffset +
-                                variableName.length
+                            variableName.length
                         )
                 },
                 selectionRange: {
@@ -263,7 +307,7 @@ export class HoverProvider {
                         this.positionFromOffset(
                             text,
                             nameOffset +
-                                variableName.length
+                            variableName.length
                         )
                 }
             },
@@ -415,4 +459,263 @@ export class HoverProvider {
             end
         );
     }
+    private getSemanticDescription(
+        semantic: string
+    ): string | undefined {
+        const descriptions: Record<string, string> = {
+            POSITION:
+                "Vertex position input/output.",
+
+            NORMAL:
+                "Vertex normal input/output.",
+
+            TANGENT:
+                "Vertex tangent input/output.",
+
+            COLOR:
+                "Vertex color input/output.",
+
+            TEXCOORD0:
+                "Texture coordinate 0.",
+
+            TEXCOORD1:
+                "Texture coordinate 1.",
+
+            TEXCOORD2:
+                "Texture coordinate 2.",
+
+            TEXCOORD3:
+                "Texture coordinate 3.",
+
+            TEXCOORD4:
+                "Texture coordinate 4.",
+
+            TEXCOORD5:
+                "Texture coordinate 5.",
+
+            TEXCOORD6:
+                "Texture coordinate 6.",
+
+            TEXCOORD7:
+                "Texture coordinate 7.",
+
+            SV_POSITION:
+                "System-value semantic for vertex position.",
+
+            SV_TARGET:
+                "System-value semantic for render-target output.",
+
+            SV_TARGET0:
+                "System-value semantic for render-target 0.",
+
+            SV_TARGET1:
+                "System-value semantic for render-target 1.",
+
+            SV_TARGET2:
+                "System-value semantic for render-target 2.",
+
+            SV_TARGET3:
+                "System-value semantic for render-target 3.",
+
+            SV_TARGET4:
+                "System-value semantic for render-target 4.",
+
+            SV_TARGET5:
+                "System-value semantic for render-target 5.",
+
+            SV_TARGET6:
+                "System-value semantic for render-target 6.",
+
+            SV_TARGET7:
+                "System-value semantic for render-target 7.",
+
+            SV_DEPTH:
+                "System-value semantic for depth output.",
+
+            SV_VERTEXID:
+                "System-value semantic containing the vertex ID.",
+
+            SV_INSTANCEID:
+                "System-value semantic containing the instance ID.",
+
+            SV_PRIMITIVEID:
+                "System-value semantic containing the primitive ID.",
+
+            SV_ISFRONTFACE:
+                "System-value semantic indicating whether the primitive is front-facing.",
+
+            SV_SAMPLEINDEX:
+                "System-value semantic containing the sample index."
+        };
+
+        return descriptions[
+            semantic.toUpperCase()
+        ];
+    }
+
+    private findFieldBySemantic(
+        uri: string,
+        offset: number,
+        semantic: string
+    ): {
+        name: string;
+        typeName: string;
+        semantic: string;
+    } | undefined {
+        const parsed =
+            this.documentManager.getParsed(uri);
+
+        if (!parsed) {
+            return undefined;
+        }
+
+        const ast = parsed.ast;
+
+        if (ast.kind !== "ShaderDocument") {
+            return undefined;
+        }
+
+        const target =
+            semantic.toUpperCase();
+
+        const isInsideRange = (
+            range: {
+                start: {
+                    offset: number;
+                };
+                end: {
+                    offset: number;
+                };
+            }
+        ): boolean => {
+            return (
+                offset >= range.start.offset &&
+                offset <= range.end.offset
+            );
+        };
+
+        const searchStruct = (
+            structNode: HlslStructNode
+        ) => {
+            for (const field of structNode.fields) {
+                if (!field.semantic) {
+                    continue;
+                }
+
+                if (
+                    field.semantic.toUpperCase() !==
+                    target
+                ) {
+                    continue;
+                }
+
+                if (
+                    !isInsideRange(
+                        field.range
+                    )
+                ) {
+                    continue;
+                }
+
+                return {
+                    name: field.name,
+                    typeName: field.typeName,
+                    semantic: field.semantic
+                };
+            }
+
+            return undefined;
+        };
+
+        const searchHlslBlock = (
+            hlslBlock: ShaderHlslBlockNode
+        ) => {
+            for (
+                const declaration of
+                hlslBlock.hlsl.declarations
+            ) {
+                if (
+                    declaration.kind !==
+                    "HlslStruct"
+                ) {
+                    continue;
+                }
+
+                if (
+                    !isInsideRange(
+                        declaration.range
+                    )
+                ) {
+                    continue;
+                }
+
+                const field =
+                    searchStruct(
+                        declaration
+                    );
+
+                if (field) {
+                    return field;
+                }
+            }
+
+            return undefined;
+        };
+
+        // ShaderDocument直下のHLSL
+        for (
+            const hlslBlock of ast.hlslBlocks
+        ) {
+            const field =
+                searchHlslBlock(
+                    hlslBlock
+                );
+
+            if (field) {
+                return field;
+            }
+        }
+
+        // SubShader / Pass 内のHLSL
+        for (
+            const subShader of
+            ast.subShaders
+        ) {
+            for (
+                const hlslBlock of
+                subShader.hlslBlocks
+            ) {
+                const field =
+                    searchHlslBlock(
+                        hlslBlock
+                    );
+
+                if (field) {
+                    return field;
+                }
+            }
+
+            for (
+                const pass of
+                subShader.passes
+            ) {
+                for (
+                    const hlslBlock of
+                    pass.hlslBlocks
+                ) {
+                    const field =
+                        searchHlslBlock(
+                            hlslBlock
+                        );
+
+                    if (field) {
+                        return field;
+                    }
+                }
+            }
+        }
+
+        return undefined;
+    }
+
 }
