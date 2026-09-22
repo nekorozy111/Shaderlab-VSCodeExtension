@@ -957,88 +957,177 @@ export class DefinitionProvider {
       };
     };
   } | null {
-    /*
-     * ---------------------------------------------------------
-     * WorkspaceIndex に既に登録されている symbol を使う。
-     *
-     * ここでは、
-     *
-     *   variable
-     *   parameter
-     *
-     * だけを対象にする。
-     *
-     * field / struct は絶対に local object として扱わない。
-     * ---------------------------------------------------------
-     */
-
-    const matches = this.documentManager
-      .getWorkspaceIndex()
-      .findExact(variableName)
-      .filter(
-        (match) =>
-          match.symbol.location.uri === document.uri &&
-          (match.symbol.kind === 'variable' || match.symbol.kind === 'parameter'),
-      );
-
-    if (matches.length === 0) {
-      return null;
-    }
+    const text = document.getText();
+    const functionScope = this.findFunctionScopeAtOffset(document, usageOffset);
+    const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     /*
      * ---------------------------------------------------------
-     * 使用位置より前に宣言されている候補だけに限定する。
+     * 1. 通常の変数宣言
+     *
+     * float4 color;
+     * float3 position;
+     * MyStruct data;
+     * const MyStruct data;
+     * static MyStruct data;
      * ---------------------------------------------------------
      */
 
-    const candidates = matches
-      .map((match) => match.symbol)
-      .filter((symbol) => {
-        const startOffset = symbol.location.range.start.offset;
-
-        return startOffset <= usageOffset;
-      });
-
-    if (candidates.length === 0) {
-      return null;
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * 現在位置に最も近い宣言を選択する。
-     *
-     * 例えば、
-     *
-     *   float2 uv
-     *
-     *   float2 uv
-     *
-     * のように同名変数が存在しても、
-     * 現在位置より前で最も近いものを使う。
-     * ---------------------------------------------------------
-     */
-
-    candidates.sort((a, b) => b.location.range.start.offset - a.location.range.start.offset);
-
-    const selected = candidates[0];
-
-    if (!selected.typeName) {
-      return null;
-    }
-
-    console.log(
-      `[DefinitionProvider] Source declaration resolved: ` +
-        `${selected.kind} ` +
-        `${selected.name} : ` +
-        `${selected.typeName} @ ` +
-        `${selected.location.uri}`,
+    const variablePattern = new RegExp(
+      '\\b' +
+        '(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*' +
+        '([A-Za-z_][A-Za-z0-9_]*)' +
+        '\\s+' +
+        escapedName +
+        '\\s*(?==|;|,|\\[|:)',
+      'g',
     );
 
+    let best: {
+      name: string;
+      typeName: string;
+      startOffset: number;
+      endOffset: number;
+    } | null = null;
+
+    let match: RegExpExecArray | null;
+
+    while ((match = variablePattern.exec(text)) !== null) {
+      const startOffset = match.index;
+
+      if (startOffset >= usageOffset) {
+        continue;
+      }
+      if (functionScope) {
+        if (startOffset < functionScope.startOffset || startOffset > functionScope.endOffset) {
+          continue;
+        }
+      }
+      const typeName = match[1];
+
+      if (this.isVariableDeclarationKeyword(typeName)) {
+        continue;
+      }
+
+      const nameStart = text.indexOf(variableName, startOffset);
+
+      if (nameStart < 0) {
+        continue;
+      }
+
+      if (!best || startOffset > best.startOffset) {
+        best = {
+          name: variableName,
+
+          typeName,
+
+          startOffset: nameStart,
+
+          endOffset: nameStart + variableName.length,
+        };
+      }
+    }
+
+    if (best) {
+      return {
+        name: best.name,
+
+        typeName: best.typeName,
+
+        uri: document.uri,
+
+        range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
+      };
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2. 関数パラメータ
+     *
+     * float4 Test(MyStruct a, MyStruct b)
+     *
+     * a.position
+     * b.position
+     *
+     * ここを現在の実装では拾えていなかった。
+     * ---------------------------------------------------------
+     */
+
+    const parameterPattern = new RegExp(
+      '\\b' + '([A-Za-z_][A-Za-z0-9_]*)' + '\\s+' + escapedName + '\\s*(?=[,)])',
+      'g',
+    );
+
+    while ((match = parameterPattern.exec(text)) !== null) {
+      const startOffset = match.index;
+
+      if (startOffset >= usageOffset) {
+        continue;
+      }
+      if (functionScope) {
+        if (startOffset < functionScope.startOffset || startOffset > functionScope.endOffset) {
+          continue;
+        }
+      }
+      const typeName = match[1];
+
+      if (this.isVariableDeclarationKeyword(typeName)) {
+        continue;
+      }
+
+      /*
+       * structのフィールドなどを
+       * parameterと誤認しないため、
+       * 直前が "(" または "," のケースを優先する。
+       */
+
+      let before = startOffset - 1;
+
+      while (before >= 0 && /\s/.test(text[before])) {
+        before--;
+      }
+
+      if (before < 0) {
+        continue;
+      }
+
+      const beforeChar = text[before];
+
+      if (beforeChar !== '(' && beforeChar !== ',') {
+        continue;
+      }
+
+      const nameStart = text.indexOf(variableName, startOffset);
+
+      if (nameStart < 0) {
+        continue;
+      }
+
+      if (!best || startOffset > best.startOffset) {
+        best = {
+          name: variableName,
+
+          typeName,
+
+          startOffset: nameStart,
+
+          endOffset: nameStart + variableName.length,
+        };
+      }
+    }
+
+    if (!best) {
+      return null;
+    }
+
     return {
-      name: selected.name,
-      typeName: selected.typeName,
-      uri: selected.location.uri,
-      range: selected.location.range,
+      name: best.name,
+
+      typeName: best.typeName,
+
+      uri: document.uri,
+
+      range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
     };
   }
 
@@ -1614,5 +1703,89 @@ export class DefinitionProvider {
     }
 
     return text.substring(start, end);
+  }
+  private findFunctionScopeAtOffset(
+    document: TextDocument,
+    offset: number,
+  ): {
+    startOffset: number;
+    endOffset: number;
+  } | null {
+    const text = document.getText();
+
+    /*
+     * 関数の { を探す。
+     *
+     * HLSLでは、
+     *
+     *     ReturnType FunctionName(...)
+     *     {
+     *         ...
+     *     }
+     *
+     * という構造なので、カーソル位置より前にある
+     * function body の開始位置を探す。
+     */
+
+    const functionPattern = /\b[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^{};]*\)\s*\{/g;
+
+    let match: RegExpExecArray | null;
+    let bestStart = -1;
+    let bestEnd = -1;
+
+    while ((match = functionPattern.exec(text)) !== null) {
+      const openBraceOffset = match.index + match[0].lastIndexOf('{');
+
+      if (openBraceOffset >= offset) {
+        continue;
+      }
+
+      /*
+       * この { に対応する } を探す。
+       */
+      let depth = 0;
+      let endOffset = -1;
+
+      for (let i = openBraceOffset; i < text.length; i++) {
+        const char = text[i];
+
+        if (char === '{') {
+          depth++;
+        } else if (char === '}') {
+          depth--;
+
+          if (depth === 0) {
+            endOffset = i + 1;
+            break;
+          }
+        }
+      }
+
+      if (endOffset < 0) {
+        continue;
+      }
+
+      /*
+       * カーソルがこの関数内にある。
+       *
+       * ネストした関数はHLSLでは通常存在しないため、
+       * 最も内側の一致を採用する。
+       */
+      if (offset >= openBraceOffset && offset <= endOffset) {
+        if (bestStart < 0 || openBraceOffset > bestStart) {
+          bestStart = openBraceOffset;
+          bestEnd = endOffset;
+        }
+      }
+    }
+
+    if (bestStart < 0) {
+      return null;
+    }
+
+    return {
+      startOffset: bestStart,
+      endOffset: bestEnd,
+    };
   }
 }
