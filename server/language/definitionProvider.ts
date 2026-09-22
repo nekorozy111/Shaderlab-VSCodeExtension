@@ -29,6 +29,31 @@ export class DefinitionProvider {
       return null;
     }
 
+    /*
+     * ---------------------------------------------------------
+     * 0. Declaration self
+     * ---------------------------------------------------------
+     */
+
+    const declarationMatches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(word)
+      .filter((match) => match.symbol.location.uri === uri);
+
+    for (const match of declarationMatches) {
+      const range = match.symbol.location.range;
+
+      const inside = offset >= range.start.offset && offset <= range.end.offset;
+
+      if (!inside) {
+        continue;
+      }
+
+      console.log(`[DefinitionProvider] Declaration self -> ` + `${match.symbol.kind} ` + `${match.symbol.name}`);
+
+      return this.toLocation(match.symbol);
+    }
+
     console.log(`[DefinitionProvider] Request "${word}" in ${uri}`);
 
     /*
@@ -80,7 +105,7 @@ export class DefinitionProvider {
       if (localObject) {
         console.log(`[DefinitionProvider] Local source variable: ` + `${localObject.name} : ${localObject.typeName}`);
 
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
 
         if (member) {
           console.log(`[DefinitionProvider] Local member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -116,7 +141,7 @@ export class DefinitionProvider {
           );
 
           if (objectSymbol.typeName) {
-            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
             if (member) {
               console.log(`[DefinitionProvider] Indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -140,7 +165,7 @@ export class DefinitionProvider {
        */
 
       if (localObject) {
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
 
         if (member) {
           return this.toLocation(member);
@@ -164,7 +189,7 @@ export class DefinitionProvider {
         );
 
         if (objectSymbol && objectSymbol.typeName) {
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
           if (member) {
             return this.toLocation(member);
@@ -590,7 +615,7 @@ export class DefinitionProvider {
       if (localObject) {
         console.log(`[DefinitionProvider] Hover local object: ` + `${localObject.name} : ${localObject.typeName}`);
 
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
 
         if (member) {
           console.log(`[DefinitionProvider] Hover local member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -622,7 +647,7 @@ export class DefinitionProvider {
             `[DefinitionProvider] Hover indexed object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
           );
 
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
           if (member) {
             console.log(`[DefinitionProvider] Hover indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -663,7 +688,7 @@ export class DefinitionProvider {
             `[DefinitionProvider] Hover external object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
           );
 
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
           if (member) {
             console.log(
@@ -933,7 +958,7 @@ export class DefinitionProvider {
     };
   } | null {
     const text = document.getText();
-
+    const functionScope = this.findFunctionScopeAtOffset(document, usageOffset);
     const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
     /*
@@ -973,7 +998,11 @@ export class DefinitionProvider {
       if (startOffset >= usageOffset) {
         continue;
       }
-
+      if (functionScope) {
+        if (startOffset < functionScope.startOffset || startOffset > functionScope.endOffset) {
+          continue;
+        }
+      }
       const typeName = match[1];
 
       if (this.isVariableDeclarationKeyword(typeName)) {
@@ -1035,7 +1064,11 @@ export class DefinitionProvider {
       if (startOffset >= usageOffset) {
         continue;
       }
-
+      if (functionScope) {
+        if (startOffset < functionScope.startOffset || startOffset > functionScope.endOffset) {
+          continue;
+        }
+      }
       const typeName = match[1];
 
       if (this.isVariableDeclarationKeyword(typeName)) {
@@ -1104,30 +1137,94 @@ export class DefinitionProvider {
    * -------------------------------------------------------------
    */
 
-  private findStructField(typeName: string, memberName: string): ShaderSymbol | null {
+  private findStructField(typeName: string, memberName: string, rootUri: string): ShaderSymbol | null {
     const normalizedType = typeName.replace(/\b(const|static|uniform|volatile|in|out|inout)\b/g, '').trim();
-
-    const structMatches = this.documentManager.getWorkspaceIndex().findByKind(normalizedType, 'struct');
-
-    console.log(`[DefinitionProvider] Struct lookup: ` + `${normalizedType} -> ${structMatches.length}`);
 
     const normalizedMember = memberName.toLowerCase();
 
-    for (const match of structMatches) {
+    /*
+     * ---------------------------------------------------------
+     * 現在のファイルから到達可能なファイルだけを対象にする。
+     *
+     * rootUri
+     *   ├─ include A
+     *   │    └─ include B
+     *   └─ include C
+     *
+     * なら、
+     *
+     * rootUri / A / B / C
+     *
+     * のStructだけが候補になる。
+     *
+     * Workspace上に存在するだけの別Shaderは対象外。
+     * ---------------------------------------------------------
+     */
+
+    this.loadIncludedDocuments(rootUri);
+
+    const relatedUris = new Set<string>();
+    relatedUris.add(rootUri);
+
+    this.collectRelatedIncludeUris(rootUri, relatedUris);
+
+    const structMatches = this.documentManager
+      .getWorkspaceIndex()
+      .findByKind(normalizedType, 'struct')
+      .filter((match) => relatedUris.has(match.symbol.location.uri));
+
+    console.log(
+      `[DefinitionProvider] Struct lookup: ` +
+        `${normalizedType} -> ` +
+        `${structMatches.length} ` +
+        `(related=${relatedUris.size})`,
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * 現在のファイルに同名Structがある場合は、
+     * それを最優先する。
+     *
+     * 例:
+     *
+     * TestShader
+     *   struct TestInput
+     *
+     * TestCommonHlsl
+     *   struct TestInput
+     *
+     * の場合、TestShaderからの
+     *
+     *   input.uv
+     *
+     * は TestShader 側を優先する。
+     * ---------------------------------------------------------
+     */
+
+    const orderedMatches = [
+      ...structMatches.filter((match) => match.symbol.location.uri === rootUri),
+      ...structMatches.filter((match) => match.symbol.location.uri !== rootUri),
+    ];
+
+    for (const match of orderedMatches) {
       const struct = match.symbol;
 
       const field = struct.children.find(
         (child) => child.kind === 'field' && child.name.toLowerCase() === normalizedMember,
       );
 
-      if (field) {
-        console.log(
-          `[DefinitionProvider] Field resolved: ` + `${normalizedType}.${memberName} @ ` + `${field.location.uri}`,
-        );
-
-        return field;
+      if (!field) {
+        continue;
       }
+
+      console.log(
+        `[DefinitionProvider] Field resolved: ` + `${normalizedType}.${memberName} @ ` + `${field.location.uri}`,
+      );
+
+      return field;
     }
+
+    console.log(`[DefinitionProvider] Field not found: ` + `${normalizedType}.${memberName}`);
 
     return null;
   }
@@ -1606,5 +1703,89 @@ export class DefinitionProvider {
     }
 
     return text.substring(start, end);
+  }
+  private findFunctionScopeAtOffset(
+    document: TextDocument,
+    offset: number,
+  ): {
+    startOffset: number;
+    endOffset: number;
+  } | null {
+    const text = document.getText();
+
+    /*
+     * 関数の { を探す。
+     *
+     * HLSLでは、
+     *
+     *     ReturnType FunctionName(...)
+     *     {
+     *         ...
+     *     }
+     *
+     * という構造なので、カーソル位置より前にある
+     * function body の開始位置を探す。
+     */
+
+    const functionPattern = /\b[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^{};]*\)\s*\{/g;
+
+    let match: RegExpExecArray | null;
+    let bestStart = -1;
+    let bestEnd = -1;
+
+    while ((match = functionPattern.exec(text)) !== null) {
+      const openBraceOffset = match.index + match[0].lastIndexOf('{');
+
+      if (openBraceOffset >= offset) {
+        continue;
+      }
+
+      /*
+       * この { に対応する } を探す。
+       */
+      let depth = 0;
+      let endOffset = -1;
+
+      for (let i = openBraceOffset; i < text.length; i++) {
+        const char = text[i];
+
+        if (char === '{') {
+          depth++;
+        } else if (char === '}') {
+          depth--;
+
+          if (depth === 0) {
+            endOffset = i + 1;
+            break;
+          }
+        }
+      }
+
+      if (endOffset < 0) {
+        continue;
+      }
+
+      /*
+       * カーソルがこの関数内にある。
+       *
+       * ネストした関数はHLSLでは通常存在しないため、
+       * 最も内側の一致を採用する。
+       */
+      if (offset >= openBraceOffset && offset <= endOffset) {
+        if (bestStart < 0 || openBraceOffset > bestStart) {
+          bestStart = openBraceOffset;
+          bestEnd = endOffset;
+        }
+      }
+    }
+
+    if (bestStart < 0) {
+      return null;
+    }
+
+    return {
+      startOffset: bestStart,
+      endOffset: bestEnd,
+    };
   }
 }
