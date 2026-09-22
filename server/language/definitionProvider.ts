@@ -740,7 +740,49 @@ export class DefinitionProvider {
 
     relatedUris.add(uri);
     this.collectRelatedIncludeUris(uri, relatedUris);
+    const localVariable = this.findVariableDeclarationInSource(document, word, offset);
+    if (localVariable) {
+      console.log(
+        `[DefinitionProvider] Resolve local source variable: ` + `${localVariable.name} : ${localVariable.typeName}`,
+      );
 
+      const start = localVariable.range.start;
+      const end = localVariable.range.end;
+
+      return {
+        name: localVariable.name,
+        kind: 'variable',
+        location: {
+          uri: localVariable.uri,
+          range: {
+            start: {
+              line: start.line,
+              character: start.character,
+              offset: document.offsetAt(start),
+            },
+            end: {
+              line: end.line,
+              character: end.character,
+              offset: document.offsetAt(end),
+            },
+          },
+          selectionRange: {
+            start: {
+              line: start.line,
+              character: start.character,
+              offset: document.offsetAt(start),
+            },
+            end: {
+              line: end.line,
+              character: end.character,
+              offset: document.offsetAt(end),
+            },
+          },
+        },
+        typeName: localVariable.typeName,
+        children: [],
+      };
+    }
     const matches = this.documentManager
       .getWorkspaceIndex()
       .findExact(word)
