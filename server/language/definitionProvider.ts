@@ -1006,6 +1006,7 @@ export class DefinitionProvider {
       typeName: string;
       startOffset: number;
       endOffset: number;
+      blockDepth?: number;
     } | null = null;
 
     let match: RegExpExecArray | null;
@@ -1034,15 +1035,50 @@ export class DefinitionProvider {
       }
 
       if (!best || startOffset > best.startOffset) {
-        best = {
-          name: variableName,
+        const declarationBlock = this.findBlockScopeAtOffset(text, startOffset);
 
-          typeName,
+        if (!declarationBlock) {
+          continue;
+        }
 
-          startOffset: nameStart,
+        /*
+         * 宣言を含むblockのスコープ内に
+         * 使用位置が存在する必要がある。
+         *
+         * 外側block:
+         *
+         * {
+         *     position;        // declarationBlock = 外側
+         *
+         *     {
+         *         position;    // declarationBlock = 内側
+         *     }
+         *
+         *     position;        // 内側positionはここでは不可
+         * }
+         */
+        if (usageOffset < declarationBlock.startOffset || usageOffset > declarationBlock.endOffset) {
+          continue;
+        }
 
-          endOffset: nameStart + variableName.length,
-        };
+        /*
+         * 同名変数が複数ある場合、
+         * 使用位置を含む最も内側のblockを優先する。
+         */
+        if (
+          !best ||
+          best.blockDepth === undefined ||
+          declarationBlock.depth > best.blockDepth ||
+          (declarationBlock.depth === best.blockDepth && startOffset > best.startOffset)
+        ) {
+          best = {
+            name: variableName,
+            typeName,
+            startOffset: nameStart,
+            endOffset: nameStart + variableName.length,
+            blockDepth: declarationBlock.depth,
+          };
+        }
       }
     }
 
@@ -1736,6 +1772,62 @@ export class DefinitionProvider {
     }
 
     return text.substring(start, end);
+  }
+  private findBlockScopeAtOffset(
+    text: string,
+    offset: number,
+  ): {
+    startOffset: number;
+    endOffset: number;
+    depth: number;
+  } | null {
+    const stack: number[] = [];
+
+    let bestStart = -1;
+    let bestEnd = -1;
+    let bestDepth = -1;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+
+      if (char === '{') {
+        stack.push(i);
+        continue;
+      }
+
+      if (char !== '}') {
+        continue;
+      }
+
+      if (stack.length === 0) {
+        continue;
+      }
+
+      const startOffset = stack.pop()!;
+
+      /*
+       * このblockが使用位置を含むか確認。
+       */
+      if (offset >= startOffset && offset <= i + 1) {
+        const depth = stack.length + 1;
+
+        if (depth > bestDepth) {
+          bestStart = startOffset;
+          bestEnd = i + 1;
+          bestDepth = depth;
+        }
+      }
+    }
+
+    if (bestStart < 0) {
+      return null;
+    }
+
+    return {
+      startOffset: bestStart,
+      endOffset: bestEnd,
+      depth: bestDepth,
+    };
   }
   private findFunctionScopeAtOffset(
     document: TextDocument,
