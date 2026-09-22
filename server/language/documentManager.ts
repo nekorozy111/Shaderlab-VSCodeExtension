@@ -1,553 +1,327 @@
-import * as path from "path";
+import * as path from 'path';
 
-import {
-    TextDocument
-} from "vscode-languageserver-textdocument";
-
-import { ParsedDocument } from "../parser/ast";
-import { ParserService } from "../parser/parserService";
-import { WorkspaceIndex } from "../symbol/workspaceIndex";
-import { ProjectService } from "../project/projectService";
+import { TextDocument } from 'vscode-languageserver-textdocument';
+import { ParsedDocument } from '../parser/ast';
+import { ParserService } from '../parser/parserService';
+import { WorkspaceIndex } from '../symbol/workspaceIndex';
+import { ProjectService } from '../project/projectService';
 
 export class DocumentManager {
-    private readonly documents =
-        new Map<string, TextDocument>();
+  private readonly documents = new Map<string, TextDocument>();
 
-    private readonly parsedDocuments =
-        new Map<string, ParsedDocument>();
+  private readonly parsedDocuments = new Map<string, ParsedDocument>();
 
-    private readonly parserService =
-        new ParserService();
+  private readonly parserService = new ParserService();
 
-    private readonly workspaceIndex =
-        new WorkspaceIndex();
+  private readonly workspaceIndex = new WorkspaceIndex();
 
-    private readonly projectService =
-        new ProjectService();
+  private readonly projectService = new ProjectService();
 
-    public initializeProject(
-        params: Parameters<
-            ProjectService["initialize"]
-        >[0]
-    ): void {
-        this.projectService.initialize(
-            params
-        );
+  public initializeProject(params: Parameters<ProjectService['initialize']>[0]): void {
+    this.projectService.initialize(params);
+  }
+
+  public getProjectService(): ProjectService {
+    return this.projectService;
+  }
+
+  public open(document: TextDocument): ParsedDocument {
+    this.documents.set(document.uri, document);
+
+    return this.parseDocument(document);
+  }
+
+  public update(document: TextDocument): ParsedDocument {
+    this.documents.set(document.uri, document);
+
+    return this.parseDocument(document);
+  }
+
+  public close(document: TextDocument): void {
+    this.documents.delete(document.uri);
+
+    this.parsedDocuments.delete(document.uri);
+
+    this.workspaceIndex.remove(document.uri);
+  }
+
+  public get(uri: string): TextDocument | undefined {
+    return this.documents.get(uri);
+  }
+
+  public getParsed(uri: string): ParsedDocument | undefined {
+    return this.parsedDocuments.get(uri);
+  }
+
+  public getWorkspaceIndex(): WorkspaceIndex {
+    return this.workspaceIndex;
+  }
+
+  public has(uri: string): boolean {
+    return this.documents.has(uri);
+  }
+
+  public all(): TextDocument[] {
+    return Array.from(this.documents.values());
+  }
+
+  public allParsed(): ParsedDocument[] {
+    return Array.from(this.parsedDocuments.values());
+  }
+
+  public clear(): void {
+    this.documents.clear();
+    this.parsedDocuments.clear();
+    this.workspaceIndex.clear();
+  }
+
+  public ensureExternalDocument(uri: string): ParsedDocument | undefined {
+    const existing = this.workspaceIndex.getDocument(uri);
+
+    if (existing) {
+      return existing;
     }
 
-    public getProjectService():
-        ProjectService {
-        return this.projectService;
+    const filePath = this.uriToPath(uri);
+
+    if (!filePath) {
+      return undefined;
     }
 
-    public open(
-        document: TextDocument
-    ): ParsedDocument {
-        this.documents.set(
-            document.uri,
-            document
-        );
+    const text = this.projectService.readFile(filePath);
 
-        return this.parseDocument(
-            document
-        );
+    if (text === undefined) {
+      return undefined;
     }
 
-    public update(
-        document: TextDocument
-    ): ParsedDocument {
-        this.documents.set(
-            document.uri,
-            document
-        );
+    const languageId = this.detectLanguageId(filePath);
 
-        return this.parseDocument(
-            document
-        );
+    if (!languageId) {
+      return undefined;
     }
 
-    public close(
-        document: TextDocument
-    ): void {
-        this.documents.delete(
-            document.uri
-        );
+    const document = TextDocument.create(uri, languageId, 0, text);
 
-        this.parsedDocuments.delete(
-            document.uri
-        );
+    const parsed = this.parserService.parse(document);
 
-        this.workspaceIndex.remove(
-            document.uri
-        );
+    this.workspaceIndex.update(parsed);
+
+    return parsed;
+  }
+
+  private collectHlslIncludes(ast: any, result: string[]): void {
+    if (!ast || !Array.isArray(ast.declarations)) {
+      return;
     }
 
-    public get(
-        uri: string
-    ): TextDocument | undefined {
-        return this.documents.get(uri);
+    for (const declaration of ast.declarations) {
+      if (declaration?.kind === 'HlslInclude' && typeof declaration.path === 'string') {
+        result.push(declaration.path);
+      }
+    }
+  }
+
+  public getRelatedIncludeUris(rootUri: string): Set<string> {
+    const result = new Set<string>();
+
+    result.add(rootUri);
+
+    const visited = new Set<string>();
+
+    const parsed = this.getParsed(rootUri);
+
+    if (!parsed) {
+      return result;
     }
 
-    public getParsed(
-        uri: string
-    ): ParsedDocument | undefined {
-        return this.parsedDocuments.get(uri);
+    this.collectRelatedIncludeUrisRecursive(rootUri, parsed, visited, result);
+
+    return result;
+  }
+
+  private collectRelatedIncludeUrisRecursive(
+    uri: string,
+    parsed: ParsedDocument,
+    visited: Set<string>,
+    result: Set<string>,
+    source?: string,
+  ): void {
+    if (visited.has(uri)) {
+      return;
     }
 
-    public getWorkspaceIndex():
-        WorkspaceIndex {
-        return this.workspaceIndex;
+    visited.add(uri);
+
+    let includePaths: string[];
+
+    /*
+     * 外部 HLSL は実ファイルの内容から
+     * #include を取得する。
+     */
+    if (parsed.languageId === 'hlsl' && source !== undefined) {
+      includePaths = this.collectRawHlslIncludes(source);
+    } else {
+      includePaths = this.collectIncludes(parsed);
     }
 
-    public has(
-        uri: string
-    ): boolean {
-        return this.documents.has(uri);
+    for (const includePath of includePaths) {
+      const resolved = this.projectService.resolveInclude(includePath, uri);
+
+      if (!resolved) {
+        continue;
+      }
+
+      result.add(resolved.uri);
+
+      /*
+       * include 先を Parse / Index。
+       */
+      const externalDocument = this.ensureExternalDocument(resolved.uri);
+
+      if (!externalDocument) {
+        continue;
+      }
+
+      /*
+       * 再帰的な #include を調べるため、
+       * 外部ファイルの raw source を取得する。
+       */
+      const externalSource = this.projectService.readFile(resolved.resolvedPath);
+
+      this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
+    }
+  }
+
+  private collectIncludes(parsed: ParsedDocument): string[] {
+    const result: string[] = [];
+
+    if (parsed.ast.kind === 'ShaderDocument') {
+      this.collectShaderLabIncludes(parsed.ast, result);
+    } else {
+      this.collectHlslIncludes(parsed.ast, result);
     }
 
-    public all(): TextDocument[] {
-        return Array.from(
-            this.documents.values()
-        );
+    return result;
+  }
+
+  private collectShaderLabIncludes(ast: any, result: string[]): void {
+    if (!ast) {
+      return;
     }
 
-    public allParsed():
-        ParsedDocument[] {
-        return Array.from(
-            this.parsedDocuments.values()
-        );
+    /*
+     * Shader 全体の HLSL ブロック
+     */
+    if (Array.isArray(ast.hlslBlocks)) {
+      for (const block of ast.hlslBlocks) {
+        this.collectHlslIncludes(block?.hlsl, result);
+      }
     }
 
-    public clear(): void {
-        this.documents.clear();
-        this.parsedDocuments.clear();
-        this.workspaceIndex.clear();
+    if (!Array.isArray(ast.subShaders)) {
+      return;
     }
 
-    public ensureExternalDocument(
-        uri: string
-    ): ParsedDocument | undefined {
-        const existing =
-            this.workspaceIndex
-                .getDocument(uri);
+    for (const subShader of ast.subShaders) {
+      /*
+       * SubShader 内の HLSL
+       */
+      if (Array.isArray(subShader.hlslBlocks)) {
+        for (const block of subShader.hlslBlocks) {
+          this.collectHlslIncludes(block?.hlsl, result);
+        }
+      }
 
-        if (existing) {
-            return existing;
+      /*
+       * Pass 内の HLSL
+       */
+      if (!Array.isArray(subShader.passes)) {
+        continue;
+      }
+
+      for (const pass of subShader.passes) {
+        if (!Array.isArray(pass.hlslBlocks)) {
+          continue;
         }
 
-        const filePath =
-            this.uriToPath(uri);
-
-        if (!filePath) {
-            return undefined;
+        for (const block of pass.hlslBlocks) {
+          this.collectHlslIncludes(block?.hlsl, result);
         }
+      }
+    }
+  }
 
-        const text =
-            this.projectService
-                .readFile(filePath);
+  private collectRawHlslIncludes(source: string): string[] {
+    const result: string[] = [];
 
-        if (text === undefined) {
-            return undefined;
-        }
+    const lines = source.split(/\r?\n/);
 
-        const languageId =
-            this.detectLanguageId(
-                filePath
-            );
+    for (const line of lines) {
+      /*
+       * 行末コメントを除去する。
+       *
+       * ただし include path 内の
+       * // は対象外になるよう、
+       * include path を先に取得する。
+       */
+      const match = line.match(/^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)(?:\s*\/\/.*)?$/);
 
-        if (!languageId) {
-            return undefined;
-        }
+      if (!match) {
+        continue;
+      }
 
-        const document =
-            TextDocument.create(
-                uri,
-                languageId,
-                0,
-                text
-            );
+      const includePath = match[1] ?? match[2];
 
-        const parsed =
-            this.parserService.parse(
-                document
-            );
+      if (!includePath) {
+        continue;
+      }
 
-        this.workspaceIndex.update(
-            parsed
-        );
-
-        return parsed;
+      result.push(includePath.trim());
     }
 
-    private collectHlslIncludes(
-        ast: any,
-        result: string[]
-    ): void {
-        if (
-            !ast ||
-            !Array.isArray(
-                ast.declarations
-            )
-        ) {
-            return;
-        }
+    return result;
+  }
+  private parseDocument(document: TextDocument): ParsedDocument {
+    const parsed = this.parserService.parse(document);
 
-        for (
-            const declaration
-            of ast.declarations
-        ) {
-            if (
-                declaration?.kind ===
-                "HlslInclude" &&
-                typeof declaration.path ===
-                "string"
-            ) {
-                result.push(
-                    declaration.path
-                );
-            }
-        }
+    this.parsedDocuments.set(document.uri, parsed);
+
+    this.workspaceIndex.update(parsed);
+
+    return parsed;
+  }
+
+  private detectLanguageId(filePath: string): string | undefined {
+    const extension = path.extname(filePath).toLowerCase();
+
+    switch (extension) {
+      case '.shader':
+        return 'shaderlab';
+
+      case '.hlsl':
+      case '.hlsli':
+        return 'hlsl';
+
+      default:
+        return undefined;
+    }
+  }
+
+  private uriToPath(uri: string): string | undefined {
+    if (!uri.startsWith('file://')) {
+      return undefined;
     }
 
-    public getRelatedIncludeUris(
-        rootUri: string
-    ): Set<string> {
-        const result =
-            new Set<string>();
+    try {
+      let value = decodeURIComponent(uri.substring('file://'.length));
 
-        result.add(rootUri);
+      if (/^\/[A-Za-z]:\//.test(value)) {
+        value = value.substring(1);
+      }
 
-        const visited =
-            new Set<string>();
-
-        const parsed =
-            this.getParsed(rootUri);
-
-        if (!parsed) {
-            return result;
-        }
-
-        this.collectRelatedIncludeUrisRecursive(
-            rootUri,
-            parsed,
-            visited,
-            result
-        );
-
-        return result;
+      return value;
+    } catch {
+      return undefined;
     }
-
-    private collectRelatedIncludeUrisRecursive(
-        uri: string,
-        parsed: ParsedDocument,
-        visited: Set<string>,
-        result: Set<string>,
-        source?: string
-    ): void {
-        if (
-            visited.has(uri)
-        ) {
-            return;
-        }
-
-        visited.add(uri);
-
-        let includePaths:
-            string[];
-
-        /*
-         * 外部 HLSL は実ファイルの内容から
-         * #include を取得する。
-         */
-        if (
-            parsed.languageId === "hlsl" &&
-            source !== undefined
-        ) {
-            includePaths =
-                this.collectRawHlslIncludes(
-                    source
-                );
-        } else {
-            includePaths =
-                this.collectIncludes(
-                    parsed
-                );
-        }
-
-        for (
-            const includePath
-            of includePaths
-        ) {
-            const resolved =
-                this.projectService
-                    .resolveInclude(
-                        includePath,
-                        uri
-                    );
-
-            if (!resolved) {
-                continue;
-            }
-
-            result.add(
-                resolved.uri
-            );
-
-            /*
-             * include 先を Parse / Index。
-             */
-            const externalDocument =
-                this.ensureExternalDocument(
-                    resolved.uri
-                );
-
-            if (!externalDocument) {
-                continue;
-            }
-
-            /*
-             * 再帰的な #include を調べるため、
-             * 外部ファイルの raw source を取得する。
-             */
-            const externalSource =
-                this.projectService.readFile(
-                    resolved.resolvedPath
-                );
-
-            this.collectRelatedIncludeUrisRecursive(
-                resolved.uri,
-                externalDocument,
-                visited,
-                result,
-                externalSource
-            );
-        }
-    }
-
-    private collectIncludes(
-        parsed: ParsedDocument
-    ): string[] {
-        const result:
-            string[] = [];
-
-        if (
-            parsed.ast.kind ===
-            "ShaderDocument"
-        ) {
-            this.collectShaderLabIncludes(
-                parsed.ast,
-                result
-            );
-        } else {
-            this.collectHlslIncludes(
-                parsed.ast,
-                result
-            );
-        }
-
-        return result;
-    }
-
-    private collectShaderLabIncludes(
-        ast: any,
-        result: string[]
-    ): void {
-        if (!ast) {
-            return;
-        }
-
-        /*
-         * Shader 全体の HLSL ブロック
-         */
-        if (
-            Array.isArray(
-                ast.hlslBlocks
-            )
-        ) {
-            for (
-                const block
-                of ast.hlslBlocks
-            ) {
-                this.collectHlslIncludes(
-                    block?.hlsl,
-                    result
-                );
-            }
-        }
-
-        if (
-            !Array.isArray(
-                ast.subShaders
-            )
-        ) {
-            return;
-        }
-
-        for (
-            const subShader
-            of ast.subShaders
-        ) {
-            /*
-             * SubShader 内の HLSL
-             */
-            if (
-                Array.isArray(
-                    subShader.hlslBlocks
-                )
-            ) {
-                for (
-                    const block
-                    of subShader.hlslBlocks
-                ) {
-                    this.collectHlslIncludes(
-                        block?.hlsl,
-                        result
-                    );
-                }
-            }
-
-            /*
-             * Pass 内の HLSL
-             */
-            if (
-                !Array.isArray(
-                    subShader.passes
-                )
-            ) {
-                continue;
-            }
-
-            for (
-                const pass
-                of subShader.passes
-            ) {
-                if (
-                    !Array.isArray(
-                        pass.hlslBlocks
-                    )
-                ) {
-                    continue;
-                }
-
-                for (
-                    const block
-                    of pass.hlslBlocks
-                ) {
-                    this.collectHlslIncludes(
-                        block?.hlsl,
-                        result
-                    );
-                }
-            }
-        }
-    }
-
-    private collectRawHlslIncludes(
-        source: string
-    ): string[] {
-
-        const result: string[] = [];
-
-        const lines =
-            source.split(/\r?\n/);
-
-        for (const line of lines) {
-
-            /*
-             * 行末コメントを除去する。
-             *
-             * ただし include path 内の
-             * // は対象外になるよう、
-             * include path を先に取得する。
-             */
-            const match =
-                line.match(
-                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)(?:\s*\/\/.*)?$/
-                );
-
-            if (!match) {
-                continue;
-            }
-
-            const includePath =
-                match[1] ??
-                match[2];
-
-            if (!includePath) {
-                continue;
-            }
-
-            result.push(
-                includePath.trim()
-            );
-        }
-
-        return result;
-    }
-    private parseDocument(
-        document: TextDocument
-    ): ParsedDocument {
-        const parsed =
-            this.parserService.parse(
-                document
-            );
-
-        this.parsedDocuments.set(
-            document.uri,
-            parsed
-        );
-
-        this.workspaceIndex.update(
-            parsed
-        );
-
-        return parsed;
-    }
-
-    private detectLanguageId(
-        filePath: string
-    ): string | undefined {
-        const extension =
-            path.extname(filePath)
-                .toLowerCase();
-
-        switch (extension) {
-            case ".shader":
-                return "shaderlab";
-
-            case ".hlsl":
-            case ".hlsli":
-                return "hlsl";
-
-            default:
-                return undefined;
-        }
-    }
-
-    private uriToPath(
-        uri: string
-    ): string | undefined {
-        if (!uri.startsWith("file://")) {
-            return undefined;
-        }
-
-        try {
-            let value =
-                decodeURIComponent(
-                    uri.substring(
-                        "file://".length
-                    )
-                );
-
-            if (
-                /^\/[A-Za-z]:\//.test(value)
-            ) {
-                value = value.substring(1);
-            }
-
-            return value;
-        } catch {
-            return undefined;
-        }
-    }
+  }
 }

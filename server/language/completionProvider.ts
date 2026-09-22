@@ -1,2092 +1,1354 @@
-import {
-    CompletionItem,
-    CompletionItemKind,
-    Position
-} from "vscode-languageserver/node";
-
-import {
-    TextDocument
-} from "vscode-languageserver-textdocument";
-
-import {
-    DocumentManager
-} from "./documentManager";
-
-import {
-    ShaderSymbol
-} from "../symbol/symbol";
+import { CompletionItem, CompletionItemKind, Position } from 'vscode-languageserver/node';
+import { DocumentManager } from './documentManager';
+import { ShaderSymbol } from '../symbol/symbol';
 
 export class CompletionProvider {
-    public constructor(
-        private readonly documentManager: DocumentManager
-    ) { }
+  public constructor(private readonly documentManager: DocumentManager) {}
 
-    private readonly completionSource =
-        "ShaderLab IntelliSense";
+  private readonly completionSource = 'ShaderLab IntelliSense';
 
+  public provideCompletion(uri: string, position: Position): CompletionItem[] {
+    const document = this.documentManager.get(uri);
 
-    public provideCompletion(
-        uri: string,
-        position: Position
-    ): CompletionItem[] {
-        const document =
-            this.documentManager.get(uri);
-
-        if (!document) {
-            return [];
-        }
-
-        const text =
-            document.getText();
-
-        const offset =
-            document.offsetAt(position);
-
-        if (
-            this.isInsideComment(
-                text,
-                offset
-            )
-        ) {
-            return [];
-        }
-
-        if (
-            this.isInsideString(
-                text,
-                offset
-            )
-        ) {
-            return [];
-        }
-
-        const word =
-            this.getWordBeforeCursor(
-                text,
-                offset
-            );
-
-        if (
-            !this.isInsideHlslContext(
-                text,
-                offset
-            )
-        ) {
-            console.log(
-                `[CompletionProvider] ` +
-                `Outside HLSL context -> no completion`
-            );
-            return [];
-        }
-
-        const memberAccess =
-            this.getMemberAccessAtPosition(
-                text,
-                offset
-            );
-
-        if (memberAccess) {
-            return this.provideMemberCompletion(
-                uri,
-                memberAccess.objectName,
-                memberAccess.prefix,
-                offset
-            );
-        }
-
-        const result: CompletionItem[] = [];
-
-        /*
-         * Local variables
-         */
-        result.push(
-            ...this.findLocalVariableCompletions(
-                uri,
-                word,
-                offset
-            )
-        );
-
-        /*
-         * Built-in HLSL types
-         */
-        for (
-            const typeName
-            of this.getBuiltinTypes()
-        ) {
-            if (
-                !typeName.startsWith(
-                    word
-                )
-            ) {
-                continue;
-            }
-
-            result.push({
-                label: typeName,
-                kind:
-                    CompletionItemKind.Keyword,
-                detail:
-                    "HLSL built-in type",
-                documentation:
-                    this.completionSource
-            });
-        }
-
-        const builtinSemantics =
-            this.getBuiltinSemantics();
-
-        for (const semantic of builtinSemantics) {
-            if (
-                semantic
-                    .toLowerCase()
-                    .startsWith(
-                        word.toLowerCase()
-                    )
-            ) {
-                result.push({
-                    label: semantic,
-                    kind: CompletionItemKind.Keyword,
-                    detail:
-                        "HLSL Semantic",
-                    documentation:
-                        `${semantic} semantic`,
-                    sortText:
-                        `2_${semantic}`,
-                    data: {
-                        source:
-                            this.completionSource
-                    }
-                });
-            }
-        }
-
-        /*
-         * Workspace symbols
-         *
-         * Only symbols from the current file
-         * and recursively related includes are
-         * available.
-         */
-        const relatedUris =
-            this.documentManager
-                .getRelatedIncludeUris(uri);
-
-        const matches =
-            this.documentManager
-                .getWorkspaceIndex()
-                .findPrefix(word)
-                .filter(
-                    match =>
-                        relatedUris.has(
-                            match.uri
-                        )
-                );
-
-        this.addSymbolCompletions(
-            result,
-            matches,
-            new Set<string>()
-        );
-
-        return result;
+    if (!document) {
+      return [];
     }
 
-    private addSymbolCompletions(
-        result: CompletionItem[],
-        matches: any[],
-        seen: Set<string>
-    ): void {
+    const text = document.getText();
 
-        for (const match of matches) {
+    const offset = document.offsetAt(position);
 
-            const symbol =
-                match.symbol;
-
-            if (!symbol) {
-                continue;
-            }
-
-            const name =
-                symbol.name;
-
-            if (!name) {
-                continue;
-            }
-
-            /*
-             * 同じ名前の Completion は
-             * 1件だけ表示する。
-             */
-            if (seen.has(name)) {
-                continue;
-            }
-
-            seen.add(name);
-
-            result.push({
-                label: name,
-
-                kind:
-                    this.getCompletionKind(
-                        symbol
-                    ),
-
-                detail:
-                    this.getSymbolDetail(
-                        symbol
-                    ),
-
-                documentation: {
-                    kind: "markdown",
-                    value:
-                        this.getSymbolDocumentation(
-                            symbol
-                        )
-                },
-
-                sortText:
-                    this.getCompletionSortText(
-                        symbol
-                    )
-            });
-        }
+    if (this.isInsideComment(text, offset)) {
+      return [];
     }
 
-    private getCompletionKind(
-        symbol: ShaderSymbol
-    ): CompletionItemKind {
-        switch (symbol.kind) {
-            case "shader":
-                return CompletionItemKind.Class;
-
-            case "property":
-                return CompletionItemKind.Property;
-
-            case "struct":
-                return CompletionItemKind.Struct;
-
-            case "field":
-                return CompletionItemKind.Field;
-
-            case "function":
-                return CompletionItemKind.Function;
-
-            case "parameter":
-                return CompletionItemKind.Variable;
-
-            case "variable":
-                return CompletionItemKind.Variable;
-
-            case "cbuffer":
-                return CompletionItemKind.Struct;
-
-            case "macro":
-                return CompletionItemKind.Constant;
-
-            case "include":
-                return CompletionItemKind.File;
-
-            case "subShader":
-            case "pass":
-                return CompletionItemKind.Module;
-
-            default:
-                return CompletionItemKind.Text;
-        }
+    if (this.isInsideString(text, offset)) {
+      return [];
     }
 
-    private getSymbolDetail(
-        symbol: ShaderSymbol
-    ): string {
+    const word = this.getWordBeforeCursor(text, offset);
 
-        switch (symbol.kind) {
-
-            case "function":
-                return symbol.returnType
-                    ? `function ${symbol.returnType}`
-                    : "function";
-
-            case "struct":
-                return "struct";
-
-            case "field":
-                return symbol.typeName
-                    ? `field ${symbol.typeName}`
-                    : "field";
-
-            case "parameter":
-                return symbol.typeName
-                    ? `parameter ${symbol.typeName}`
-                    : "parameter";
-
-            case "variable":
-                return symbol.typeName
-                    ? `variable ${symbol.typeName}`
-                    : "variable";
-
-            case "cbuffer":
-                return "cbuffer";
-
-            case "property":
-                return symbol.typeName
-                    ? `property ${symbol.typeName}`
-                    : "property";
-
-            case "macro":
-                return "macro";
-
-            case "include":
-                return "include";
-
-            case "shader":
-                return "shader";
-
-            case "subShader":
-                return "SubShader";
-
-            case "pass":
-                return "Pass";
-
-            default:
-                return symbol.kind;
-        }
+    if (!this.isInsideHlslContext(text, offset)) {
+      console.log(`[CompletionProvider] ` + `Outside HLSL context -> no completion`);
+      return [];
     }
 
-    private provideMemberCompletion(
-        uri: string,
-        objectName: string,
-        prefix: string,
-        offset: number
-    ): CompletionItem[] {
-        const index =
-            this.documentManager
-                .getWorkspaceIndex();
+    const memberAccess = this.getMemberAccessAtPosition(text, offset);
 
-        let typeName:
-            string | undefined;
+    if (memberAccess) {
+      return this.provideMemberCompletion(uri, memberAccess.objectName, memberAccess.prefix, offset);
+    }
+
+    const result: CompletionItem[] = [];
+
+    /*
+     * Local variables
+     */
+    result.push(...this.findLocalVariableCompletions(uri, word, offset));
+
+    /*
+     * Built-in HLSL types
+     */
+    for (const typeName of this.getBuiltinTypes()) {
+      if (!typeName.startsWith(word)) {
+        continue;
+      }
+
+      result.push({
+        label: typeName,
+        kind: CompletionItemKind.Keyword,
+        detail: 'HLSL built-in type',
+        documentation: this.completionSource,
+      });
+    }
+
+    const builtinSemantics = this.getBuiltinSemantics();
+
+    for (const semantic of builtinSemantics) {
+      if (semantic.toLowerCase().startsWith(word.toLowerCase())) {
+        result.push({
+          label: semantic,
+          kind: CompletionItemKind.Keyword,
+          detail: 'HLSL Semantic',
+          documentation: `${semantic} semantic`,
+          sortText: `2_${semantic}`,
+          data: {
+            source: this.completionSource,
+          },
+        });
+      }
+    }
+
+    /*
+     * Workspace symbols
+     *
+     * Only symbols from the current file
+     * and recursively related includes are
+     * available.
+     */
+    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
+
+    const matches = this.documentManager
+      .getWorkspaceIndex()
+      .findPrefix(word)
+      .filter((match) => relatedUris.has(match.uri));
+
+    this.addSymbolCompletions(result, matches, new Set<string>());
+
+    return result;
+  }
+
+  private addSymbolCompletions(result: CompletionItem[], matches: any[], seen: Set<string>): void {
+    for (const match of matches) {
+      const symbol = match.symbol;
+
+      if (!symbol) {
+        continue;
+      }
+
+      const name = symbol.name;
+
+      if (!name) {
+        continue;
+      }
+
+      /*
+       * 同じ名前の Completion は
+       * 1件だけ表示する。
+       */
+      if (seen.has(name)) {
+        continue;
+      }
+
+      seen.add(name);
+
+      result.push({
+        label: name,
+
+        kind: this.getCompletionKind(symbol),
+
+        detail: this.getSymbolDetail(symbol),
+
+        documentation: {
+          kind: 'markdown',
+          value: this.getSymbolDocumentation(symbol),
+        },
+
+        sortText: this.getCompletionSortText(symbol),
+      });
+    }
+  }
+
+  private getCompletionKind(symbol: ShaderSymbol): CompletionItemKind {
+    switch (symbol.kind) {
+      case 'shader':
+        return CompletionItemKind.Class;
+
+      case 'property':
+        return CompletionItemKind.Property;
+
+      case 'struct':
+        return CompletionItemKind.Struct;
+
+      case 'field':
+        return CompletionItemKind.Field;
+
+      case 'function':
+        return CompletionItemKind.Function;
+
+      case 'parameter':
+        return CompletionItemKind.Variable;
+
+      case 'variable':
+        return CompletionItemKind.Variable;
+
+      case 'cbuffer':
+        return CompletionItemKind.Struct;
+
+      case 'macro':
+        return CompletionItemKind.Constant;
+
+      case 'include':
+        return CompletionItemKind.File;
+
+      case 'subShader':
+      case 'pass':
+        return CompletionItemKind.Module;
+
+      default:
+        return CompletionItemKind.Text;
+    }
+  }
+
+  private getSymbolDetail(symbol: ShaderSymbol): string {
+    switch (symbol.kind) {
+      case 'function':
+        return symbol.returnType ? `function ${symbol.returnType}` : 'function';
+
+      case 'struct':
+        return 'struct';
+
+      case 'field':
+        return symbol.typeName ? `field ${symbol.typeName}` : 'field';
+
+      case 'parameter':
+        return symbol.typeName ? `parameter ${symbol.typeName}` : 'parameter';
+
+      case 'variable':
+        return symbol.typeName ? `variable ${symbol.typeName}` : 'variable';
+
+      case 'cbuffer':
+        return 'cbuffer';
+
+      case 'property':
+        return symbol.typeName ? `property ${symbol.typeName}` : 'property';
+
+      case 'macro':
+        return 'macro';
+
+      case 'include':
+        return 'include';
+
+      case 'shader':
+        return 'shader';
+
+      case 'subShader':
+        return 'SubShader';
+
+      case 'pass':
+        return 'Pass';
+
+      default:
+        return symbol.kind;
+    }
+  }
+
+  private provideMemberCompletion(uri: string, objectName: string, prefix: string, offset: number): CompletionItem[] {
+    const index = this.documentManager.getWorkspaceIndex();
+
+    let typeName: string | undefined;
+
+    /*
+     * ============================================================
+     * 1. 現在位置のローカル変数を探す
+     * ============================================================
+     *
+     * 例:
+     *
+     * Varyings output;
+     *
+     * output.
+     *
+     * → output = Varyings
+     */
+    const localVariable = this.findLocalVariableDeclaration(uri, objectName, offset);
+
+    if (localVariable) {
+      typeName = localVariable.typeName;
+
+      console.log(`[CompletionProvider] ` + `Local variable resolved: ` + `${objectName} -> ${typeName}`);
+    }
+
+    /*
+     * ============================================================
+     * 2. WorkspaceIndex から探す
+     * ============================================================
+     *
+     * local variable が見つからない場合、
+     * parameter / variable を探す。
+     *
+     * これで input. も従来通り動く。
+     */
+    if (!typeName) {
+      const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
+
+      const objectMatches = index.findExact(objectName).filter((match) => relatedUris.has(match.uri));
+
+      /*
+       * 現在のファイルを優先。
+       */
+      for (const match of objectMatches) {
+        if (match.uri !== uri) {
+          continue;
+        }
+
+        if (match.symbol.kind !== 'variable' && match.symbol.kind !== 'parameter') {
+          continue;
+        }
+
+        typeName = match.symbol.typeName;
+
+        if (typeName) {
+          console.log(`[CompletionProvider] ` + `Indexed object resolved: ` + `${objectName} -> ${typeName}`);
+
+          break;
+        }
+      }
+
+      /*
+       * 現在のファイルになければ
+       * Workspace 全体から探す。
+       */
+      if (!typeName) {
+        for (const match of objectMatches) {
+          if (match.symbol.kind !== 'variable' && match.symbol.kind !== 'parameter') {
+            continue;
+          }
+
+          typeName = match.symbol.typeName;
+
+          if (typeName) {
+            console.log(`[CompletionProvider] ` + `Workspace object resolved: ` + `${objectName} -> ${typeName}`);
+
+            break;
+          }
+        }
+      }
+    }
+    // 関数戻り値
+    if (!typeName) {
+      const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
+
+      const functionMatches = this.documentManager
+        .getWorkspaceIndex()
+        .findExact(objectName)
+        .filter((match) => relatedUris.has(match.uri));
+
+      const functionMatch = functionMatches.find((match) => match.symbol.kind === 'function');
+
+      if (functionMatch && functionMatch.symbol.returnType) {
+        typeName = functionMatch.symbol.returnType;
+
+        console.log(`[CompletionProvider] ` + `Function return type resolved: ` + `${objectName} -> ${typeName}`);
+      }
+    }
+
+    /*
+     * ============================================================
+     * 3. 型が見つからなければ終了
+     * ============================================================
+     */
+    if (!typeName) {
+      const propertyType = this.findPropertyType(uri, objectName);
+
+      if (propertyType) {
+        typeName = propertyType;
+
+        console.log(`[CompletionProvider] ` + `Property resolved: ` + `${objectName} -> ${typeName}`);
+      }
+    }
+
+    if (!typeName) {
+      console.log(`[CompletionProvider] ` + `Object not found: ${objectName}`);
+      return [];
+    }
+
+    console.log(`[CompletionProvider] ` + `Resolving members of type: ` + `${typeName}`);
+
+    /*
+     * ============================================================
+     * 4. HLSL 組み込み vector 型
+     * ============================================================
+     *
+     * float2 / float3 / float4
+     * half2  / half3  / half4
+     * double2 / double3 / double4
+     *
+     * 例:
+     *
+     * float4 color;
+     * color.
+     *
+     * → x
+     * → y
+     * → z
+     * → w
+     */
+    /*
+     * Swizzle:
+     *
+     *     color.xy.
+     *     color.xyz.
+     *
+     * のようなケースでは、
+     * swizzle 結果の型を推論する。
+     */
+    const builtinMembers = this.getBuiltinTypeMembers(typeName);
+
+    if (builtinMembers) {
+      const items: CompletionItem[] = [];
+
+      for (const member of builtinMembers) {
+        if (prefix.length > 0 && !member.toLowerCase().startsWith(prefix.toLowerCase())) {
+          continue;
+        }
+
+        items.push({
+          label: member,
+          kind: CompletionItemKind.Field,
+          detail: `${this.completionSource} • ` + `HLSL built-in type member`,
+        });
+      }
+
+      return items;
+    }
+
+    /*
+     * ============================================================
+     * 5. 型名から struct / cbuffer を探す
+     * ============================================================
+     */
+    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
+
+    const typeMatches = index.findExact(typeName).filter((match) => relatedUris.has(match.uri));
+
+    const items: CompletionItem[] = [];
+
+    const seen = new Set<string>();
+
+    for (const match of typeMatches) {
+      const symbol = match.symbol;
+
+      if (symbol.kind !== 'struct' && symbol.kind !== 'cbuffer') {
+        continue;
+      }
+
+      /*
+       * struct / cbuffer の children が
+       * field になっている。
+       */
+      for (const field of symbol.children) {
+        if (field.kind !== 'field') {
+          continue;
+        }
 
         /*
-         * ============================================================
-         * 1. 現在位置のローカル変数を探す
-         * ============================================================
+         * prefix がある場合は
+         * field 名でフィルタする。
          *
          * 例:
          *
-         * Varyings output;
+         * output.po
          *
-         * output.
-         *
-         * → output = Varyings
+         * → positionCS
          */
-        const localVariable =
-            this.findLocalVariableDeclaration(
-                uri,
-                objectName,
-                offset
-            );
-
-        if (localVariable) {
-            typeName =
-                localVariable.typeName;
-
-            console.log(
-                `[CompletionProvider] ` +
-                `Local variable resolved: ` +
-                `${objectName} -> ${typeName}`
-            );
+        if (prefix.length > 0 && !field.name.toLowerCase().startsWith(prefix.toLowerCase())) {
+          continue;
         }
 
-        /*
-         * ============================================================
-         * 2. WorkspaceIndex から探す
-         * ============================================================
-         *
-         * local variable が見つからない場合、
-         * parameter / variable を探す。
-         *
-         * これで input. も従来通り動く。
-         */
-        if (!typeName) {
-            const relatedUris =
-                this.documentManager
-                    .getRelatedIncludeUris(uri);
-
-            const objectMatches =
-                index
-                    .findExact(objectName)
-                    .filter(
-                        match =>
-                            relatedUris.has(
-                                match.uri
-                            )
-                    );
-
-            /*
-             * 現在のファイルを優先。
-             */
-            for (
-                const match
-                of objectMatches
-            ) {
-                if (
-                    match.uri !== uri
-                ) {
-                    continue;
-                }
-
-                if (
-                    match.symbol.kind !==
-                    "variable" &&
-                    match.symbol.kind !==
-                    "parameter"
-                ) {
-                    continue;
-                }
-
-                typeName =
-                    match.symbol.typeName;
-
-                if (typeName) {
-                    console.log(
-                        `[CompletionProvider] ` +
-                        `Indexed object resolved: ` +
-                        `${objectName} -> ${typeName}`
-                    );
-
-                    break;
-                }
-            }
-
-            /*
-             * 現在のファイルになければ
-             * Workspace 全体から探す。
-             */
-            if (!typeName) {
-                for (
-                    const match
-                    of objectMatches
-                ) {
-                    if (
-                        match.symbol.kind !==
-                        "variable" &&
-                        match.symbol.kind !==
-                        "parameter"
-                    ) {
-                        continue;
-                    }
-
-                    typeName =
-                        match.symbol.typeName;
-
-                    if (typeName) {
-                        console.log(
-                            `[CompletionProvider] ` +
-                            `Workspace object resolved: ` +
-                            `${objectName} -> ${typeName}`
-                        );
-
-                        break;
-                    }
-                }
-            }
-        }
-        // 関数戻り値
-        if (!typeName) {
-
-            const relatedUris =
-                this.documentManager
-                    .getRelatedIncludeUris(uri);
-
-            const functionMatches =
-                this.documentManager
-                    .getWorkspaceIndex()
-                    .findExact(objectName)
-                    .filter(
-                        match =>
-                            relatedUris.has(
-                                match.uri
-                            )
-                    );
-
-            const functionMatch =
-                functionMatches.find(
-                    match =>
-                        match.symbol.kind ===
-                        "function"
-                );
-
-            if (
-                functionMatch &&
-                functionMatch.symbol.returnType
-            ) {
-                typeName =
-                    functionMatch.symbol.returnType;
-
-                console.log(
-                    `[CompletionProvider] ` +
-                    `Function return type resolved: ` +
-                    `${objectName} -> ${typeName}`
-                );
-            }
+        if (seen.has(field.name)) {
+          continue;
         }
 
-        /*
-         * ============================================================
-         * 3. 型が見つからなければ終了
-         * ============================================================
-         */
-        if (!typeName) {
-            const propertyType =
-                this.findPropertyType(
-                    uri,
-                    objectName
-                );
+        seen.add(field.name);
 
-            if (propertyType) {
-                typeName = propertyType;
+        items.push({
+          label: field.name,
 
-                console.log(
-                    `[CompletionProvider] ` +
-                    `Property resolved: ` +
-                    `${objectName} -> ${typeName}`
-                );
-            }
-        }
+          kind: CompletionItemKind.Field,
 
-        if (!typeName) {
-            console.log(
-                `[CompletionProvider] ` +
-                `Object not found: ${objectName}`
-            );
-            return [];
-        }
-
-        console.log(
-            `[CompletionProvider] ` +
-            `Resolving members of type: ` +
-            `${typeName}`
-        );
-
-        /*
-         * ============================================================
-         * 4. HLSL 組み込み vector 型
-         * ============================================================
-         *
-         * float2 / float3 / float4
-         * half2  / half3  / half4
-         * double2 / double3 / double4
-         *
-         * 例:
-         *
-         * float4 color;
-         * color.
-         *
-         * → x
-         * → y
-         * → z
-         * → w
-         */
-        /*
-         * Swizzle:
-         *
-         *     color.xy.
-         *     color.xyz.
-         *
-         * のようなケースでは、
-         * swizzle 結果の型を推論する。
-         */
-        const builtinMembers =
-            this.getBuiltinTypeMembers(
-                typeName
-            );
-
-        if (builtinMembers) {
-            const items: CompletionItem[] = [];
-
-            for (
-                const member
-                of builtinMembers
-            ) {
-                if (
-                    prefix.length > 0 &&
-                    !member
-                        .toLowerCase()
-                        .startsWith(
-                            prefix.toLowerCase()
-                        )
-                ) {
-                    continue;
-                }
-
-                items.push({
-                    label: member,
-                    kind:
-                        CompletionItemKind.Field,
-                    detail:
-                        `${this.completionSource} • ` +
-                        `HLSL built-in type member`
-                });
-            }
-
-            return items;
-        }
-
-        /*
-         * ============================================================
-         * 5. 型名から struct / cbuffer を探す
-         * ============================================================
-         */
-        const relatedUris =
-            this.documentManager
-                .getRelatedIncludeUris(uri);
-
-        const typeMatches =
-            index
-                .findExact(typeName)
-                .filter(
-                    match =>
-                        relatedUris.has(
-                            match.uri
-                        )
-                );
-
-        const items:
-            CompletionItem[] = [];
-
-        const seen =
-            new Set<string>();
-
-        for (
-            const match
-            of typeMatches
-        ) {
-            const symbol =
-                match.symbol;
-
-            if (
-                symbol.kind !== "struct" &&
-                symbol.kind !== "cbuffer"
-            ) {
-                continue;
-            }
-
-            /*
-             * struct / cbuffer の children が
-             * field になっている。
-             */
-            for (
-                const field
-                of symbol.children
-            ) {
-                if (
-                    field.kind !== "field"
-                ) {
-                    continue;
-                }
-
-                /*
-                 * prefix がある場合は
-                 * field 名でフィルタする。
-                 *
-                 * 例:
-                 *
-                 * output.po
-                 *
-                 * → positionCS
-                 */
-                if (
-                    prefix.length > 0 &&
-                    !field.name
-                        .toLowerCase()
-                        .startsWith(
-                            prefix.toLowerCase()
-                        )
-                ) {
-                    continue;
-                }
-
-                if (
-                    seen.has(field.name)
-                ) {
-                    continue;
-                }
-
-                seen.add(
-                    field.name
-                );
-
-                items.push({
-                    label:
-                        field.name,
-
-                    kind:
-                        CompletionItemKind.Field,
-
-                    detail:
-                        field.typeName
-                            ? `${this.completionSource} • ` +
-                            `field: ${field.typeName}`
-                            : `${this.completionSource} • ` +
-                            `HLSL field`
-                });
-            }
-        }
-
-        console.log(
-            `[CompletionProvider] ` +
-            `Member candidates: ${items.length}`
-        );
-
-        return items;
+          detail: field.typeName
+            ? `${this.completionSource} • ` + `field: ${field.typeName}`
+            : `${this.completionSource} • ` + `HLSL field`,
+        });
+      }
     }
 
-    private findLocalVariableCompletions(
-        uri: string,
-        prefix: string,
-        offset: number
-    ): CompletionItem[] {
-        const document =
-            this.documentManager.get(uri);
+    console.log(`[CompletionProvider] ` + `Member candidates: ${items.length}`);
 
-        if (!document) {
-            return [];
-        }
+    return items;
+  }
 
-        const text =
-            document.getText();
+  private findLocalVariableCompletions(uri: string, prefix: string, offset: number): CompletionItem[] {
+    const document = this.documentManager.get(uri);
 
-        const sourceBeforeCursor =
-            text.substring(
-                0,
-                Math.max(
-                    0,
-                    Math.min(
-                        offset,
-                        text.length
-                    )
-                )
-            );
-
-        const maskedSource =
-            this.maskComments(
-                sourceBeforeCursor
-            );
-
-        const result: CompletionItem[] = [];
-
-        const pattern =
-            /\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
-
-        let match: RegExpExecArray | null;
-
-        while (
-            (match =
-                pattern.exec(maskedSource)) !== null
-        ) {
-            const typeName =
-                match[1];
-
-            const variableName =
-                match[2];
-
-            if (
-                !variableName.startsWith(
-                    prefix
-                )
-            ) {
-                continue;
-            }
-
-            result.push({
-                label: variableName,
-                kind:
-                    CompletionItemKind.Variable,
-                detail:
-                    `${typeName} ${variableName}`,
-                documentation:
-                    this.completionSource
-            });
-        }
-
-        return result;
+    if (!document) {
+      return [];
     }
 
-    private findLocalVariableDeclaration(
-        uri: string,
-        variableName: string,
-        offset: number
-    ): {
-        name: string;
-        typeName: string;
-        range: {
-            start: {
-                line: number;
-                character: number;
-                offset: number;
+    const text = document.getText();
+
+    const sourceBeforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
+
+    const maskedSource = this.maskComments(sourceBeforeCursor);
+
+    const result: CompletionItem[] = [];
+
+    const pattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
+
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(maskedSource)) !== null) {
+      const typeName = match[1];
+
+      const variableName = match[2];
+
+      if (!variableName.startsWith(prefix)) {
+        continue;
+      }
+
+      result.push({
+        label: variableName,
+        kind: CompletionItemKind.Variable,
+        detail: `${typeName} ${variableName}`,
+        documentation: this.completionSource,
+      });
+    }
+
+    return result;
+  }
+
+  private findLocalVariableDeclaration(
+    uri: string,
+    variableName: string,
+    offset: number,
+  ): {
+    name: string;
+    typeName: string;
+    range: {
+      start: {
+        line: number;
+        character: number;
+        offset: number;
+      };
+      end: {
+        line: number;
+        character: number;
+        offset: number;
+      };
+    };
+  } | null {
+    const document = this.documentManager.get(uri);
+
+    if (!document) {
+      return null;
+    }
+
+    const source = document.getText();
+
+    const safeOffset = Math.max(0, Math.min(offset, source.length));
+
+    /*
+     * カーソルより前だけを検索する。
+     */
+    const beforeCursor = source.substring(0, safeOffset);
+
+    /*
+     * コメントを除去する。
+     *
+     * 改行・文字数は維持する。
+     */
+    const cleanSource = this.maskComments(beforeCursor);
+
+    const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    /*
+     * 例:
+     *
+     * A a;
+     * B b;
+     * Varyings output;
+     * Varyings output = ...;
+     * float3 position;
+     */
+    const pattern = new RegExp(
+      `\\b` +
+        `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
+        `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+        `${escapedName}\\s*` +
+        `(?:;|=|\\[|,)`,
+      'g',
+    );
+
+    let lastMatch: RegExpExecArray | null = null;
+
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(cleanSource)) !== null) {
+      lastMatch = match;
+    }
+
+    if (!lastMatch) {
+      console.log(`[CompletionProvider] ` + `Local declaration not found: ` + `${variableName}`);
+
+      return null;
+    }
+
+    const typeName = lastMatch[1];
+
+    const declarationStart = lastMatch.index;
+
+    const declarationEnd = declarationStart + lastMatch[0].length;
+
+    const startPosition = document.positionAt(declarationStart);
+
+    const endPosition = document.positionAt(declarationEnd);
+
+    const range = {
+      start: {
+        line: startPosition.line,
+        character: startPosition.character,
+        offset: declarationStart,
+      },
+
+      end: {
+        line: endPosition.line,
+        character: endPosition.character,
+        offset: declarationEnd,
+      },
+    };
+
+    console.log(`[CompletionProvider] ` + `Local declaration found: ` + `${variableName}: ${typeName}`);
+
+    return {
+      name: variableName,
+      typeName,
+      range,
+    };
+  }
+
+  private maskComments(source: string): string {
+    let result = '';
+    let i = 0;
+
+    let inBlockComment = false;
+    let inLineComment = false;
+
+    while (i < source.length) {
+      const current = source[i];
+
+      const next = i + 1 < source.length ? source[i + 1] : '';
+
+      /*
+       * // コメント
+       */
+      if (!inBlockComment && !inLineComment && current === '/' && next === '/') {
+        result += ' ';
+        result += ' ';
+        i += 2;
+        inLineComment = true;
+        continue;
+      }
+
+      /*
+       * /* コメント開始
+       */
+      if (!inLineComment && !inBlockComment && current === '/' && next === '*') {
+        result += ' ';
+        result += ' ';
+        i += 2;
+        inBlockComment = true;
+        continue;
+      }
+
+      /*
+       * 行コメント終了
+       */
+      if (inLineComment && current === '\n') {
+        result += '\n';
+        i++;
+        inLineComment = false;
+        continue;
+      }
+
+      /*
+       * ブロックコメント終了
+       */
+      if (inBlockComment && current === '*' && next === '/') {
+        result += ' ';
+        result += ' ';
+        i += 2;
+        inBlockComment = false;
+        continue;
+      }
+
+      /*
+       * コメント内部は空白にする。
+       * 改行だけは維持する。
+       */
+      if (inLineComment || inBlockComment) {
+        result += current === '\n' ? '\n' : ' ';
+
+        i++;
+        continue;
+      }
+
+      result += current;
+      i++;
+    }
+
+    return result;
+  }
+
+  private isInsideComment(text: string, offset: number): boolean {
+    const safeOffset = Math.max(0, Math.min(offset, text.length));
+
+    let inBlockComment = false;
+
+    for (let i = 0; i < safeOffset; i++) {
+      const current = text[i];
+
+      const next = i + 1 < safeOffset ? text[i + 1] : '';
+
+      /*
+       * Block comment:
+       *
+       * /*
+       *    ...
+       * *\/
+       */
+      if (!inBlockComment && current === '/' && next === '*') {
+        inBlockComment = true;
+        i++;
+        continue;
+      }
+
+      if (inBlockComment && current === '*' && next === '/') {
+        inBlockComment = false;
+        i++;
+        continue;
+      }
+
+      /*
+       * Line comment:
+       *
+       * // ...
+       *
+       * 改行までコメント。
+       */
+      if (!inBlockComment && current === '/' && next === '/') {
+        const lineEnd = text.indexOf('\n', i + 2);
+
+        if (lineEnd === -1 || safeOffset <= lineEnd) {
+          return true;
+        }
+
+        i = lineEnd - 1;
+      }
+    }
+
+    return inBlockComment;
+  }
+
+  private isInsideString(text: string, offset: number): boolean {
+    let inString = false;
+    let quote = '';
+
+    let escaped = false;
+
+    for (let index = 0; index < offset; index++) {
+      const char = text[index];
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '"' || char === "'") {
+          inString = true;
+          quote = char;
+        }
+
+        continue;
+      }
+
+      if (char === quote) {
+        inString = false;
+        quote = '';
+      }
+    }
+
+    return inString;
+  }
+
+  private getMemberAccessAtPosition(
+    text: string,
+    offset: number,
+  ): {
+    objectName: string;
+    prefix: string;
+  } | null {
+    const beforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
+
+    /*
+     * ---------------------------------------------------------
+     * Function call:
+     *
+     *     GetColor().
+     *     GetColor(uv).
+     *     GetColor(GetUV()).
+     *     GetColor(GetUV(uv)).
+     *     GetColor(a, GetUV()).
+     *
+     * ---------------------------------------------------------
+     */
+
+    const functionMemberMatch = beforeCursor.match(/\.([A-Za-z0-9_]*)$/);
+
+    if (functionMemberMatch) {
+      const prefix = functionMemberMatch[1];
+
+      const dotIndex = beforeCursor.length - prefix.length - 1;
+
+      let closeParenIndex = dotIndex - 1;
+
+      while (closeParenIndex >= 0 && /\s/.test(beforeCursor[closeParenIndex])) {
+        closeParenIndex--;
+      }
+
+      if (closeParenIndex >= 0 && beforeCursor[closeParenIndex] === ')') {
+        const openParenIndex = this.findMatchingOpenParen(beforeCursor, closeParenIndex);
+
+        if (openParenIndex >= 0) {
+          const functionPrefix = beforeCursor.substring(0, openParenIndex);
+
+          const functionMatch = functionPrefix.match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+
+          if (functionMatch) {
+            return {
+              objectName: functionMatch[1],
+              prefix,
             };
-            end: {
-                line: number;
-                character: number;
-                offset: number;
-            };
-        };
-    } | null {
-        const document =
-            this.documentManager.get(uri);
-
-        if (!document) {
-            return null;
+          }
         }
-
-        const source =
-            document.getText();
-
-        const safeOffset =
-            Math.max(
-                0,
-                Math.min(
-                    offset,
-                    source.length
-                )
-            );
-
-        /*
-         * カーソルより前だけを検索する。
-         */
-        const beforeCursor =
-            source.substring(
-                0,
-                safeOffset
-            );
-
-        /*
-         * コメントを除去する。
-         *
-         * 改行・文字数は維持する。
-         */
-        const cleanSource =
-            this.maskComments(
-                beforeCursor
-            );
-
-        const escapedName =
-            variableName.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                "\\$&"
-            );
-
-        /*
-         * 例:
-         *
-         * A a;
-         * B b;
-         * Varyings output;
-         * Varyings output = ...;
-         * float3 position;
-         */
-        const pattern =
-            new RegExp(
-                `\\b` +
-                `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
-                `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
-                `${escapedName}\\s*` +
-                `(?:;|=|\\[|,)`,
-                "g"
-            );
-
-        let lastMatch:
-            RegExpExecArray | null = null;
-
-        let match:
-            RegExpExecArray | null;
-
-        while (
-            (match = pattern.exec(cleanSource))
-            !== null
-        ) {
-            lastMatch = match;
-        }
-
-        if (!lastMatch) {
-            console.log(
-                `[CompletionProvider] ` +
-                `Local declaration not found: ` +
-                `${variableName}`
-            );
-
-            return null;
-        }
-
-        const typeName =
-            lastMatch[1];
-
-        const declarationStart =
-            lastMatch.index;
-
-        const declarationEnd =
-            declarationStart +
-            lastMatch[0].length;
-
-        const startPosition =
-            document.positionAt(
-                declarationStart
-            );
-
-        const endPosition =
-            document.positionAt(
-                declarationEnd
-            );
-
-        const range = {
-            start: {
-                line:
-                    startPosition.line,
-                character:
-                    startPosition.character,
-                offset:
-                    declarationStart
-            },
-
-            end: {
-                line:
-                    endPosition.line,
-                character:
-                    endPosition.character,
-                offset:
-                    declarationEnd
-            }
-        };
-
-        console.log(
-            `[CompletionProvider] ` +
-            `Local declaration found: ` +
-            `${variableName}: ${typeName}`
-        );
-
-        return {
-            name: variableName,
-            typeName,
-            range
-        };
+      }
     }
 
-    private maskComments(
-        source: string
-    ): string {
-        let result = "";
-        let i = 0;
+    /*
+     * ---------------------------------------------------------
+     * Variable / array:
+     *
+     *     output.
+     *     color[1].
+     *     color[1].xy
+     *     color[1][2].
+     *
+     * ---------------------------------------------------------
+     */
 
-        let inBlockComment = false;
-        let inLineComment = false;
+    const variableMatch = beforeCursor.match(
+      /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/,
+    );
 
-        while (i < source.length) {
-            const current =
-                source[i];
-
-            const next =
-                i + 1 < source.length
-                    ? source[i + 1]
-                    : "";
-
-            /*
-             * // コメント
-             */
-            if (!inBlockComment &&
-                !inLineComment &&
-                current === "/" &&
-                next === "/") {
-                result += " ";
-                result += " ";
-                i += 2;
-                inLineComment = true;
-                continue;
-            }
-
-            /*
-             * /* コメント開始
-             */
-            if (!inLineComment &&
-                !inBlockComment &&
-                current === "/" &&
-                next === "*") {
-                result += " ";
-                result += " ";
-                i += 2;
-                inBlockComment = true;
-                continue;
-            }
-
-            /*
-             * 行コメント終了
-             */
-            if (
-                inLineComment &&
-                current === "\n"
-            ) {
-                result += "\n";
-                i++;
-                inLineComment = false;
-                continue;
-            }
-
-            /*
-             * ブロックコメント終了
-             */
-            if (
-                inBlockComment &&
-                current === "*" &&
-                next === "/"
-            ) {
-                result += " ";
-                result += " ";
-                i += 2;
-                inBlockComment = false;
-                continue;
-            }
-
-            /*
-             * コメント内部は空白にする。
-             * 改行だけは維持する。
-             */
-            if (
-                inLineComment ||
-                inBlockComment
-            ) {
-                result +=
-                    current === "\n"
-                        ? "\n"
-                        : " ";
-
-                i++;
-                continue;
-            }
-
-            result += current;
-            i++;
-        }
-
-        return result;
+    if (!variableMatch) {
+      return null;
     }
 
-    private isInsideComment(
-        text: string,
-        offset: number
-    ): boolean {
+    return {
+      objectName: variableMatch[1],
+      prefix: variableMatch[2],
+    };
+  }
 
-        const safeOffset =
-            Math.max(
-                0,
-                Math.min(
-                    offset,
-                    text.length
-                )
-            );
+  private findMatchingOpenParen(text: string, closeParenIndex: number): number {
+    let depth = 0;
 
-        let inBlockComment = false;
+    let inString = false;
+    let quote = '';
+    let escaped = false;
 
-        for (
-            let i = 0;
-            i < safeOffset;
-            i++
-        ) {
-            const current =
-                text[i];
+    for (let index = closeParenIndex; index >= 0; index--) {
+      const char = text[index];
 
-            const next =
-                i + 1 < safeOffset
-                    ? text[i + 1]
-                    : "";
-
-            /*
-             * Block comment:
-             *
-             * /*
-             *    ...
-             * *\/
-             */
-            if (
-                !inBlockComment &&
-                current === "/" &&
-                next === "*"
-            ) {
-                inBlockComment = true;
-                i++;
-                continue;
-            }
-
-            if (
-                inBlockComment &&
-                current === "*" &&
-                next === "/"
-            ) {
-                inBlockComment = false;
-                i++;
-                continue;
-            }
-
-            /*
-             * Line comment:
-             *
-             * // ...
-             *
-             * 改行までコメント。
-             */
-            if (
-                !inBlockComment &&
-                current === "/" &&
-                next === "/"
-            ) {
-                const lineEnd =
-                    text.indexOf(
-                        "\n",
-                        i + 2
-                    );
-
-                if (
-                    lineEnd === -1 ||
-                    safeOffset <= lineEnd
-                ) {
-                    return true;
-                }
-
-                i =
-                    lineEnd - 1;
-            }
+      /*
+       * 文字列中の括弧は無視する。
+       */
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
         }
 
-        return inBlockComment;
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
 
+        if (char === quote) {
+          inString = false;
+          quote = '';
+        }
+
+        continue;
+      }
+
+      /*
+       * 逆方向に読むので、
+       * quote の開始位置を見つけたら
+       * 文字列中として扱う。
+       */
+      if (char === '"' || char === "'") {
+        inString = true;
+        quote = char;
+        continue;
+      }
+
+      if (char === ')') {
+        depth++;
+        continue;
+      }
+
+      if (char === '(') {
+        depth--;
+
+        if (depth === 0) {
+          return index;
+        }
+      }
     }
 
-    private isInsideString(
-        text: string,
-        offset: number
-    ): boolean {
+    return -1;
+  }
 
-        let inString = false;
-        let quote = "";
+  private getCompletionSortText(symbol: ShaderSymbol): string {
+    switch (symbol.kind) {
+      case 'variable':
+        return `1_${symbol.name}`;
 
-        let escaped = false;
+      case 'parameter':
+        return `1_${symbol.name}`;
 
-        for (
-            let index = 0;
-            index < offset;
-            index++
-        ) {
+      case 'field':
+        return `2_${symbol.name}`;
 
-            const char =
-                text[index];
+      case 'property':
+        return `2_${symbol.name}`;
 
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
+      case 'cbuffer':
+        return `3_${symbol.name}`;
 
-            if (
-                char === "\\"
-            ) {
-                escaped = true;
-                continue;
-            }
+      case 'struct':
+        return `3_${symbol.name}`;
 
-            if (!inString) {
+      case 'function':
+        return `3_${symbol.name}`;
 
-                if (
-                    char === '"' ||
-                    char === "'"
-                ) {
-                    inString = true;
-                    quote = char;
-                }
+      case 'macro':
+        return `3_${symbol.name}`;
 
-                continue;
-            }
+      case 'include':
+        return `4_${symbol.name}`;
 
-            if (
-                char === quote
-            ) {
-                inString = false;
-                quote = "";
-            }
+      default:
+        return `5_${symbol.name}`;
+    }
+  }
+
+  private getSymbolDocumentation(symbol: ShaderSymbol): string {
+    const lines: string[] = [];
+
+    switch (symbol.kind) {
+      case 'function':
+        lines.push(`**Function**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        if (symbol.returnType) {
+          lines.push(`Return type: \`${symbol.returnType}\``);
         }
 
-        return inString;
+        break;
+
+      case 'struct':
+        lines.push(`**Struct**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        break;
+
+      case 'field':
+        lines.push(`**Field**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        if (symbol.typeName) {
+          lines.push(`Type: \`${symbol.typeName}\``);
+        }
+
+        if (symbol.parentName) {
+          lines.push(`Parent: \`${symbol.parentName}\``);
+        }
+
+        if (symbol.semantic) {
+          lines.push(`Semantic: \`${symbol.semantic}\``);
+        }
+
+        break;
+
+      case 'parameter':
+        lines.push(`**Parameter**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        if (symbol.typeName) {
+          lines.push(`Type: \`${symbol.typeName}\``);
+        }
+
+        break;
+
+      case 'variable':
+        lines.push(`**Variable**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        if (symbol.typeName) {
+          lines.push(`Type: \`${symbol.typeName}\``);
+        }
+
+        break;
+
+      case 'cbuffer':
+        lines.push(`**Constant Buffer**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        break;
+
+      case 'property':
+        lines.push(`**Shader Property**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        if (symbol.typeName) {
+          lines.push(`Type: \`${symbol.typeName}\``);
+        }
+
+        break;
+
+      case 'macro':
+        lines.push(`**Macro**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        break;
+
+      case 'include':
+        lines.push(`**Include**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        break;
+
+      default:
+        lines.push(`**${symbol.kind}**`);
+
+        lines.push(`\`${symbol.name}\``);
+
+        break;
     }
 
-    private getMemberAccessAtPosition(
-        text: string,
-        offset: number
-    ): {
-        objectName: string;
-        prefix: string;
-    } | null {
-        const beforeCursor =
-            text.substring(
-                0,
-                Math.max(
-                    0,
-                    Math.min(
-                        offset,
-                        text.length
-                    )
-                )
-            );
+    return lines.join('\n\n');
+  }
 
-        /*
-         * ---------------------------------------------------------
-         * Function call:
-         *
-         *     GetColor().
-         *     GetColor(uv).
-         *     GetColor(GetUV()).
-         *     GetColor(GetUV(uv)).
-         *     GetColor(a, GetUV()).
-         *
-         * ---------------------------------------------------------
-         */
+  private getWordBeforeCursor(text: string, offset: number): string {
+    let start = Math.max(0, Math.min(offset, text.length));
 
-        const functionMemberMatch =
-            beforeCursor.match(
-                /\.([A-Za-z0-9_]*)$/
-            );
-
-        if (functionMemberMatch) {
-            const prefix =
-                functionMemberMatch[1];
-
-            const dotIndex =
-                beforeCursor.length -
-                prefix.length -
-                1;
-
-            let closeParenIndex =
-                dotIndex - 1;
-
-            while (
-                closeParenIndex >= 0 &&
-                /\s/.test(
-                    beforeCursor[closeParenIndex]
-                )
-            ) {
-                closeParenIndex--;
-            }
-
-            if (
-                closeParenIndex >= 0 &&
-                beforeCursor[closeParenIndex] === ")"
-            ) {
-                const openParenIndex =
-                    this.findMatchingOpenParen(
-                        beforeCursor,
-                        closeParenIndex
-                    );
-
-                if (openParenIndex >= 0) {
-                    const functionPrefix =
-                        beforeCursor.substring(
-                            0,
-                            openParenIndex
-                        );
-
-                    const functionMatch =
-                        functionPrefix.match(
-                            /([A-Za-z_][A-Za-z0-9_]*)\s*$/
-                        );
-
-                    if (functionMatch) {
-                        return {
-                            objectName:
-                                functionMatch[1],
-                            prefix
-                        };
-                    }
-                }
-            }
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * Variable / array:
-         *
-         *     output.
-         *     color[1].
-         *     color[1].xy
-         *     color[1][2].
-         *
-         * ---------------------------------------------------------
-         */
-
-        const variableMatch =
-            beforeCursor.match(
-                /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/
-            );
-
-        if (!variableMatch) {
-            return null;
-        }
-
-        return {
-            objectName:
-                variableMatch[1],
-            prefix:
-                variableMatch[2]
-        };
+    while (start > 0 && /[A-Za-z0-9_]/.test(text[start - 1])) {
+      start--;
     }
 
-    private findMatchingOpenParen(
-        text: string,
-        closeParenIndex: number
-    ): number {
-        let depth = 0;
+    return text.substring(start, offset);
+  }
 
-        let inString = false;
-        let quote = "";
-        let escaped = false;
+  private isInsideHlslContext(text: string, offset: number): boolean {
+    const beforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
 
-        for (
-            let index = closeParenIndex;
-            index >= 0;
-            index--
-        ) {
-            const char = text[index];
+    const hlslStart = beforeCursor.lastIndexOf('HLSLPROGRAM');
 
-            /*
-             * 文字列中の括弧は無視する。
-             */
-            if (inString) {
-                if (escaped) {
-                    escaped = false;
-                    continue;
-                }
+    const hlslEnd = beforeCursor.lastIndexOf('ENDHLSL');
 
-                if (char === "\\") {
-                    escaped = true;
-                    continue;
-                }
+    const cgStart = beforeCursor.lastIndexOf('CGPROGRAM');
 
-                if (char === quote) {
-                    inString = false;
-                    quote = "";
-                }
+    const cgEnd = beforeCursor.lastIndexOf('ENDCG');
 
-                continue;
-            }
+    const hlslIncludeStart = beforeCursor.lastIndexOf('HLSLINCLUDE');
 
-            /*
-             * 逆方向に読むので、
-             * quote の開始位置を見つけたら
-             * 文字列中として扱う。
-             */
-            if (
-                char === '"' ||
-                char === "'"
-            ) {
-                inString = true;
-                quote = char;
-                continue;
-            }
+    const hlslIncludeEnd = beforeCursor.lastIndexOf('ENDHLSL');
 
-            if (char === ")") {
-                depth++;
-                continue;
-            }
+    const insideHlslProgram = hlslStart > hlslEnd;
 
-            if (char === "(") {
-                depth--;
+    const insideCgProgram = cgStart > cgEnd;
 
-                if (depth === 0) {
-                    return index;
-                }
-            }
-        }
+    const insideHlslInclude = hlslIncludeStart > hlslIncludeEnd;
 
-        return -1;
+    return insideHlslProgram || insideCgProgram || insideHlslInclude;
+  }
+
+  private getBuiltinTypes(): string[] {
+    return [
+      'bool',
+      'bool1',
+      'bool2',
+      'bool3',
+      'bool4',
+
+      'int',
+      'int1',
+      'int2',
+      'int3',
+      'int4',
+
+      'uint',
+      'uint1',
+      'uint2',
+      'uint3',
+      'uint4',
+
+      'half',
+      'half1',
+      'half2',
+      'half3',
+      'half4',
+
+      'float',
+      'float1',
+      'float2',
+      'float3',
+      'float4',
+
+      'double',
+      'double1',
+      'double2',
+      'double3',
+      'double4',
+
+      'min16float',
+      'min16float2',
+      'min16float3',
+      'min16float4',
+
+      'min10float',
+      'min10float2',
+      'min10float3',
+      'min10float4',
+
+      'float2x2',
+      'float2x3',
+      'float2x4',
+      'float3x2',
+      'float3x3',
+      'float3x4',
+      'float4x2',
+      'float4x3',
+      'float4x4',
+    ];
+  }
+  private getBuiltinTypeMembers(typeName: string): string[] | null {
+    const normalizedType = typeName.toLowerCase();
+
+    /*
+     * ============================================================
+     * HLSL numeric base types
+     * ============================================================
+     */
+
+    const baseTypes = [
+      'float',
+      'half',
+      'double',
+      'int',
+      'uint',
+      'bool',
+
+      'min10float',
+      'min16float',
+
+      'min12int',
+      'min16int',
+
+      'min16uint',
+    ];
+
+    /*
+     * ============================================================
+     * Matrix
+     *
+     * float4x4
+     * float3x4
+     * int2x3
+     * min16float4x4
+     * ...
+     * ============================================================
+     */
+
+    for (const baseType of baseTypes) {
+      const matrixPattern = new RegExp(`^${baseType}([1-4])x([1-4])$`);
+
+      const matrixMatch = normalizedType.match(matrixPattern);
+
+      if (!matrixMatch) {
+        continue;
+      }
+
+      const rows = Number(matrixMatch[1]);
+
+      const columns = Number(matrixMatch[2]);
+
+      return this.generateMatrixMembers(rows, columns);
     }
 
-    private getCompletionSortText(
-        symbol: ShaderSymbol
-    ): string {
+    /*
+     * ============================================================
+     * Vector
+     *
+     * float2
+     * float3
+     * float4
+     * int2
+     * uint4
+     * min16float3
+     * ...
+     * ============================================================
+     */
 
-        switch (symbol.kind) {
+    for (const baseType of baseTypes) {
+      const vectorPattern = new RegExp(`^${baseType}([1-4])$`);
 
-            case "variable":
-                return `1_${symbol.name}`;
+      const vectorMatch = normalizedType.match(vectorPattern);
 
-            case "parameter":
-                return `1_${symbol.name}`;
+      if (!vectorMatch) {
+        continue;
+      }
 
-            case "field":
-                return `2_${symbol.name}`;
+      const dimension = Number(vectorMatch[1]);
 
-            case "property":
-                return `2_${symbol.name}`;
-
-            case "cbuffer":
-                return `3_${symbol.name}`;
-
-            case "struct":
-                return `3_${symbol.name}`;
-
-            case "function":
-                return `3_${symbol.name}`;
-
-            case "macro":
-                return `3_${symbol.name}`;
-
-            case "include":
-                return `4_${symbol.name}`;
-
-            default:
-                return `5_${symbol.name}`;
-        }
+      return this.generateVectorMembers(dimension);
     }
 
-    private getSymbolDocumentation(
-        symbol: ShaderSymbol
-    ): string {
+    return null;
+  }
+  private generateVectorMembers(dimension: number): string[] {
+    const components = ['x', 'y', 'z', 'w'].slice(0, dimension);
 
-        const lines: string[] = [];
+    const colorComponents = ['r', 'g', 'b', 'a'].slice(0, dimension);
 
-        switch (symbol.kind) {
+    const result = new Set<string>();
 
-            case "function":
+    const generate = (source: string[], length: number, current: string): void => {
+      if (current.length === length) {
+        result.add(current);
+        return;
+      }
 
-                lines.push(
-                    `**Function**`
-                );
+      for (const component of source) {
+        generate(source, length, current + component);
+      }
+    };
 
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                if (symbol.returnType) {
-                    lines.push(
-                        `Return type: \`${symbol.returnType}\``
-                    );
-                }
-
-                break;
-
-            case "struct":
-
-                lines.push(
-                    `**Struct**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                break;
-
-            case "field":
-
-                lines.push(
-                    `**Field**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                if (symbol.typeName) {
-                    lines.push(
-                        `Type: \`${symbol.typeName}\``
-                    );
-                }
-
-                if (symbol.parentName) {
-                    lines.push(
-                        `Parent: \`${symbol.parentName}\``
-                    );
-                }
-
-                if (symbol.semantic) {
-                    lines.push(
-                        `Semantic: \`${symbol.semantic}\``
-                    );
-                }
-
-                break;
-
-            case "parameter":
-
-                lines.push(
-                    `**Parameter**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                if (symbol.typeName) {
-                    lines.push(
-                        `Type: \`${symbol.typeName}\``
-                    );
-                }
-
-                break;
-
-            case "variable":
-
-                lines.push(
-                    `**Variable**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                if (symbol.typeName) {
-                    lines.push(
-                        `Type: \`${symbol.typeName}\``
-                    );
-                }
-
-                break;
-
-            case "cbuffer":
-
-                lines.push(
-                    `**Constant Buffer**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                break;
-
-            case "property":
-
-                lines.push(
-                    `**Shader Property**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                if (symbol.typeName) {
-                    lines.push(
-                        `Type: \`${symbol.typeName}\``
-                    );
-                }
-
-                break;
-
-            case "macro":
-
-                lines.push(
-                    `**Macro**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                break;
-
-            case "include":
-
-                lines.push(
-                    `**Include**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                break;
-
-            default:
-
-                lines.push(
-                    `**${symbol.kind}**`
-                );
-
-                lines.push(
-                    `\`${symbol.name}\``
-                );
-
-                break;
-        }
-
-        return lines.join("\n\n");
+    /*
+     * x / y / z / w
+     */
+    for (let length = 1; length <= 4; length++) {
+      generate(components, length, '');
     }
 
-    private getWordBeforeCursor(
-        text: string,
-        offset: number
-    ): string {
-        let start =
-            Math.max(
-                0,
-                Math.min(
-                    offset,
-                    text.length
-                )
-            );
-
-        while (
-            start > 0 &&
-            /[A-Za-z0-9_]/.test(
-                text[start - 1]
-            )
-        ) {
-            start--;
-        }
-
-        return text.substring(
-            start,
-            offset
-        );
+    /*
+     * r / g / b / a
+     */
+    for (let length = 1; length <= 4; length++) {
+      generate(colorComponents, length, '');
     }
 
-    private isInsideHlslContext(
-        text: string,
-        offset: number
-    ): boolean {
-        const beforeCursor =
-            text.substring(
-                0,
-                Math.max(
-                    0,
-                    Math.min(
-                        offset,
-                        text.length
-                    )
-                )
-            );
+    return Array.from(result);
+  }
+  private generateMatrixMembers(rows: number, columns: number): string[] {
+    const result: string[] = [];
 
-        const hlslStart =
-            beforeCursor.lastIndexOf(
-                "HLSLPROGRAM"
-            );
-
-        const hlslEnd =
-            beforeCursor.lastIndexOf(
-                "ENDHLSL"
-            );
-
-        const cgStart =
-            beforeCursor.lastIndexOf(
-                "CGPROGRAM"
-            );
-
-        const cgEnd =
-            beforeCursor.lastIndexOf(
-                "ENDCG"
-            );
-
-        const hlslIncludeStart =
-            beforeCursor.lastIndexOf(
-                "HLSLINCLUDE"
-            );
-
-        const hlslIncludeEnd =
-            beforeCursor.lastIndexOf(
-                "ENDHLSL"
-            );
-
-        const insideHlslProgram =
-            hlslStart > hlslEnd;
-
-        const insideCgProgram =
-            cgStart > cgEnd;
-
-        const insideHlslInclude =
-            hlslIncludeStart >
-            hlslIncludeEnd;
-
-        return (
-            insideHlslProgram ||
-            insideCgProgram ||
-            insideHlslInclude
-        );
+    for (let row = 0; row < rows; row++) {
+      for (let column = 0; column < columns; column++) {
+        result.push(`_m${row}${column}`);
+      }
     }
 
-    private getBuiltinTypes():
-        string[] {
-        return [
-            "bool",
-            "bool1",
-            "bool2",
-            "bool3",
-            "bool4",
+    return result;
+  }
+  private findPropertyType(uri: string, propertyName: string): string | undefined {
+    const parsed = this.documentManager.getParsed(uri);
 
-            "int",
-            "int1",
-            "int2",
-            "int3",
-            "int4",
-
-            "uint",
-            "uint1",
-            "uint2",
-            "uint3",
-            "uint4",
-
-            "half",
-            "half1",
-            "half2",
-            "half3",
-            "half4",
-
-            "float",
-            "float1",
-            "float2",
-            "float3",
-            "float4",
-
-            "double",
-            "double1",
-            "double2",
-            "double3",
-            "double4",
-
-            "min16float",
-            "min16float2",
-            "min16float3",
-            "min16float4",
-
-            "min10float",
-            "min10float2",
-            "min10float3",
-            "min10float4",
-
-            "float2x2",
-            "float2x3",
-            "float2x4",
-            "float3x2",
-            "float3x3",
-            "float3x4",
-            "float4x2",
-            "float4x3",
-            "float4x4"
-        ];
+    if (!parsed) {
+      return undefined;
     }
-    private getBuiltinTypeMembers(
-        typeName: string
-    ): string[] | null {
-        const normalizedType =
-            typeName.toLowerCase();
 
-        /*
-         * ============================================================
-         * HLSL numeric base types
-         * ============================================================
-         */
+    const ast = parsed.ast;
 
-        const baseTypes = [
-            "float",
-            "half",
-            "double",
-            "int",
-            "uint",
-            "bool",
-
-            "min10float",
-            "min16float",
-
-            "min12int",
-            "min16int",
-
-            "min16uint"
-        ];
-
-        /*
-         * ============================================================
-         * Matrix
-         *
-         * float4x4
-         * float3x4
-         * int2x3
-         * min16float4x4
-         * ...
-         * ============================================================
-         */
-
-        for (
-            const baseType
-            of baseTypes
-        ) {
-            const matrixPattern =
-                new RegExp(
-                    `^${baseType}([1-4])x([1-4])$`
-                );
-
-            const matrixMatch =
-                normalizedType.match(
-                    matrixPattern
-                );
-
-            if (!matrixMatch) {
-                continue;
-            }
-
-            const rows =
-                Number(matrixMatch[1]);
-
-            const columns =
-                Number(matrixMatch[2]);
-
-            return this.generateMatrixMembers(
-                rows,
-                columns
-            );
-        }
-
-        /*
-         * ============================================================
-         * Vector
-         *
-         * float2
-         * float3
-         * float4
-         * int2
-         * uint4
-         * min16float3
-         * ...
-         * ============================================================
-         */
-
-        for (
-            const baseType
-            of baseTypes
-        ) {
-            const vectorPattern =
-                new RegExp(
-                    `^${baseType}([1-4])$`
-                );
-
-            const vectorMatch =
-                normalizedType.match(
-                    vectorPattern
-                );
-
-            if (!vectorMatch) {
-                continue;
-            }
-
-            const dimension =
-                Number(vectorMatch[1]);
-
-            return this.generateVectorMembers(
-                dimension
-            );
-        }
-
-        return null;
+    if (ast.kind !== 'ShaderDocument') {
+      return undefined;
     }
-    private generateVectorMembers(
-        dimension: number
-    ): string[] {
-        const components =
-            [
-                "x",
-                "y",
-                "z",
-                "w"
-            ].slice(
-                0,
-                dimension
-            );
 
-        const colorComponents =
-            [
-                "r",
-                "g",
-                "b",
-                "a"
-            ].slice(
-                0,
-                dimension
-            );
+    const property = ast.properties.find((value) => value.name === propertyName);
 
-        const result =
-            new Set<string>();
-
-        const generate =
-            (
-                source: string[],
-                length: number,
-                current: string
-            ): void => {
-                if (
-                    current.length ===
-                    length
-                ) {
-                    result.add(current);
-                    return;
-                }
-
-                for (
-                    const component
-                    of source
-                ) {
-                    generate(
-                        source,
-                        length,
-                        current +
-                        component
-                    );
-                }
-            };
-
-        /*
-         * x / y / z / w
-         */
-        for (
-            let length = 1;
-            length <= 4;
-            length++
-        ) {
-            generate(
-                components,
-                length,
-                ""
-            );
-        }
-
-        /*
-         * r / g / b / a
-         */
-        for (
-            let length = 1;
-            length <= 4;
-            length++
-        ) {
-            generate(
-                colorComponents,
-                length,
-                ""
-            );
-        }
-
-        return Array.from(result);
+    if (!property) {
+      return undefined;
     }
-    private generateMatrixMembers(
-        rows: number,
-        columns: number
-    ): string[] {
-        const result: string[] = [];
 
-        for (
-            let row = 0;
-            row < rows;
-            row++
-        ) {
-            for (
-                let column = 0;
-                column < columns;
-                column++
-            ) {
-                result.push(
-                    `_m${row}${column}`
-                );
-            }
-        }
+    const propertyType = property.propertyType;
 
-        return result;
+    if (!propertyType) {
+      return undefined;
     }
-    private findPropertyType(
-        uri: string,
-        propertyName: string
-    ): string | undefined {
-        const parsed =
-            this.documentManager.getParsed(uri);
 
-        if (!parsed) {
-            return undefined;
-        }
+    switch (propertyType.toLowerCase()) {
+      case 'color':
+      case 'vector':
+        return 'float4';
 
-        const ast = parsed.ast;
+      case 'float':
+      case 'range':
+        return 'float';
 
-        if (
-            ast.kind !==
-            "ShaderDocument"
-        ) {
-            return undefined;
-        }
+      case 'int':
+        return 'int';
 
-        const property =
-            ast.properties.find(
-                value =>
-                    value.name ===
-                    propertyName
-            );
+      case '2d':
+      case '2darray':
+      case '3d':
+      case 'cube':
+        return undefined;
 
-        if (!property) {
-            return undefined;
-        }
-
-        const propertyType =
-            property.propertyType;
-
-        if (!propertyType) {
-            return undefined;
-        }
-
-        switch (
-        propertyType.toLowerCase()
-        ) {
-            case "color":
-            case "vector":
-                return "float4";
-
-            case "float":
-            case "range":
-                return "float";
-
-            case "int":
-                return "int";
-
-            case "2d":
-            case "2darray":
-            case "3d":
-            case "cube":
-                return undefined;
-
-            default:
-                return undefined;
-        }
+      default:
+        return undefined;
     }
-    private getBuiltinSemantics(): string[] {
-        return [
-            "POSITION",
-            "NORMAL",
-            "TANGENT",
-            "COLOR",
+  }
+  private getBuiltinSemantics(): string[] {
+    return [
+      'POSITION',
+      'NORMAL',
+      'TANGENT',
+      'COLOR',
 
-            "TEXCOORD0",
-            "TEXCOORD1",
-            "TEXCOORD2",
-            "TEXCOORD3",
-            "TEXCOORD4",
-            "TEXCOORD5",
-            "TEXCOORD6",
-            "TEXCOORD7",
+      'TEXCOORD0',
+      'TEXCOORD1',
+      'TEXCOORD2',
+      'TEXCOORD3',
+      'TEXCOORD4',
+      'TEXCOORD5',
+      'TEXCOORD6',
+      'TEXCOORD7',
 
-            "SV_POSITION",
+      'SV_POSITION',
 
-            "SV_TARGET",
-            "SV_Target0",
-            "SV_Target1",
-            "SV_Target2",
-            "SV_Target3",
-            "SV_Target4",
-            "SV_Target5",
-            "SV_Target6",
-            "SV_Target7",
+      'SV_TARGET',
+      'SV_Target0',
+      'SV_Target1',
+      'SV_Target2',
+      'SV_Target3',
+      'SV_Target4',
+      'SV_Target5',
+      'SV_Target6',
+      'SV_Target7',
 
-            "SV_DEPTH",
-            "SV_VERTEXID",
-            "SV_INSTANCEID",
-            "SV_PRIMITIVEID",
-            "SV_ISFRONTFACE",
-            "SV_SAMPLEINDEX"
-        ];
-    }
+      'SV_DEPTH',
+      'SV_VERTEXID',
+      'SV_INSTANCEID',
+      'SV_PRIMITIVEID',
+      'SV_ISFRONTFACE',
+      'SV_SAMPLEINDEX',
+    ];
+  }
 }

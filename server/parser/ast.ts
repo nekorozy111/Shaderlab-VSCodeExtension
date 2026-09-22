@@ -1,213 +1,169 @@
-import {
-    SourceRange
-} from "./token";
+import { SourceRange } from './token';
 
 export interface AstNode {
-    kind: string;
-    range: SourceRange;
+  kind: string;
+  range: SourceRange;
 }
 
 /* =========================================================
  * HLSL
  * =======================================================*/
 
-export interface HlslParameterNode
-    extends AstNode {
+export interface HlslParameterNode extends AstNode {
+  kind: 'HlslParameter';
 
-    kind: "HlslParameter";
+  typeName: string;
+  name: string;
 
-    typeName: string;
-    name: string;
-
-    semantic?: string;
+  semantic?: string;
 }
 
-export interface HlslVariableNode
-    extends AstNode {
+export interface HlslVariableNode extends AstNode {
+  kind: 'HlslVariable';
 
-    kind: "HlslVariable";
+  typeName: string;
+  name: string;
 
-    typeName: string;
-    name: string;
-
-    semantic?: string;
+  semantic?: string;
 }
 
-export interface HlslStructNode
-    extends AstNode {
+export interface HlslStructNode extends AstNode {
+  kind: 'HlslStruct';
 
-    kind: "HlslStruct";
+  name: string;
 
-    name: string;
-
-    fields: HlslVariableNode[];
+  fields: HlslVariableNode[];
 }
 
-export interface HlslFunctionNode
-    extends AstNode {
+export interface HlslFunctionNode extends AstNode {
+  kind: 'HlslFunction';
 
-    kind: "HlslFunction";
+  returnType: string;
+  name: string;
 
-    returnType: string;
-    name: string;
-
-    parameters: HlslParameterNode[];
+  parameters: HlslParameterNode[];
 }
 
-export interface HlslIncludeNode
-    extends AstNode {
+export interface HlslIncludeNode extends AstNode {
+  kind: 'HlslInclude';
 
-    kind: "HlslInclude";
-
-    path: string;
+  path: string;
 }
 
-export interface HlslMacroNode
-    extends AstNode {
+export interface HlslMacroNode extends AstNode {
+  kind: 'HlslMacro';
 
-    kind: "HlslMacro";
-
-    name: string;
-    value: string;
+  name: string;
+  value: string;
 }
 
-export interface HlslCBufferNode
-    extends AstNode {
+export interface HlslCBufferNode extends AstNode {
+  kind: 'HlslCBuffer';
 
-    kind: "HlslCBuffer";
+  name: string;
 
-    name: string;
-
-    fields: HlslVariableNode[];
+  fields: HlslVariableNode[];
 }
 
 export type HlslDeclarationNode =
-    | HlslStructNode
-    | HlslFunctionNode
-    | HlslVariableNode
-    | HlslIncludeNode
-    | HlslMacroNode
-    | HlslCBufferNode;
+  | HlslStructNode
+  | HlslFunctionNode
+  | HlslVariableNode
+  | HlslIncludeNode
+  | HlslMacroNode
+  | HlslCBufferNode;
 
-export interface HlslDocumentNode
-    extends AstNode {
+export interface HlslDocumentNode extends AstNode {
+  kind: 'HlslDocument';
 
-    kind: "HlslDocument";
-
-    declarations:
-        HlslDeclarationNode[];
+  declarations: HlslDeclarationNode[];
 }
 
 /* =========================================================
  * ShaderLab
  * =======================================================*/
 
-export interface ShaderPropertyNode
-    extends AstNode {
+export interface ShaderPropertyNode extends AstNode {
+  kind: 'ShaderProperty';
 
-    kind: "ShaderProperty";
+  name: string;
 
-    name: string;
+  displayName?: string;
 
-    displayName?: string;
+  propertyType?: string;
 
-    propertyType?: string;
+  defaultValue?: string;
 
-    defaultValue?: string;
-
-    attributes: string[];
+  attributes: string[];
 }
 
-export interface ShaderTagEntryNode
-    extends AstNode {
+export interface ShaderTagEntryNode extends AstNode {
+  kind: 'ShaderTagEntry';
 
-    kind: "ShaderTagEntry";
-
-    key: string;
-    value: string;
+  key: string;
+  value: string;
 }
 
-export interface ShaderTagsNode
-    extends AstNode {
+export interface ShaderTagsNode extends AstNode {
+  kind: 'ShaderTags';
 
-    kind: "ShaderTags";
-
-    entries: ShaderTagEntryNode[];
+  entries: ShaderTagEntryNode[];
 }
 
-export interface ShaderHlslBlockNode
-    extends AstNode {
+export interface ShaderHlslBlockNode extends AstNode {
+  kind: 'ShaderHlslBlock';
 
-    kind: "ShaderHlslBlock";
+  blockType: 'HLSLPROGRAM' | 'HLSLINCLUDE' | 'CGPROGRAM';
 
-    blockType:
-        | "HLSLPROGRAM"
-        | "HLSLINCLUDE"
-        | "CGPROGRAM";
+  source: string;
 
-    source: string;
-
-    hlsl: HlslDocumentNode;
+  hlsl: HlslDocumentNode;
 }
 
-export interface ShaderPassNode
-    extends AstNode {
+export interface ShaderPassNode extends AstNode {
+  kind: 'ShaderPass';
 
-    kind: "ShaderPass";
+  name?: string;
 
-    name?: string;
+  tags?: ShaderTagsNode;
 
-    tags?: ShaderTagsNode;
-
-    hlslBlocks:
-        ShaderHlslBlockNode[];
+  hlslBlocks: ShaderHlslBlockNode[];
 }
 
-export interface ShaderSubShaderNode
-    extends AstNode {
+export interface ShaderSubShaderNode extends AstNode {
+  kind: 'ShaderSubShader';
 
-    kind: "ShaderSubShader";
+  tags?: ShaderTagsNode;
 
-    tags?: ShaderTagsNode;
+  passes: ShaderPassNode[];
 
-    passes:
-        ShaderPassNode[];
-
-    hlslBlocks:
-        ShaderHlslBlockNode[];
+  hlslBlocks: ShaderHlslBlockNode[];
 }
 
-export interface ShaderDocumentNode
-    extends AstNode {
+export interface ShaderDocumentNode extends AstNode {
+  kind: 'ShaderDocument';
 
-    kind: "ShaderDocument";
+  shaderName?: string;
 
-    shaderName?: string;
+  properties: ShaderPropertyNode[];
 
-    properties:
-        ShaderPropertyNode[];
+  subShaders: ShaderSubShaderNode[];
 
-    subShaders:
-        ShaderSubShaderNode[];
-
-    hlslBlocks:
-        ShaderHlslBlockNode[];
+  hlslBlocks: ShaderHlslBlockNode[];
 }
 
 /* =========================================================
  * Parsed document wrapper
  * =======================================================*/
 
-export type ParsedAst =
-    | ShaderDocumentNode
-    | HlslDocumentNode;
+export type ParsedAst = ShaderDocumentNode | HlslDocumentNode;
 
 export interface ParsedDocument {
-    uri: string;
+  uri: string;
 
-    languageId: string;
+  languageId: string;
 
-    version: number;
+  version: number;
 
-    ast: ParsedAst;
+  ast: ParsedAst;
 }
