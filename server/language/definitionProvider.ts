@@ -29,6 +29,31 @@ export class DefinitionProvider {
       return null;
     }
 
+    /*
+     * ---------------------------------------------------------
+     * 0. Declaration self
+     * ---------------------------------------------------------
+     */
+
+    const declarationMatches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(word)
+      .filter((match) => match.symbol.location.uri === uri);
+
+    for (const match of declarationMatches) {
+      const range = match.symbol.location.range;
+
+      const inside = offset >= range.start.offset && offset <= range.end.offset;
+
+      if (!inside) {
+        continue;
+      }
+
+      console.log(`[DefinitionProvider] Declaration self -> ` + `${match.symbol.kind} ` + `${match.symbol.name}`);
+
+      return this.toLocation(match.symbol);
+    }
+
     console.log(`[DefinitionProvider] Request "${word}" in ${uri}`);
 
     /*
@@ -80,7 +105,7 @@ export class DefinitionProvider {
       if (localObject) {
         console.log(`[DefinitionProvider] Local source variable: ` + `${localObject.name} : ${localObject.typeName}`);
 
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
 
         if (member) {
           console.log(`[DefinitionProvider] Local member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -116,7 +141,7 @@ export class DefinitionProvider {
           );
 
           if (objectSymbol.typeName) {
-            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
             if (member) {
               console.log(`[DefinitionProvider] Indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -140,7 +165,7 @@ export class DefinitionProvider {
        */
 
       if (localObject) {
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
 
         if (member) {
           return this.toLocation(member);
@@ -164,7 +189,7 @@ export class DefinitionProvider {
         );
 
         if (objectSymbol && objectSymbol.typeName) {
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
           if (member) {
             return this.toLocation(member);
@@ -590,7 +615,7 @@ export class DefinitionProvider {
       if (localObject) {
         console.log(`[DefinitionProvider] Hover local object: ` + `${localObject.name} : ${localObject.typeName}`);
 
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
 
         if (member) {
           console.log(`[DefinitionProvider] Hover local member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -622,7 +647,7 @@ export class DefinitionProvider {
             `[DefinitionProvider] Hover indexed object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
           );
 
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
           if (member) {
             console.log(`[DefinitionProvider] Hover indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
@@ -663,7 +688,7 @@ export class DefinitionProvider {
             `[DefinitionProvider] Hover external object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
           );
 
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
 
           if (member) {
             console.log(
@@ -932,169 +957,88 @@ export class DefinitionProvider {
       };
     };
   } | null {
-    const text = document.getText();
-
-    const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
     /*
      * ---------------------------------------------------------
-     * 1. 通常の変数宣言
+     * WorkspaceIndex に既に登録されている symbol を使う。
      *
-     * float4 color;
-     * float3 position;
-     * MyStruct data;
-     * const MyStruct data;
-     * static MyStruct data;
+     * ここでは、
+     *
+     *   variable
+     *   parameter
+     *
+     * だけを対象にする。
+     *
+     * field / struct は絶対に local object として扱わない。
      * ---------------------------------------------------------
      */
 
-    const variablePattern = new RegExp(
-      '\\b' +
-        '(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*' +
-        '([A-Za-z_][A-Za-z0-9_]*)' +
-        '\\s+' +
-        escapedName +
-        '\\s*(?==|;|,|\\[|:)',
-      'g',
-    );
+    const matches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(variableName)
+      .filter(
+        (match) =>
+          match.symbol.location.uri === document.uri &&
+          (match.symbol.kind === 'variable' || match.symbol.kind === 'parameter'),
+      );
 
-    let best: {
-      name: string;
-      typeName: string;
-      startOffset: number;
-      endOffset: number;
-    } | null = null;
-
-    let match: RegExpExecArray | null;
-
-    while ((match = variablePattern.exec(text)) !== null) {
-      const startOffset = match.index;
-
-      if (startOffset >= usageOffset) {
-        continue;
-      }
-
-      const typeName = match[1];
-
-      if (this.isVariableDeclarationKeyword(typeName)) {
-        continue;
-      }
-
-      const nameStart = text.indexOf(variableName, startOffset);
-
-      if (nameStart < 0) {
-        continue;
-      }
-
-      if (!best || startOffset > best.startOffset) {
-        best = {
-          name: variableName,
-
-          typeName,
-
-          startOffset: nameStart,
-
-          endOffset: nameStart + variableName.length,
-        };
-      }
-    }
-
-    if (best) {
-      return {
-        name: best.name,
-
-        typeName: best.typeName,
-
-        uri: document.uri,
-
-        range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
-      };
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * 2. 関数パラメータ
-     *
-     * float4 Test(MyStruct a, MyStruct b)
-     *
-     * a.position
-     * b.position
-     *
-     * ここを現在の実装では拾えていなかった。
-     * ---------------------------------------------------------
-     */
-
-    const parameterPattern = new RegExp(
-      '\\b' + '([A-Za-z_][A-Za-z0-9_]*)' + '\\s+' + escapedName + '\\s*(?=[,)])',
-      'g',
-    );
-
-    while ((match = parameterPattern.exec(text)) !== null) {
-      const startOffset = match.index;
-
-      if (startOffset >= usageOffset) {
-        continue;
-      }
-
-      const typeName = match[1];
-
-      if (this.isVariableDeclarationKeyword(typeName)) {
-        continue;
-      }
-
-      /*
-       * structのフィールドなどを
-       * parameterと誤認しないため、
-       * 直前が "(" または "," のケースを優先する。
-       */
-
-      let before = startOffset - 1;
-
-      while (before >= 0 && /\s/.test(text[before])) {
-        before--;
-      }
-
-      if (before < 0) {
-        continue;
-      }
-
-      const beforeChar = text[before];
-
-      if (beforeChar !== '(' && beforeChar !== ',') {
-        continue;
-      }
-
-      const nameStart = text.indexOf(variableName, startOffset);
-
-      if (nameStart < 0) {
-        continue;
-      }
-
-      if (!best || startOffset > best.startOffset) {
-        best = {
-          name: variableName,
-
-          typeName,
-
-          startOffset: nameStart,
-
-          endOffset: nameStart + variableName.length,
-        };
-      }
-    }
-
-    if (!best) {
+    if (matches.length === 0) {
       return null;
     }
 
+    /*
+     * ---------------------------------------------------------
+     * 使用位置より前に宣言されている候補だけに限定する。
+     * ---------------------------------------------------------
+     */
+
+    const candidates = matches
+      .map((match) => match.symbol)
+      .filter((symbol) => {
+        const startOffset = symbol.location.range.start.offset;
+
+        return startOffset <= usageOffset;
+      });
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 現在位置に最も近い宣言を選択する。
+     *
+     * 例えば、
+     *
+     *   float2 uv
+     *
+     *   float2 uv
+     *
+     * のように同名変数が存在しても、
+     * 現在位置より前で最も近いものを使う。
+     * ---------------------------------------------------------
+     */
+
+    candidates.sort((a, b) => b.location.range.start.offset - a.location.range.start.offset);
+
+    const selected = candidates[0];
+
+    if (!selected.typeName) {
+      return null;
+    }
+
+    console.log(
+      `[DefinitionProvider] Source declaration resolved: ` +
+        `${selected.kind} ` +
+        `${selected.name} : ` +
+        `${selected.typeName} @ ` +
+        `${selected.location.uri}`,
+    );
+
     return {
-      name: best.name,
-
-      typeName: best.typeName,
-
-      uri: document.uri,
-
-      range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
+      name: selected.name,
+      typeName: selected.typeName,
+      uri: selected.location.uri,
+      range: selected.location.range,
     };
   }
 
@@ -1104,30 +1048,94 @@ export class DefinitionProvider {
    * -------------------------------------------------------------
    */
 
-  private findStructField(typeName: string, memberName: string): ShaderSymbol | null {
+  private findStructField(typeName: string, memberName: string, rootUri: string): ShaderSymbol | null {
     const normalizedType = typeName.replace(/\b(const|static|uniform|volatile|in|out|inout)\b/g, '').trim();
-
-    const structMatches = this.documentManager.getWorkspaceIndex().findByKind(normalizedType, 'struct');
-
-    console.log(`[DefinitionProvider] Struct lookup: ` + `${normalizedType} -> ${structMatches.length}`);
 
     const normalizedMember = memberName.toLowerCase();
 
-    for (const match of structMatches) {
+    /*
+     * ---------------------------------------------------------
+     * 現在のファイルから到達可能なファイルだけを対象にする。
+     *
+     * rootUri
+     *   ├─ include A
+     *   │    └─ include B
+     *   └─ include C
+     *
+     * なら、
+     *
+     * rootUri / A / B / C
+     *
+     * のStructだけが候補になる。
+     *
+     * Workspace上に存在するだけの別Shaderは対象外。
+     * ---------------------------------------------------------
+     */
+
+    this.loadIncludedDocuments(rootUri);
+
+    const relatedUris = new Set<string>();
+    relatedUris.add(rootUri);
+
+    this.collectRelatedIncludeUris(rootUri, relatedUris);
+
+    const structMatches = this.documentManager
+      .getWorkspaceIndex()
+      .findByKind(normalizedType, 'struct')
+      .filter((match) => relatedUris.has(match.symbol.location.uri));
+
+    console.log(
+      `[DefinitionProvider] Struct lookup: ` +
+        `${normalizedType} -> ` +
+        `${structMatches.length} ` +
+        `(related=${relatedUris.size})`,
+    );
+
+    /*
+     * ---------------------------------------------------------
+     * 現在のファイルに同名Structがある場合は、
+     * それを最優先する。
+     *
+     * 例:
+     *
+     * TestShader
+     *   struct TestInput
+     *
+     * TestCommonHlsl
+     *   struct TestInput
+     *
+     * の場合、TestShaderからの
+     *
+     *   input.uv
+     *
+     * は TestShader 側を優先する。
+     * ---------------------------------------------------------
+     */
+
+    const orderedMatches = [
+      ...structMatches.filter((match) => match.symbol.location.uri === rootUri),
+      ...structMatches.filter((match) => match.symbol.location.uri !== rootUri),
+    ];
+
+    for (const match of orderedMatches) {
       const struct = match.symbol;
 
       const field = struct.children.find(
         (child) => child.kind === 'field' && child.name.toLowerCase() === normalizedMember,
       );
 
-      if (field) {
-        console.log(
-          `[DefinitionProvider] Field resolved: ` + `${normalizedType}.${memberName} @ ` + `${field.location.uri}`,
-        );
-
-        return field;
+      if (!field) {
+        continue;
       }
+
+      console.log(
+        `[DefinitionProvider] Field resolved: ` + `${normalizedType}.${memberName} @ ` + `${field.location.uri}`,
+      );
+
+      return field;
     }
+
+    console.log(`[DefinitionProvider] Field not found: ` + `${normalizedType}.${memberName}`);
 
     return null;
   }

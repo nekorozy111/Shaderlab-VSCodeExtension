@@ -53,7 +53,11 @@ export class HoverProvider {
      * ---------------------------------------------------------
      */
 
-    let symbol = this.findLocalVariableSymbol(uri, word, offset);
+    let symbol = this.findFieldDeclarationAtPosition(uri, offset, word);
+
+    if (!symbol) {
+      symbol = this.findLocalVariableSymbol(uri, word, offset);
+    }
 
     /*
      * ---------------------------------------------------------
@@ -557,5 +561,28 @@ export class HoverProvider {
     );
 
     return preferred?.symbol ?? matches[0].symbol;
+  }
+  private findFieldDeclarationAtPosition(uri: string, offset: number, name: string): ShaderSymbol | null {
+    const matches = this.documentManager.getWorkspaceIndex().findExact(name);
+
+    for (const match of matches) {
+      const symbol = match.symbol;
+
+      if (symbol.location.uri !== uri) {
+        continue;
+      }
+
+      if (symbol.kind !== 'field') {
+        continue;
+      }
+
+      const range = symbol.location.range;
+
+      if (offset >= range.start.offset && offset <= range.end.offset) {
+        return symbol;
+      }
+    }
+
+    return null;
   }
 }
