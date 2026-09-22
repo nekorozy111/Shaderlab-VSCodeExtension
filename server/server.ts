@@ -50,7 +50,7 @@ connection.onInitialize((params) => {
 
       completionProvider: {
         resolveProvider: false,
-        triggerCharacters: ['/', '\\'],
+        triggerCharacters: ['/', '\\', '"'],
       },
 
       hoverProvider: true,

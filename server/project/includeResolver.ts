@@ -19,6 +19,7 @@ export class IncludeResolver {
   private readonly projectRoot: ProjectRoot;
   private readonly fileSystem: FileSystem;
   private projectIncludeFiles: string[] | undefined;
+  private projectIncludeCacheGeneration = 0;
 
   public constructor(projectRoot: ProjectRoot, fileSystem: FileSystem) {
     this.projectRoot = projectRoot;
@@ -411,7 +412,7 @@ export class IncludeResolver {
     for (const entryPath of projectFiles) {
       const fileName = path.basename(entryPath);
 
-      if (!fileName.toLowerCase().startsWith(normalizedPrefix)) {
+      if (!fileName.toLowerCase().includes(normalizedPrefix)) {
         continue;
       }
 
@@ -617,11 +618,16 @@ export class IncludeResolver {
     }
   }
   private getProjectIncludeFiles(projectRoot: string): string[] {
+    const isRegeneration = this.projectIncludeFiles === undefined;
+
     if (this.projectIncludeFiles !== undefined) {
       console.log(`[IncludeResolver] Using cached project include files: ${this.projectIncludeFiles.length}`);
-
       return this.projectIncludeFiles;
     }
+
+    console.log(
+      `[IncludeResolver] ${isRegeneration ? 'Generating project include cache' : 'Generating project include cache'}`,
+    );
 
     const files: string[] = [];
 
@@ -630,7 +636,6 @@ export class IncludeResolver {
         const entryPath = path.join(directoryPath, entry);
 
         if (this.fileSystem.isDirectory(entryPath)) {
-          // Unityプロジェクトの外部・巨大な管理フォルダは検索対象外。
           if (
             directoryPath === projectRoot &&
             (entry === 'Library' || entry === 'Packages' || entry === 'ProjectSettings')
@@ -657,8 +662,13 @@ export class IncludeResolver {
     collect(projectRoot);
 
     this.projectIncludeFiles = files;
+    this.projectIncludeCacheGeneration++;
 
-    console.log(`[IncludeResolver] Cached project include files: ${files.length}`);
+    console.log(
+      `[IncludeResolver] Project include cache generated:` +
+        ` generation=${this.projectIncludeCacheGeneration}` +
+        ` files=${files.length}`,
+    );
 
     return files;
   }
