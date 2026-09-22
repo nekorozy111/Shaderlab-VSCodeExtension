@@ -31,6 +31,23 @@ export class DefinitionProvider {
 
     /*
      * ---------------------------------------------------------
+     * コメント内では Definition を提供しない
+     * ---------------------------------------------------------
+     */
+    if (this.isInsideComment(text, offset)) {
+      console.log(`[DefinitionProvider] Position is inside comment`);
+
+      return null;
+    }
+
+    if (!word) {
+      console.log(`[DefinitionProvider] No word at position`);
+
+      return null;
+    }
+
+    /*
+     * ---------------------------------------------------------
      * 0. Declaration self
      * ---------------------------------------------------------
      */
@@ -1958,5 +1975,45 @@ export class DefinitionProvider {
       startOffset: bestStart,
       endOffset: bestEnd,
     };
+  }
+  private isInsideComment(text: string, offset: number): boolean {
+    let inLineComment = false;
+    let inBlockComment = false;
+
+    for (let i = 0; i < offset; i++) {
+      const current = text[i];
+      const next = text[i + 1];
+
+      if (inLineComment) {
+        if (current === '\n') {
+          inLineComment = false;
+        }
+
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (current === '*' && next === '/') {
+          inBlockComment = false;
+          i++;
+        }
+
+        continue;
+      }
+
+      if (current === '/' && next === '/') {
+        inLineComment = true;
+        i++;
+        continue;
+      }
+
+      if (current === '/' && next === '*') {
+        inBlockComment = true;
+        i++;
+        continue;
+      }
+    }
+
+    return inLineComment || inBlockComment;
   }
 }
