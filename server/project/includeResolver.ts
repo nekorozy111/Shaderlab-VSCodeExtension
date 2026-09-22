@@ -187,127 +187,12 @@ export class IncludeResolver {
 
       this.collectRelativeIncludeCandidates(fromDirectory, normalizedInclude, candidates);
     }
-
-    return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
-  }
-
-  private getCompletionDirectories(directoryPart: string, fromUri: string): string[] {
-    const root = this.projectRoot.getPath();
-
-    if (!root) {
-      return [];
-    }
-
-    const result: string[] = [];
-
-    /*
-     * 1. include path が Packages/... の場合
-     */
-    if (directoryPart === 'Packages' || directoryPart.startsWith('Packages/')) {
-      const packagePath = directoryPart === 'Packages' ? '' : directoryPart.substring('Packages/'.length);
-
-      /*
-       * Packages/ 以下の実体
-       */
-      const packagesDirectory = path.resolve(root, 'Packages', packagePath);
-
-      if (this.fileSystem.isDirectory(packagesDirectory)) {
-        result.push(packagesDirectory);
-      }
-
-      /*
-       * Library/PackageCache 以下
-       */
-      const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
-
-      if (packagePath) {
-        const separatorIndex = packagePath.indexOf('/');
-
-        if (separatorIndex >= 0) {
-          const packageName = packagePath.substring(0, separatorIndex);
-
-          const packageRelativePath = packagePath.substring(separatorIndex + 1);
-
-          const packageDirectory = this.fileSystem.findDirectory(cacheRoot, `${packageName}@`);
-
-          if (packageDirectory) {
-            const cacheDirectory = path.resolve(packageDirectory, packageRelativePath);
-
-            if (this.fileSystem.isDirectory(cacheDirectory)) {
-              result.push(cacheDirectory);
-            }
-          }
-        } else {
-          const packageDirectory = this.fileSystem.findDirectory(cacheRoot, `${packagePath}@`);
-
-          if (packageDirectory) {
-            result.push(packageDirectory);
-          }
-        }
-      } else if (this.fileSystem.isDirectory(cacheRoot)) {
-        result.push(cacheRoot);
-      }
-
-      return result;
-    }
-
-    /*
-     * 2. Assets/... などプロジェクトルート基準
-     */
-    if (directoryPart === 'Assets' || directoryPart.startsWith('Assets/')) {
-      const directory = path.resolve(root, directoryPart);
-
-      if (this.fileSystem.isDirectory(directory)) {
-        result.push(directory);
-      }
-
-      return result;
-    }
-
-    /*
-     * 3. 通常の相対 include
-     *
-     * #include "Common.hlsl"
-     * #include "Shaders/Common.hlsl"
-     */
-    const fromPath = this.uriToPath(fromUri);
-
-    if (fromPath) {
+    if (fromPath && normalizedInclude !== '' && !normalizedInclude.includes('/') && !normalizedInclude.includes('\\')) {
       const fromDirectory = path.dirname(fromPath);
 
-      const relativeDirectory = path.resolve(fromDirectory, directoryPart || '.');
-
-      if (this.fileSystem.isDirectory(relativeDirectory)) {
-        result.push(relativeDirectory);
-      }
+      this.collectProjectRelativeIncludeCandidates(root, fromDirectory, normalizedInclude, candidates);
     }
-
-    /*
-     * 4. プロジェクトルート
-     *
-     * Assets/... などでない場合の候補。
-     */
-    const projectDirectory = path.resolve(root, directoryPart || '.');
-
-    if (this.fileSystem.isDirectory(projectDirectory) && !result.includes(projectDirectory)) {
-      result.push(projectDirectory);
-    }
-
-    /*
-     * 5. Packages/ のルート
-     *
-     * #include "com.unity...."
-     * のような記述にも対応しやすくする。
-     */
-    if (!directoryPart) {
-      const packagesDirectory = path.resolve(root, 'Packages');
-
-      if (this.fileSystem.isDirectory(packagesDirectory) && !result.includes(packagesDirectory)) {
-        result.push(packagesDirectory);
-      }
-    }
-
-    return result;
+    return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
   }
 
   private resolveFromProject(includePath: string): IncludeResolution | undefined {
@@ -454,33 +339,97 @@ export class IncludeResolver {
     includePath: string,
     candidates: Map<string, IncludeCompletionCandidate>,
   ): void {
-    const slashIndex = includePath.lastIndexOf('/');
+    const slashIndex = Math.max(includePath.lastIndexOf('/'), includePath.lastIndexOf('\\'));
 
     const directoryPart = slashIndex >= 0 ? includePath.substring(0, slashIndex + 1) : '';
 
-    const prefix = slashIndex >= 0 ? includePath.substring(slashIndex + 1) : includePath;
-
-    /*
-     * 現在のファイルのディレクトリを基準に
-     * ../ や ../../ を解決する。
-     *
-     * 例:
-     *
-     * Assets/Folder1
-     * ../Folder2/
-     *
-     * ↓
-     *
-     * Assets/Folder2
-     */
     const targetDirectory = path.resolve(fromDirectory, directoryPart || '.');
 
     if (!this.fileSystem.isDirectory(targetDirectory)) {
       return;
     }
 
-    for (const entry of this.fileSystem.listDirectory(targetDirectory)) {
-      const entryPath = path.join(targetDirectory, entry);
+    // パス指定がない場合は現在ディレクトリ直下だけを見る。
+    // 例:
+    //   #include "aabbcc"
+    //
+    // Folder1/Main.shader から
+    // Folder2/aabbcc.hlsl は候補にしない。
+    if (slashIndex < 0) {
+      const prefix = includePath.toLowerCase();
+
+      for (const entry of this.fileSystem.listDirectory(targetDirectory)) {
+        const entryPath = path.join(targetDirectory, entry);
+
+        if (!this.fileSystem.isFile(entryPath)) {
+          continue;
+        }
+
+        if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+          continue;
+        }
+
+        if (!entry.toLowerCase().startsWith(prefix)) {
+          continue;
+        }
+
+        candidates.set(entry, {
+          includePath: entry,
+        });
+      }
+
+      return;
+    }
+
+    const projectRoot = this.projectRoot.getPath();
+
+    this.collectRelativeIncludeFilesRecursive(
+      targetDirectory,
+      directoryPart,
+      includePath,
+      candidates,
+      fromDirectory,
+      projectRoot,
+    );
+  }
+  private collectProjectRelativeIncludeCandidates(
+    projectRoot: string,
+    fromDirectory: string,
+    prefix: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    this.collectProjectRelativeIncludeFilesRecursive(
+      projectRoot,
+      projectRoot,
+      fromDirectory,
+      prefix.toLowerCase(),
+      candidates,
+    );
+  }
+  private collectProjectRelativeIncludeFilesRecursive(
+    directoryPath: string,
+    projectRoot: string,
+    fromDirectory: string,
+    prefix: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+      const entryPath = path.join(directoryPath, entry);
+
+      if (this.fileSystem.isDirectory(entryPath)) {
+        // Unityプロジェクトの特殊ディレクトリは
+        // プロジェクト相対include検索の対象外。
+        if (
+          directoryPath === projectRoot &&
+          (entry === 'Library' || entry === 'Packages' || entry === 'ProjectSettings')
+        ) {
+          continue;
+        }
+
+        this.collectProjectRelativeIncludeFilesRecursive(entryPath, projectRoot, fromDirectory, prefix, candidates);
+
+        continue;
+      }
 
       if (!this.fileSystem.isFile(entryPath)) {
         continue;
@@ -490,18 +439,130 @@ export class IncludeResolver {
         continue;
       }
 
-      if (!entry.toLowerCase().startsWith(prefix.toLowerCase())) {
+      if (!entry.toLowerCase().startsWith(prefix)) {
         continue;
       }
 
-      const candidatePath = `${directoryPart}${entry}`.replace(/\\/g, '/');
+      /*
+       * 現在のshaderから見た相対パスを
+       * include候補として使用する。
+       *
+       * 例:
+       *
+       * Assets/Folder1/Main.shader
+       * Assets/Folder2/aabbcc.hlsl
+       *
+       * ↓
+       *
+       * ../Folder2/aabbcc.hlsl
+       */
+      const relativePath = path.relative(fromDirectory, entryPath).replace(/\\/g, '/');
+      console.log(
+        `[IncludeResolver] Project relative candidate:` +
+          ` fromDirectory="${fromDirectory}"` +
+          ` entryPath="${entryPath}"` +
+          ` relativePath="${relativePath}"`,
+      );
+      if (!relativePath) {
+        continue;
+      }
+
+      candidates.set(relativePath, {
+        includePath: relativePath,
+      });
+    }
+  }
+  private collectRelativeIncludeFilesRecursive(
+    directoryPath: string,
+    includeBasePath: string,
+    includePrefix: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+    fromDirectory: string,
+    projectRoot: string | undefined,
+  ): void {
+    /*
+     * 絶対に Unity プロジェクトの外へ出ない。
+     *
+     * 例:
+     *
+     * projectRoot = d:/UnityProj/ssr
+     *
+     * ../../../
+     *
+     * で d:/UnityProj などへ到達しても、
+     * ここで即座に探索を停止する。
+     */
+    if (projectRoot) {
+      const relativeToProjectRoot = path.relative(projectRoot, directoryPath);
+
+      if (
+        relativeToProjectRoot.startsWith('..' + path.sep) ||
+        relativeToProjectRoot === '..' ||
+        path.isAbsolute(relativeToProjectRoot)
+      ) {
+        return;
+      }
+
+      /*
+       * Library / Packages は
+       * 相対 include の補完対象外。
+       */
+      const firstSegment = relativeToProjectRoot.split(path.sep)[0];
+
+      if (firstSegment === 'Library' || firstSegment === 'Packages') {
+        return;
+      }
+    }
+
+    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+      const entryPath = path.join(directoryPath, entry);
+
+      if (this.fileSystem.isDirectory(entryPath)) {
+        /*
+         * 現在のファイルがあるディレクトリへ
+         * 再び潜り込まない。
+         *
+         * ../
+         * ../../
+         *
+         * などで親へ移動したあと、
+         * .VSCodeExtensionCheck/ に戻ってくるケースを防ぐ。
+         */
+        if (path.resolve(entryPath) === path.resolve(fromDirectory)) {
+          continue;
+        }
+
+        this.collectRelativeIncludeFilesRecursive(
+          entryPath,
+          `${includeBasePath}${entry}/`,
+          includePrefix,
+          candidates,
+          fromDirectory,
+          projectRoot,
+        );
+
+        continue;
+      }
+
+      if (!this.fileSystem.isFile(entryPath)) {
+        continue;
+      }
+
+      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+        continue;
+      }
+
+      const candidatePath = `${includeBasePath}${entry}`.replace(/\\/g, '/');
+
+      if (!candidatePath.toLowerCase().startsWith(includePrefix.toLowerCase())) {
+        continue;
+      }
 
       candidates.set(candidatePath, {
         includePath: candidatePath,
       });
     }
   }
-
   private uriToPath(uri: string): string | undefined {
     if (!uri.startsWith('file://')) {
       return undefined;

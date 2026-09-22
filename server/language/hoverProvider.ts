@@ -17,10 +17,41 @@ export class HoverProvider {
     if (!document) {
       return null;
     }
-
     const offset = document.offsetAt(position);
 
     const text = document.getText();
+
+    /*
+     * ---------------------------------------------------------
+     * #include のパス内では Hover を表示しない
+     *
+     * 例:
+     *
+     * #include "TestInput.hlsl"
+     *           ^^^^^^^^^^^^^
+     *
+     * この範囲では通常の HLSL Symbol 検索を行わない。
+     * ---------------------------------------------------------
+     */
+    const lineStart = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+
+    const lineEndIndex = text.indexOf('\n', offset);
+
+    const lineEnd = lineEndIndex >= 0 ? lineEndIndex : text.length;
+
+    const line = text.substring(lineStart, lineEnd);
+
+    const cursorInLine = offset - lineStart;
+
+    const textBeforeCursor = line.substring(0, cursorInLine);
+
+    const includeMatch = /^\s*#\s*include\s*(?:"[^"]*|<[^>]*)$/.test(textBeforeCursor);
+
+    if (includeMatch) {
+      console.log(`[HoverProvider] Skip Hover inside include path: "${line}"`);
+
+      return null;
+    }
 
     const word = this.getWordAtPosition(text, offset);
 
