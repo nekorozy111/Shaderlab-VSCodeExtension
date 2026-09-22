@@ -192,11 +192,6 @@ export class IncludeResolver {
 
       this.collectProjectRelativeIncludeCandidates(root, fromDirectory, normalizedInclude, candidates);
     }
-    if (fromPath && !normalizedInclude.includes('/')) {
-      const fromDirectory = path.dirname(fromPath);
-
-      this.collectProjectRelativeIncludeCandidates(root, fromDirectory, normalizedInclude, candidates);
-    }
     return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
   }
 
@@ -386,9 +381,16 @@ export class IncludeResolver {
       return;
     }
 
-    // ../ や ./subfolder/ など、
-    // パス指定がある場合はその配下を再帰検索する。
-    this.collectRelativeIncludeFilesRecursive(targetDirectory, directoryPart, includePath, candidates);
+    const projectRoot = this.projectRoot.getPath();
+
+    this.collectRelativeIncludeFilesRecursive(
+      targetDirectory,
+      directoryPart,
+      includePath,
+      candidates,
+      fromDirectory,
+      projectRoot,
+    );
   }
   private collectProjectRelativeIncludeCandidates(
     projectRoot: string,
@@ -455,7 +457,12 @@ export class IncludeResolver {
        * ../Folder2/aabbcc.hlsl
        */
       const relativePath = path.relative(fromDirectory, entryPath).replace(/\\/g, '/');
-
+      console.log(
+        `[IncludeResolver] Project relative candidate:` +
+          ` fromDirectory="${fromDirectory}"` +
+          ` entryPath="${entryPath}"` +
+          ` relativePath="${relativePath}"`,
+      );
       if (!relativePath) {
         continue;
       }
@@ -470,12 +477,69 @@ export class IncludeResolver {
     includeBasePath: string,
     includePrefix: string,
     candidates: Map<string, IncludeCompletionCandidate>,
+    fromDirectory: string,
+    projectRoot: string | undefined,
   ): void {
+    /*
+     * 絶対に Unity プロジェクトの外へ出ない。
+     *
+     * 例:
+     *
+     * projectRoot = d:/UnityProj/ssr
+     *
+     * ../../../
+     *
+     * で d:/UnityProj などへ到達しても、
+     * ここで即座に探索を停止する。
+     */
+    if (projectRoot) {
+      const relativeToProjectRoot = path.relative(projectRoot, directoryPath);
+
+      if (
+        relativeToProjectRoot.startsWith('..' + path.sep) ||
+        relativeToProjectRoot === '..' ||
+        path.isAbsolute(relativeToProjectRoot)
+      ) {
+        return;
+      }
+
+      /*
+       * Library / Packages は
+       * 相対 include の補完対象外。
+       */
+      const firstSegment = relativeToProjectRoot.split(path.sep)[0];
+
+      if (firstSegment === 'Library' || firstSegment === 'Packages') {
+        return;
+      }
+    }
+
     for (const entry of this.fileSystem.listDirectory(directoryPath)) {
       const entryPath = path.join(directoryPath, entry);
 
       if (this.fileSystem.isDirectory(entryPath)) {
-        this.collectRelativeIncludeFilesRecursive(entryPath, `${includeBasePath}${entry}/`, includePrefix, candidates);
+        /*
+         * 現在のファイルがあるディレクトリへ
+         * 再び潜り込まない。
+         *
+         * ../
+         * ../../
+         *
+         * などで親へ移動したあと、
+         * .VSCodeExtensionCheck/ に戻ってくるケースを防ぐ。
+         */
+        if (path.resolve(entryPath) === path.resolve(fromDirectory)) {
+          continue;
+        }
+
+        this.collectRelativeIncludeFilesRecursive(
+          entryPath,
+          `${includeBasePath}${entry}/`,
+          includePrefix,
+          candidates,
+          fromDirectory,
+          projectRoot,
+        );
 
         continue;
       }
