@@ -1,2563 +1,1610 @@
-import {
-    Location,
-    Position
-} from "vscode-languageserver/node";
+import { Location, Position } from 'vscode-languageserver/node';
+import { DocumentManager } from './documentManager';
+import { ShaderSymbol } from '../symbol/symbol';
+import { ParsedDocument } from '../parser/ast';
+import { TextDocument } from 'vscode-languageserver-textdocument';
+import { ShaderDocumentNode } from '../parser/ast';
 
-import { DocumentManager } from "./documentManager";
-import { ShaderSymbol } from "../symbol/symbol";
-import { ParsedDocument } from "../parser/ast";
-import { TextDocument } from "vscode-languageserver-textdocument";
-import {
-    ShaderDocumentNode
-} from "../parser/ast";
 export class DefinitionProvider {
+  constructor(private readonly documentManager: DocumentManager) {}
 
-    constructor(
-        private readonly documentManager: DocumentManager
-    ) { }
+  public provideDefinition(uri: string, position: Position): Location | null {
+    const document = this.documentManager.get(uri);
 
-    public provideDefinition(
-        uri: string,
-        position: Position
-    ): Location | null {
+    if (!document) {
+      console.log(`[DefinitionProvider] Document not found: ${uri}`);
 
-        const document =
-            this.documentManager.get(uri);
-
-        if (!document) {
-            console.log(
-                `[DefinitionProvider] Document not found: ${uri}`
-            );
-
-            return null;
-        }
-
-        const text =
-            document.getText();
-
-        const offset =
-            document.offsetAt(position);
-
-        const word =
-            this.getWordAtPosition(
-                text,
-                offset
-            );
-
-        if (!word) {
-            console.log(
-                `[DefinitionProvider] No word at position`
-            );
-
-            return null;
-        }
-
-        console.log(
-            `[DefinitionProvider] Request "${word}" in ${uri}`
-        );
-
-        /*
-         * ---------------------------------------------------------
-         * 1. Built-in type / semantic
-         * ---------------------------------------------------------
-         */
-        console.log(
-            `[DefinitionProvider] builtin=${this.isBuiltinHlslType(word)} semantic=${this.isHlslSemantic(word)} word="${word}"`
-        );
-        if (
-            this.isBuiltinHlslType(word) ||
-            this.isHlslSemantic(word)
-        ) {
-            return null;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 2. Member access / swizzle
-         *
-         * color.rgb
-         * data.position
-         * a.position
-         * ---------------------------------------------------------
-         */
-
-        const memberAccess =
-            this.getMemberAccessAtPosition(
-                text,
-                offset
-            );
-
-        if (memberAccess) {
-
-            console.log(
-                `[DefinitionProvider] Member access: ` +
-                `${memberAccess.objectName}.${memberAccess.memberName}`
-            );
-
-            /*
-             * SwizzleならDefinition検索しない。
-             */
-
-            if (
-                this.isHlslSwizzle(
-                    memberAccess.memberName
-                )
-            ) {
-
-                console.log(
-                    `[DefinitionProvider] Swizzle ignored: ` +
-                    `${memberAccess.memberName}`
-                );
-
-                return null;
-            }
-
-            /*
-             * -----------------------------------------------------
-             * まず現在のファイルのローカル変数を
-             * ソースから探す。
-             * -----------------------------------------------------
-             */
-
-            const localObject =
-                this.findVariableDeclarationInSource(
-                    document,
-                    memberAccess.objectName,
-                    offset
-                );
-
-            if (localObject) {
-
-                console.log(
-                    `[DefinitionProvider] Local source variable: ` +
-                    `${localObject.name} : ${localObject.typeName}`
-                );
-
-                const member =
-                    this.findStructField(
-                        localObject.typeName,
-                        memberAccess.memberName
-                    );
-
-                if (member) {
-
-                    console.log(
-                        `[DefinitionProvider] Local member -> ` +
-                        `${member.location.uri} ` +
-                        `${member.name}`
-                    );
-
-                    return this.toLocation(
-                        member
-                    );
-                }
-            }
-
-            /*
-             * -----------------------------------------------------
-             * WorkspaceIndex に登録されている variable / parameter
-             * も調べる。
-             * -----------------------------------------------------
-             */
-
-            const objectMatches =
-                this.documentManager
-                    .getWorkspaceIndex()
-                    .findExact(
-                        memberAccess.objectName
-                    )
-                    .filter(
-                        match =>
-                            match.symbol.kind === "variable" ||
-                            match.symbol.kind === "parameter"
-                    );
-
-            if (objectMatches.length > 0) {
-
-                const objectSymbol =
-                    this.selectBestObjectSymbol(
-                        uri,
-                        offset,
-                        objectMatches.map(
-                            match => match.symbol
-                        )
-                    );
-
-                if (objectSymbol) {
-
-                    console.log(
-                        `[DefinitionProvider] Indexed object: ` +
-                        `${objectSymbol.name} : ` +
-                        `${objectSymbol.typeName ?? "<unknown>"}`
-                    );
-
-                    if (
-                        objectSymbol.typeName
-                    ) {
-
-                        const member =
-                            this.findStructField(
-                                objectSymbol.typeName,
-                                memberAccess.memberName
-                            );
-
-                        if (member) {
-
-                            console.log(
-                                `[DefinitionProvider] Indexed member -> ` +
-                                `${member.location.uri} ` +
-                                `${member.name}`
-                            );
-
-                            return this.toLocation(
-                                member
-                            );
-                        }
-                    }
-                }
-            }
-
-            /*
-             * -----------------------------------------------------
-             * includeを読み込んでからもう一度検索。
-             * -----------------------------------------------------
-             */
-
-            this.loadIncludedDocuments(uri);
-
-            /*
-             * include先のstruct / fieldを検索
-             */
-
-            if (localObject) {
-
-                const member =
-                    this.findStructField(
-                        localObject.typeName,
-                        memberAccess.memberName
-                    );
-
-                if (member) {
-                    return this.toLocation(
-                        member
-                    );
-                }
-            }
-
-            /*
-             * WorkspaceIndexのobjectを再検索
-             */
-
-            const externalObjectMatches =
-                this.documentManager
-                    .getWorkspaceIndex()
-                    .findExact(
-                        memberAccess.objectName
-                    )
-                    .filter(
-                        match =>
-                            match.symbol.kind === "variable" ||
-                            match.symbol.kind === "parameter"
-                    );
-
-            if (
-                externalObjectMatches.length > 0
-            ) {
-
-                const objectSymbol =
-                    this.selectBestObjectSymbol(
-                        uri,
-                        offset,
-                        externalObjectMatches.map(
-                            match => match.symbol
-                        )
-                    );
-
-                if (
-                    objectSymbol &&
-                    objectSymbol.typeName
-                ) {
-
-                    const member =
-                        this.findStructField(
-                            objectSymbol.typeName,
-                            memberAccess.memberName
-                        );
-
-                    if (member) {
-
-                        return this.toLocation(
-                            member
-                        );
-                    }
-                }
-            }
-
-            /*
-             * Memberとして解決できなかった場合、
-             * 通常の名前検索には落とさない。
-             *
-             * 例えば
-             *
-             * data.unknown
-             *
-             * の unknown を別ファイルの同名functionへ
-             * 飛ばしてしまうのを防ぐ。
-             */
-
-            return null;
-        }
-        /*
-         * ---------------------------------------------------------
-         * 3.5 ShaderLab Property
-         *
-         * 現在のShaderに同名Propertyが存在する場合、
-         * Global WorkspaceIndexより優先する。
-         * ---------------------------------------------------------
-         */
-
-        const currentProperty =
-            this.findPropertyByName(
-                document,
-                word
-            );
-
-        if (currentProperty) {
-
-            console.log(
-                `[DefinitionProvider] ` +
-                `Current Shader Property -> ` +
-                `${currentProperty.name}`
-            );
-
-            const cbufferField =
-                this.findCBufferFieldForProperty(
-                    uri,
-                    currentProperty
-                );
-
-            if (cbufferField) {
-
-                console.log(
-                    `[DefinitionProvider] ` +
-                    `Property -> related CBuffer field: ` +
-                    `${cbufferField.name} ` +
-                    `parent=${cbufferField.parentName}`
-                );
-
-                return this.toLocation(
-                    cbufferField
-                );
-            }
-
-            /*
-             * 現在のShaderから到達可能なCBufferがない場合、
-             * Property自身へ移動する。
-             */
-            console.log(
-                `[DefinitionProvider] ` +
-                `Property -> declaration: ` +
-                `${currentProperty.name}`
-            );
-
-            return this.toLocation(
-                currentProperty
-            );
-        }
-        /*
-         * ---------------------------------------------------------
-         * 3. 通常のローカル変数
-         *
-         * float4 color = ...;
-         *
-         * color;
-         * ---------------------------------------------------------
-         */
-
-        const localVariable =
-            this.findVariableDeclarationInSource(
-                document,
-                word,
-                offset
-            );
-
-        if (localVariable) {
-
-            console.log(
-                `[DefinitionProvider] Source variable -> ` +
-                `${localVariable.name} : ` +
-                `${localVariable.typeName}`
-            );
-
-            return {
-                uri:
-                    localVariable.uri,
-
-                range:
-                    localVariable.range
-            };
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 4. 現在のファイル
-         * ---------------------------------------------------------
-         */
-
-        const localMatches =
-            this.documentManager
-                .getWorkspaceIndex()
-                .findExact(word)
-                .filter(
-                    match =>
-                        match.uri === uri
-                );
-
-        console.log(
-            `[DefinitionProvider] Local matches: ` +
-            `${localMatches.length}`
-        );
-
-        if (
-            localMatches.length > 0
-        ) {
-
-            const localSymbols =
-                localMatches.map(
-                    match => match.symbol
-                );
-
-            const selected =
-                this.selectBestDefinition(
-                    uri,
-                    localSymbols
-                );
-
-            if (selected) {
-
-                console.log(
-                    `[DefinitionProvider] Local -> ` +
-                    `${selected.kind} ${selected.name}`
-                );
-
-                /*
-                 * -----------------------------------------------------
-                 * Property
-                 *
-                 * Propertyを現在ファイル内で発見できた場合、
-                 * Workspace全体の検索には絶対に進ませない。
-                 * -----------------------------------------------------
-                 */
-
-                if (
-                    selected.kind === "property"
-                ) {
-
-                    const cbufferField =
-                        this.findCBufferFieldForProperty(
-                            uri,
-                            selected
-                        );
-
-                    if (
-                        cbufferField
-                    ) {
-
-                        console.log(
-                            `[DefinitionProvider] ` +
-                            `Property -> related CBuffer field: ` +
-                            `${cbufferField.name} ` +
-                            `parent=${cbufferField.parentName}`
-                        );
-
-                        return this.toLocation(
-                            cbufferField
-                        );
-                    }
-
-                    console.log(
-                        `[DefinitionProvider] ` +
-                        `Property has no same-file CBuffer field: ` +
-                        `${selected.name}`
-                    );
-
-                    /*
-                     * 同じファイルにCBUFFERがない場合も、
-                     * 他ファイルには絶対にフォールバックしない。
-                     */
-
-                    return this.toLocation(
-                        selected
-                    );
-                }
-
-                return this.toLocation(
-                    selected
-                );
-            }
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 5. includeを再帰的にロード
-         * ---------------------------------------------------------
-         */
-
-        console.log(
-            `[DefinitionProvider] Loading includes from ${uri}`
-        );
-
-        this.loadIncludedDocuments(uri);
-
-        console.log(
-            `[DefinitionProvider] Finished loading includes`
-        );
-
-        /*
-         * ---------------------------------------------------------
-         * 6. Workspace全体
-         * ---------------------------------------------------------
-         */
-
-        const matches =
-            this.documentManager
-                .getWorkspaceIndex()
-                .findExact(word);
-
-        console.log(
-            `[DefinitionProvider] Global search "${word}" -> ` +
-            `${matches.length}`
-        );
-
-        for (
-            const match
-            of matches
-        ) {
-
-            console.log(
-                `[DefinitionProvider] Match: ` +
-                `${match.symbol.kind} ` +
-                `${match.symbol.name} @ ` +
-                `${match.uri}`
-            );
-        }
-
-        if (
-            matches.length === 0
-        ) {
-            return null;
-        }
-
-        const symbols =
-            matches.map(
-                match => match.symbol
-            );
-
-        const selected =
-            this.selectBestDefinition(
-                uri,
-                symbols
-            );
-
-        if (!selected) {
-            return null;
-        }
-
-        console.log(
-            `[DefinitionProvider] Global -> ` +
-            `${selected.kind} ` +
-            `${selected.name} @ ` +
-            `${selected.location.uri}`
-        );
-
-        return this.toLocation(
-            selected
-        );
+      return null;
     }
 
-private findPropertyByName(
-    document: TextDocument,
-    word: string
-): ShaderSymbol | null {
-    const parsed =
-        this.documentManager.getParsed(document.uri);
+    const text = document.getText();
+
+    const offset = document.offsetAt(position);
+
+    const word = this.getWordAtPosition(text, offset);
+
+    if (!word) {
+      console.log(`[DefinitionProvider] No word at position`);
+
+      return null;
+    }
+
+    console.log(`[DefinitionProvider] Request "${word}" in ${uri}`);
+
+    /*
+     * ---------------------------------------------------------
+     * 1. Built-in type / semantic
+     * ---------------------------------------------------------
+     */
+    console.log(
+      `[DefinitionProvider] builtin=${this.isBuiltinHlslType(word)} semantic=${this.isHlslSemantic(word)} word="${word}"`,
+    );
+    if (this.isBuiltinHlslType(word) || this.isHlslSemantic(word)) {
+      return null;
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2. Member access / swizzle
+     *
+     * color.rgb
+     * data.position
+     * a.position
+     * ---------------------------------------------------------
+     */
+
+    const memberAccess = this.getMemberAccessAtPosition(text, offset);
+
+    if (memberAccess) {
+      console.log(`[DefinitionProvider] Member access: ` + `${memberAccess.objectName}.${memberAccess.memberName}`);
+
+      /*
+       * SwizzleならDefinition検索しない。
+       */
+
+      if (this.isHlslSwizzle(memberAccess.memberName)) {
+        console.log(`[DefinitionProvider] Swizzle ignored: ` + `${memberAccess.memberName}`);
+
+        return null;
+      }
+
+      /*
+       * -----------------------------------------------------
+       * まず現在のファイルのローカル変数を
+       * ソースから探す。
+       * -----------------------------------------------------
+       */
+
+      const localObject = this.findVariableDeclarationInSource(document, memberAccess.objectName, offset);
+
+      if (localObject) {
+        console.log(`[DefinitionProvider] Local source variable: ` + `${localObject.name} : ${localObject.typeName}`);
+
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+
+        if (member) {
+          console.log(`[DefinitionProvider] Local member -> ` + `${member.location.uri} ` + `${member.name}`);
+
+          return this.toLocation(member);
+        }
+      }
+
+      /*
+       * -----------------------------------------------------
+       * WorkspaceIndex に登録されている variable / parameter
+       * も調べる。
+       * -----------------------------------------------------
+       */
+
+      const objectMatches = this.documentManager
+        .getWorkspaceIndex()
+        .findExact(memberAccess.objectName)
+        .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
+
+      if (objectMatches.length > 0) {
+        const objectSymbol = this.selectBestObjectSymbol(
+          uri,
+          offset,
+          objectMatches.map((match) => match.symbol),
+        );
+
+        if (objectSymbol) {
+          console.log(
+            `[DefinitionProvider] Indexed object: ` +
+              `${objectSymbol.name} : ` +
+              `${objectSymbol.typeName ?? '<unknown>'}`,
+          );
+
+          if (objectSymbol.typeName) {
+            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+
+            if (member) {
+              console.log(`[DefinitionProvider] Indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
+
+              return this.toLocation(member);
+            }
+          }
+        }
+      }
+
+      /*
+       * -----------------------------------------------------
+       * includeを読み込んでからもう一度検索。
+       * -----------------------------------------------------
+       */
+
+      this.loadIncludedDocuments(uri);
+
+      /*
+       * include先のstruct / fieldを検索
+       */
+
+      if (localObject) {
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+
+        if (member) {
+          return this.toLocation(member);
+        }
+      }
+
+      /*
+       * WorkspaceIndexのobjectを再検索
+       */
+
+      const externalObjectMatches = this.documentManager
+        .getWorkspaceIndex()
+        .findExact(memberAccess.objectName)
+        .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
+
+      if (externalObjectMatches.length > 0) {
+        const objectSymbol = this.selectBestObjectSymbol(
+          uri,
+          offset,
+          externalObjectMatches.map((match) => match.symbol),
+        );
+
+        if (objectSymbol && objectSymbol.typeName) {
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+
+          if (member) {
+            return this.toLocation(member);
+          }
+        }
+      }
+
+      /*
+       * Memberとして解決できなかった場合、
+       * 通常の名前検索には落とさない。
+       *
+       * 例えば
+       *
+       * data.unknown
+       *
+       * の unknown を別ファイルの同名functionへ
+       * 飛ばしてしまうのを防ぐ。
+       */
+
+      return null;
+    }
+    /*
+     * ---------------------------------------------------------
+     * 3.5 ShaderLab Property
+     *
+     * 現在のShaderに同名Propertyが存在する場合、
+     * Global WorkspaceIndexより優先する。
+     * ---------------------------------------------------------
+     */
+
+    const currentProperty = this.findPropertyByName(document, word);
+
+    if (currentProperty) {
+      console.log(`[DefinitionProvider] ` + `Current Shader Property -> ` + `${currentProperty.name}`);
+
+      const cbufferField = this.findCBufferFieldForProperty(uri, currentProperty);
+
+      if (cbufferField) {
+        console.log(
+          `[DefinitionProvider] ` +
+            `Property -> related CBuffer field: ` +
+            `${cbufferField.name} ` +
+            `parent=${cbufferField.parentName}`,
+        );
+
+        return this.toLocation(cbufferField);
+      }
+
+      /*
+       * 現在のShaderから到達可能なCBufferがない場合、
+       * Property自身へ移動する。
+       */
+      console.log(`[DefinitionProvider] ` + `Property -> declaration: ` + `${currentProperty.name}`);
+
+      return this.toLocation(currentProperty);
+    }
+    /*
+     * ---------------------------------------------------------
+     * 3. 通常のローカル変数
+     *
+     * float4 color = ...;
+     *
+     * color;
+     * ---------------------------------------------------------
+     */
+
+    const localVariable = this.findVariableDeclarationInSource(document, word, offset);
+
+    if (localVariable) {
+      console.log(
+        `[DefinitionProvider] Source variable -> ` + `${localVariable.name} : ` + `${localVariable.typeName}`,
+      );
+
+      return {
+        uri: localVariable.uri,
+
+        range: localVariable.range,
+      };
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 4. 現在のファイル
+     * ---------------------------------------------------------
+     */
+
+    const localMatches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(word)
+      .filter((match) => match.uri === uri);
+
+    console.log(`[DefinitionProvider] Local matches: ` + `${localMatches.length}`);
+
+    if (localMatches.length > 0) {
+      const localSymbols = localMatches.map((match) => match.symbol);
+
+      const selected = this.selectBestDefinition(uri, localSymbols);
+
+      if (selected) {
+        console.log(`[DefinitionProvider] Local -> ` + `${selected.kind} ${selected.name}`);
+
+        /*
+         * -----------------------------------------------------
+         * Property
+         *
+         * Propertyを現在ファイル内で発見できた場合、
+         * Workspace全体の検索には絶対に進ませない。
+         * -----------------------------------------------------
+         */
+
+        if (selected.kind === 'property') {
+          const cbufferField = this.findCBufferFieldForProperty(uri, selected);
+
+          if (cbufferField) {
+            console.log(
+              `[DefinitionProvider] ` +
+                `Property -> related CBuffer field: ` +
+                `${cbufferField.name} ` +
+                `parent=${cbufferField.parentName}`,
+            );
+
+            return this.toLocation(cbufferField);
+          }
+
+          console.log(`[DefinitionProvider] ` + `Property has no same-file CBuffer field: ` + `${selected.name}`);
+
+          /*
+           * 同じファイルにCBUFFERがない場合も、
+           * 他ファイルには絶対にフォールバックしない。
+           */
+
+          return this.toLocation(selected);
+        }
+
+        return this.toLocation(selected);
+      }
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 5. includeを再帰的にロード
+     * ---------------------------------------------------------
+     */
+
+    console.log(`[DefinitionProvider] Loading includes from ${uri}`);
+
+    this.loadIncludedDocuments(uri);
+
+    console.log(`[DefinitionProvider] Finished loading includes`);
+
+    /*
+     * ---------------------------------------------------------
+     * 6. Workspace全体
+     * ---------------------------------------------------------
+     */
+
+    const matches = this.documentManager.getWorkspaceIndex().findExact(word);
+
+    console.log(`[DefinitionProvider] Global search "${word}" -> ` + `${matches.length}`);
+
+    for (const match of matches) {
+      console.log(
+        `[DefinitionProvider] Match: ` + `${match.symbol.kind} ` + `${match.symbol.name} @ ` + `${match.uri}`,
+      );
+    }
+
+    if (matches.length === 0) {
+      return null;
+    }
+
+    const symbols = matches.map((match) => match.symbol);
+
+    const selected = this.selectBestDefinition(uri, symbols);
+
+    if (!selected) {
+      return null;
+    }
 
     console.log(
-        `[DefinitionProvider] findPropertyByName: ` +
-        `uri=${document.uri} ` +
-        `word="${word}"`
+      `[DefinitionProvider] Global -> ` + `${selected.kind} ` + `${selected.name} @ ` + `${selected.location.uri}`,
     );
+
+    return this.toLocation(selected);
+  }
+
+  private findPropertyByName(document: TextDocument, word: string): ShaderSymbol | null {
+    const parsed = this.documentManager.getParsed(document.uri);
+
+    console.log(`[DefinitionProvider] findPropertyByName: ` + `uri=${document.uri} ` + `word="${word}"`);
 
     if (!parsed) {
-        console.log(
-            `[DefinitionProvider] findPropertyByName: parsed=null`
-        );
-        return null;
+      console.log(`[DefinitionProvider] findPropertyByName: parsed=null`);
+      return null;
     }
 
-    console.log(
-        `[DefinitionProvider] findPropertyByName: ` +
-        `languageId=${parsed.languageId}`
-    );
+    console.log(`[DefinitionProvider] findPropertyByName: ` + `languageId=${parsed.languageId}`);
 
-    if (parsed.languageId !== "shaderlab") {
-        console.log(
-            `[DefinitionProvider] findPropertyByName: ` +
-            `not shaderlab`
-        );
-        return null;
+    if (parsed.languageId !== 'shaderlab') {
+      console.log(`[DefinitionProvider] findPropertyByName: ` + `not shaderlab`);
+      return null;
     }
 
-    const ast =
-        parsed.ast as ShaderDocumentNode;
+    const ast = parsed.ast as ShaderDocumentNode;
 
     if (!ast) {
-        console.log(
-            `[DefinitionProvider] findPropertyByName: ast=null`
-        );
-        return null;
+      console.log(`[DefinitionProvider] findPropertyByName: ast=null`);
+      return null;
     }
 
     if (!ast.properties) {
-        console.log(
-            `[DefinitionProvider] findPropertyByName: ` +
-            `properties=null`
-        );
-        return null;
+      console.log(`[DefinitionProvider] findPropertyByName: ` + `properties=null`);
+      return null;
     }
 
-    console.log(
-        `[DefinitionProvider] findPropertyByName: ` +
-        `properties=${ast.properties.length}`
-    );
+    console.log(`[DefinitionProvider] findPropertyByName: ` + `properties=${ast.properties.length}`);
 
     for (const property of ast.properties) {
-        console.log(
-            `[DefinitionProvider] Property candidate: ` +
-            `"${property.name}"`
-        );
+      console.log(`[DefinitionProvider] Property candidate: ` + `"${property.name}"`);
 
-        if (property.name !== word) {
-            continue;
-        }
+      if (property.name !== word) {
+        continue;
+      }
 
-        console.log(
-            `[DefinitionProvider] Current Shader Property found: ` +
-            `${property.name}`
-        );
+      console.log(`[DefinitionProvider] Current Shader Property found: ` + `${property.name}`);
 
-        return {
-            name: property.name,
-            kind: "property",
-            location: {
-                uri: document.uri,
-                range: property.range,
-                selectionRange: property.range
-            },
-            children: []
-        };
+      return {
+        name: property.name,
+        kind: 'property',
+        location: {
+          uri: document.uri,
+          range: property.range,
+          selectionRange: property.range,
+        },
+        children: [],
+      };
     }
 
-    console.log(
-        `[DefinitionProvider] Current Shader Property NOT found: ` +
-        `"${word}"`
-    );
+    console.log(`[DefinitionProvider] Current Shader Property NOT found: ` + `"${word}"`);
 
     return null;
-}
-    private findCBufferFieldForProperty(
-        uri: string,
-        property: ShaderSymbol
-    ): ShaderSymbol | null {
-
-        if (property.kind !== "property") {
-            return null;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 現在のShaderと、そのinclude先をロードする。
-         * ---------------------------------------------------------
-         */
-        this.loadIncludedDocuments(uri);
-
-        /*
-         * ---------------------------------------------------------
-         * 現在Shaderから参照可能なURIを取得する。
-         *
-         * rootUri自身も含む。
-         * ---------------------------------------------------------
-         */
-        const relatedUris =
-            new Set<string>();
-
-        relatedUris.add(uri);
-
-        this.collectRelatedIncludeUris(
-            uri,
-            relatedUris
-        );
-
-        /*
-         * ---------------------------------------------------------
-         * Propertyと同名のCBuffer fieldを検索。
-         *
-         * ただし、
-         *
-         *   現在Shader
-         *   +
-         *   include先
-         *
-         * だけを対象にする。
-         *
-         * Workspaceで開いているだけの別Shaderは除外。
-         * ---------------------------------------------------------
-         */
-        const matches =
-            this.documentManager
-                .getWorkspaceIndex()
-                .findExact(property.name)
-                .filter(
-                    match =>
-                        relatedUris.has(match.uri) &&
-                        match.symbol.kind === "field" &&
-                        !!match.symbol.parentName
-                );
-
-        console.log(
-            `[DefinitionProvider] ` +
-            `Property CBuffer search "${property.name}" -> ` +
-            `${matches.length}`
-        );
-
-        for (const match of matches) {
-
-            const symbol =
-                match.symbol;
-
-            console.log(
-                `[DefinitionProvider] ` +
-                `Property -> related CBuffer field: ` +
-                `${symbol.name} ` +
-                `@ ${symbol.location.uri} ` +
-                `parent=${symbol.parentName}`
-            );
-
-            return symbol;
-        }
-
-        return null;
+  }
+  private findCBufferFieldForProperty(uri: string, property: ShaderSymbol): ShaderSymbol | null {
+    if (property.kind !== 'property') {
+      return null;
     }
 
-    private collectRelatedIncludeUris(
-        rootUri: string,
-        result: Set<string>
-    ): void {
-
-        const visited =
-            new Set<string>();
-
-        const parsed =
-            this.documentManager.getParsed(
-                rootUri
-            );
-
-        if (!parsed) {
-            return;
-        }
-
-        this.collectRelatedIncludeUrisRecursive(
-            rootUri,
-            parsed,
-            visited,
-            result
-        );
-    }
-    private collectRelatedIncludeUrisRecursive(
-        uri: string,
-        parsed: ParsedDocument,
-        visited: Set<string>,
-        result: Set<string>,
-        source?: string
-    ): void {
-
-        if (visited.has(uri)) {
-            return;
-        }
-
-        visited.add(uri);
-
-        let includePaths: string[];
-
-        /*
-         * HLSL外部ファイルの場合は、
-         * 実ファイルのsourceからincludeを取得する。
-         */
-        if (
-            parsed.languageId === "hlsl" &&
-            source !== undefined
-        ) {
-            includePaths =
-                this.collectRawHlslIncludes(
-                    source
-                );
-        } else {
-            includePaths =
-                this.collectIncludes(
-                    parsed
-                );
-        }
-
-        for (
-            const includePath
-            of includePaths
-        ) {
-
-            const resolved =
-                this.documentManager
-                    .getProjectService()
-                    .resolveInclude(
-                        includePath,
-                        uri
-                    );
-
-            if (!resolved) {
-                continue;
-            }
-
-            /*
-             * Include先のURIを関連ファイルとして登録。
-             */
-            result.add(
-                resolved.uri
-            );
-
-            /*
-             * Include先をWorkspaceIndexへ登録。
-             */
-            const externalDocument =
-                this.documentManager
-                    .ensureExternalDocument(
-                        resolved.uri
-                    );
-
-            if (!externalDocument) {
-                continue;
-            }
-
-            /*
-             * Include先の実ソースを取得。
-             *
-             * 次のincludeを再帰的に調べるために必要。
-             */
-            const externalSource =
-                this.documentManager
-                    .getProjectService()
-                    .readFile(
-                        resolved.resolvedPath
-                    );
-
-            this.collectRelatedIncludeUrisRecursive(
-                resolved.uri,
-                externalDocument,
-                visited,
-                result,
-                externalSource
-            );
-        }
-    }
-
-
-
-    public resolveSymbolAtPosition(
-        uri: string,
-        position: Position
-    ): ShaderSymbol | null {
-
-        const document =
-            this.documentManager.get(uri);
-
-        if (!document) {
-            return null;
-        }
-
-        const text =
-            document.getText();
-
-        const offset =
-            document.offsetAt(position);
-
-        const word =
-            this.getWordAtPosition(
-                text,
-                offset
-            );
-
-        if (!word) {
-            return null;
-        }
-
-        console.log(
-            `[DefinitionProvider] Resolve symbol "${word}"`
-        );
-
-        /*
-         * ---------------------------------------------------------
-         * 1. Member access
-         *
-         * a.position
-         * b.position
-         * input.position
-         * ---------------------------------------------------------
-         */
-
-        const memberAccess =
-            this.getMemberAccessAtPosition(
-                text,
-                offset
-            );
-
-        if (memberAccess) {
-
-            console.log(
-                `[DefinitionProvider] Resolve member: ` +
-                `${memberAccess.objectName}.${memberAccess.memberName}`
-            );
-
-            /*
-             * HLSL swizzle は symbol ではない。
-             */
-            if (
-                this.isHlslSwizzle(
-                    memberAccess.memberName
-                )
-            ) {
-                return null;
-            }
-
-            /*
-             * -----------------------------------------------------
-             * 1-1. 現在のソースから object を探す
-             * -----------------------------------------------------
-             */
-
-            const localObject =
-                this.findVariableDeclarationInSource(
-                    document,
-                    memberAccess.objectName,
-                    offset
-                );
-
-            if (localObject) {
-
-                console.log(
-                    `[DefinitionProvider] Hover local object: ` +
-                    `${localObject.name} : ${localObject.typeName}`
-                );
-
-                const member =
-                    this.findStructField(
-                        localObject.typeName,
-                        memberAccess.memberName
-                    );
-
-                if (member) {
-
-                    console.log(
-                        `[DefinitionProvider] Hover local member -> ` +
-                        `${member.location.uri} ` +
-                        `${member.name}`
-                    );
-
-                    return member;
-                }
-            }
-
-            /*
-             * -----------------------------------------------------
-             * 1-2. WorkspaceIndex の variable / parameter
-             * -----------------------------------------------------
-             */
-
-            const objectMatches =
-                this.documentManager
-                    .getWorkspaceIndex()
-                    .findExact(
-                        memberAccess.objectName
-                    )
-                    .filter(
-                        match =>
-                            match.symbol.kind === "variable" ||
-                            match.symbol.kind === "parameter"
-                    );
-
-            if (
-                objectMatches.length > 0
-            ) {
-
-                const objectSymbol =
-                    this.selectBestObjectSymbol(
-                        uri,
-                        offset,
-                        objectMatches.map(
-                            match => match.symbol
-                        )
-                    );
-
-                if (
-                    objectSymbol &&
-                    objectSymbol.typeName
-                ) {
-
-                    console.log(
-                        `[DefinitionProvider] Hover indexed object: ` +
-                        `${objectSymbol.name} : ` +
-                        `${objectSymbol.typeName}`
-                    );
-
-                    const member =
-                        this.findStructField(
-                            objectSymbol.typeName,
-                            memberAccess.memberName
-                        );
-
-                    if (member) {
-
-                        console.log(
-                            `[DefinitionProvider] Hover indexed member -> ` +
-                            `${member.location.uri} ` +
-                            `${member.name}`
-                        );
-
-                        return member;
-                    }
-                }
-            }
-
-            /*
-             * -----------------------------------------------------
-             * 1-3. include を読み込む
-             * -----------------------------------------------------
-             */
-
-            this.loadIncludedDocuments(uri);
-
-            /*
-             * -----------------------------------------------------
-             * 1-4. include 後に WorkspaceIndex を再検索
-             * -----------------------------------------------------
-             */
-
-            const externalObjectMatches =
-                this.documentManager
-                    .getWorkspaceIndex()
-                    .findExact(
-                        memberAccess.objectName
-                    )
-                    .filter(
-                        match =>
-                            match.symbol.kind === "variable" ||
-                            match.symbol.kind === "parameter"
-                    );
-
-            if (
-                externalObjectMatches.length > 0
-            ) {
-
-                const objectSymbol =
-                    this.selectBestObjectSymbol(
-                        uri,
-                        offset,
-                        externalObjectMatches.map(
-                            match => match.symbol
-                        )
-                    );
-
-                if (
-                    objectSymbol &&
-                    objectSymbol.typeName
-                ) {
-
-                    console.log(
-                        `[DefinitionProvider] Hover external object: ` +
-                        `${objectSymbol.name} : ` +
-                        `${objectSymbol.typeName}`
-                    );
-
-                    const member =
-                        this.findStructField(
-                            objectSymbol.typeName,
-                            memberAccess.memberName
-                        );
-
-                    if (member) {
-
-                        console.log(
-                            `[DefinitionProvider] Hover external member -> ` +
-                            `${member.location.uri} ` +
-                            `${member.name}`
-                        );
-
-                        return member;
-                    }
-                }
-            }
-
-            /*
-             * Member access を通常の名前検索には
-             * 落とさない。
-             *
-             * 例:
-             *
-             * data.unknown
-             *
-             * の unknown を別の同名 symbol に
-             * 誤って解決しないため。
-             */
-            return null;
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 2. 通常の symbol
-         *
-         * variable
-         * parameter
-         * struct
-         * field
-         * function
-         * property
-         * etc.
-         * ---------------------------------------------------------
-         */
-
-        const matches =
-            this.documentManager
-                .getWorkspaceIndex()
-                .findExact(
-                    word
-                );
-
-        if (
-            matches.length === 0
-        ) {
-
-            /*
-             * include をロードしてから再検索。
-             */
-            this.loadIncludedDocuments(uri);
-
-            const retryMatches =
-                this.documentManager
-                    .getWorkspaceIndex()
-                    .findExact(
-                        word
-                    );
-
-            if (
-                retryMatches.length === 0
-            ) {
-                return null;
-            }
-
-            return this.selectBestSymbolAtPosition(
-                retryMatches.map(
-                    match => match.symbol
-                ),
-                position
-            );
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 2-1. 現在ファイルの symbol を優先
-         * ---------------------------------------------------------
-         */
-
-        const currentFileMatches =
-            matches.filter(
-                match =>
-                    match.symbol.location.uri === uri
-            );
-
-        if (
-            currentFileMatches.length > 0
-        ) {
-
-            const selected =
-                this.selectBestSymbolAtPosition(
-                    currentFileMatches.map(
-                        match => match.symbol
-                    ),
-                    position
-                );
-
-            if (selected) {
-                return selected;
-            }
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 2-2. Workspace 全体
-         * ---------------------------------------------------------
-         */
-
-        return this.selectBestSymbolAtPosition(
-            matches.map(
-                match => match.symbol
-            ),
-            position
-        );
-    }
-    private selectBestSymbolAtPosition(
-        symbols: ShaderSymbol[],
-        position: Position
-    ): ShaderSymbol | null {
-
-        /*
-         * まずカーソル位置が symbol の range 内に
-         * 入っているものを探す。
-         *
-         * これが最優先。
-         */
-        for (const symbol of symbols) {
-
-            const range =
-                symbol.location.range;
-
-            if (
-                position.line < range.start.line ||
-                position.line > range.end.line
-            ) {
-                continue;
-            }
-
-            if (
-                position.line === range.start.line &&
-                position.character < range.start.character
-            ) {
-                continue;
-            }
-
-            if (
-                position.line === range.end.line &&
-                position.character > range.end.character
-            ) {
-                continue;
-            }
-
-            return symbol;
-        }
-
-        /*
-         * range に入っていない場合は、
-         * 現在位置より前にある symbol を候補にする。
-         */
-        let best: ShaderSymbol | null = null;
-
-        let bestLineDistance =
-            Number.MAX_SAFE_INTEGER;
-
-        for (const symbol of symbols) {
-
-            const line =
-                symbol.location.range.start.line;
-
-            if (line > position.line) {
-                continue;
-            }
-
-            const distance =
-                position.line - line;
-
-            if (
-                distance < bestLineDistance
-            ) {
-                bestLineDistance = distance;
-                best = symbol;
-            }
-        }
-
-        return best;
-    }
     /*
-     * -------------------------------------------------------------
-     * Member access取得
+     * ---------------------------------------------------------
+     * 現在のShaderと、そのinclude先をロードする。
+     * ---------------------------------------------------------
+     */
+    this.loadIncludedDocuments(uri);
+
+    /*
+     * ---------------------------------------------------------
+     * 現在Shaderから参照可能なURIを取得する。
      *
-     * cursorが
+     * rootUri自身も含む。
+     * ---------------------------------------------------------
+     */
+    const relatedUris = new Set<string>();
+
+    relatedUris.add(uri);
+
+    this.collectRelatedIncludeUris(uri, relatedUris);
+
+    /*
+     * ---------------------------------------------------------
+     * Propertyと同名のCBuffer fieldを検索。
      *
-     * data.position
-     *      ^^^^^^^^
+     * ただし、
      *
-     * のどこにあっても、
+     *   現在Shader
+     *   +
+     *   include先
      *
-     * data
+     * だけを対象にする。
      *
-     * と
+     * Workspaceで開いているだけの別Shaderは除外。
+     * ---------------------------------------------------------
+     */
+    const matches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(property.name)
+      .filter((match) => relatedUris.has(match.uri) && match.symbol.kind === 'field' && !!match.symbol.parentName);
+
+    console.log(`[DefinitionProvider] ` + `Property CBuffer search "${property.name}" -> ` + `${matches.length}`);
+
+    for (const match of matches) {
+      const symbol = match.symbol;
+
+      console.log(
+        `[DefinitionProvider] ` +
+          `Property -> related CBuffer field: ` +
+          `${symbol.name} ` +
+          `@ ${symbol.location.uri} ` +
+          `parent=${symbol.parentName}`,
+      );
+
+      return symbol;
+    }
+
+    return null;
+  }
+
+  private collectRelatedIncludeUris(rootUri: string, result: Set<string>): void {
+    const visited = new Set<string>();
+
+    const parsed = this.documentManager.getParsed(rootUri);
+
+    if (!parsed) {
+      return;
+    }
+
+    this.collectRelatedIncludeUrisRecursive(rootUri, parsed, visited, result);
+  }
+  private collectRelatedIncludeUrisRecursive(
+    uri: string,
+    parsed: ParsedDocument,
+    visited: Set<string>,
+    result: Set<string>,
+    source?: string,
+  ): void {
+    if (visited.has(uri)) {
+      return;
+    }
+
+    visited.add(uri);
+
+    let includePaths: string[];
+
+    /*
+     * HLSL外部ファイルの場合は、
+     * 実ファイルのsourceからincludeを取得する。
+     */
+    if (parsed.languageId === 'hlsl' && source !== undefined) {
+      includePaths = this.collectRawHlslIncludes(source);
+    } else {
+      includePaths = this.collectIncludes(parsed);
+    }
+
+    for (const includePath of includePaths) {
+      const resolved = this.documentManager.getProjectService().resolveInclude(includePath, uri);
+
+      if (!resolved) {
+        continue;
+      }
+
+      /*
+       * Include先のURIを関連ファイルとして登録。
+       */
+      result.add(resolved.uri);
+
+      /*
+       * Include先をWorkspaceIndexへ登録。
+       */
+      const externalDocument = this.documentManager.ensureExternalDocument(resolved.uri);
+
+      if (!externalDocument) {
+        continue;
+      }
+
+      /*
+       * Include先の実ソースを取得。
+       *
+       * 次のincludeを再帰的に調べるために必要。
+       */
+      const externalSource = this.documentManager.getProjectService().readFile(resolved.resolvedPath);
+
+      this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
+    }
+  }
+
+  public resolveSymbolAtPosition(uri: string, position: Position): ShaderSymbol | null {
+    const document = this.documentManager.get(uri);
+
+    if (!document) {
+      return null;
+    }
+
+    const text = document.getText();
+
+    const offset = document.offsetAt(position);
+
+    const word = this.getWordAtPosition(text, offset);
+
+    if (!word) {
+      return null;
+    }
+
+    console.log(`[DefinitionProvider] Resolve symbol "${word}"`);
+
+    /*
+     * ---------------------------------------------------------
+     * 1. Member access
      *
-     * position
-     *
-     * を取得する。
-     * -------------------------------------------------------------
+     * a.position
+     * b.position
+     * input.position
+     * ---------------------------------------------------------
      */
 
-    private getMemberAccessAtPosition(
-        text: string,
-        offset: number
-    ): {
-        objectName: string;
-        memberName: string;
-    } | null {
+    const memberAccess = this.getMemberAccessAtPosition(text, offset);
 
-        if (text.length === 0) {
-            return null;
+    if (memberAccess) {
+      console.log(`[DefinitionProvider] Resolve member: ` + `${memberAccess.objectName}.${memberAccess.memberName}`);
+
+      /*
+       * HLSL swizzle は symbol ではない。
+       */
+      if (this.isHlslSwizzle(memberAccess.memberName)) {
+        return null;
+      }
+
+      /*
+       * -----------------------------------------------------
+       * 1-1. 現在のソースから object を探す
+       * -----------------------------------------------------
+       */
+
+      const localObject = this.findVariableDeclarationInSource(document, memberAccess.objectName, offset);
+
+      if (localObject) {
+        console.log(`[DefinitionProvider] Hover local object: ` + `${localObject.name} : ${localObject.typeName}`);
+
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName);
+
+        if (member) {
+          console.log(`[DefinitionProvider] Hover local member -> ` + `${member.location.uri} ` + `${member.name}`);
+
+          return member;
         }
+      }
 
-        offset = Math.max(
-            0,
-            Math.min(offset, text.length)
+      /*
+       * -----------------------------------------------------
+       * 1-2. WorkspaceIndex の variable / parameter
+       * -----------------------------------------------------
+       */
+
+      const objectMatches = this.documentManager
+        .getWorkspaceIndex()
+        .findExact(memberAccess.objectName)
+        .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
+
+      if (objectMatches.length > 0) {
+        const objectSymbol = this.selectBestObjectSymbol(
+          uri,
+          offset,
+          objectMatches.map((match) => match.symbol),
         );
 
-        const isIdentifierCharacter = (char: string): boolean => {
-            return /[A-Za-z0-9_]/.test(char);
-        };
+        if (objectSymbol && objectSymbol.typeName) {
+          console.log(
+            `[DefinitionProvider] Hover indexed object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
+          );
 
-        // カーソル位置から member 名の範囲を探す
-        let memberStart = offset;
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
 
-        while (
-            memberStart > 0 &&
-            isIdentifierCharacter(text[memberStart - 1])
-        ) {
-            memberStart--;
+          if (member) {
+            console.log(`[DefinitionProvider] Hover indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
+
+            return member;
+          }
         }
+      }
 
-        let memberEnd = offset;
+      /*
+       * -----------------------------------------------------
+       * 1-3. include を読み込む
+       * -----------------------------------------------------
+       */
 
-        while (
-            memberEnd < text.length &&
-            isIdentifierCharacter(text[memberEnd])
-        ) {
-            memberEnd++;
-        }
+      this.loadIncludedDocuments(uri);
 
-        if (memberStart === memberEnd) {
-            return null;
-        }
+      /*
+       * -----------------------------------------------------
+       * 1-4. include 後に WorkspaceIndex を再検索
+       * -----------------------------------------------------
+       */
 
-        const memberName = text.substring(
-            memberStart,
-            memberEnd
+      const externalObjectMatches = this.documentManager
+        .getWorkspaceIndex()
+        .findExact(memberAccess.objectName)
+        .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
+
+      if (externalObjectMatches.length > 0) {
+        const objectSymbol = this.selectBestObjectSymbol(
+          uri,
+          offset,
+          externalObjectMatches.map((match) => match.symbol),
         );
 
-        // member の左側にある空白を飛ばす
-        let dotOffset = memberStart;
+        if (objectSymbol && objectSymbol.typeName) {
+          console.log(
+            `[DefinitionProvider] Hover external object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
+          );
 
-        while (
-            dotOffset > 0 &&
-            /\s/.test(text[dotOffset - 1])
-        ) {
-            dotOffset--;
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName);
+
+          if (member) {
+            console.log(
+              `[DefinitionProvider] Hover external member -> ` + `${member.location.uri} ` + `${member.name}`,
+            );
+
+            return member;
+          }
         }
+      }
 
-        // "." がなければメンバーアクセスではない
-        if (
-            dotOffset <= 0 ||
-            text[dotOffset - 1] !== "."
-        ) {
-            return null;
-        }
-
-        dotOffset--;
-
-        // "." の左側の空白を飛ばす
-        let objectEnd = dotOffset;
-
-        while (
-            objectEnd > 0 &&
-            /\s/.test(text[objectEnd - 1])
-        ) {
-            objectEnd--;
-        }
-
-        // object 名を探す
-        let objectStart = objectEnd;
-
-        while (
-            objectStart > 0 &&
-            isIdentifierCharacter(text[objectStart - 1])
-        ) {
-            objectStart--;
-        }
-
-        if (objectStart === objectEnd) {
-            return null;
-        }
-
-        const objectName = text.substring(
-            objectStart,
-            objectEnd
-        );
-
-        console.log(
-            `[DefinitionProvider] getMemberAccessAtPosition -> ${objectName}.${memberName}`
-        );
-
-        return {
-            objectName,
-            memberName
-        };
+      /*
+       * Member access を通常の名前検索には
+       * 落とさない。
+       *
+       * 例:
+       *
+       * data.unknown
+       *
+       * の unknown を別の同名 symbol に
+       * 誤って解決しないため。
+       */
+      return null;
     }
 
     /*
-     * -------------------------------------------------------------
-     * ソースから変数宣言を探す
+     * ---------------------------------------------------------
+     * 2. 通常の symbol
      *
-     * float4 color = ...
+     * variable
+     * parameter
+     * struct
+     * field
+     * function
+     * property
+     * etc.
+     * ---------------------------------------------------------
+     */
+
+    const matches = this.documentManager.getWorkspaceIndex().findExact(word);
+
+    if (matches.length === 0) {
+      /*
+       * include をロードしてから再検索。
+       */
+      this.loadIncludedDocuments(uri);
+
+      const retryMatches = this.documentManager.getWorkspaceIndex().findExact(word);
+
+      if (retryMatches.length === 0) {
+        return null;
+      }
+
+      return this.selectBestSymbolAtPosition(
+        retryMatches.map((match) => match.symbol),
+        position,
+      );
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2-1. 現在ファイルの symbol を優先
+     * ---------------------------------------------------------
+     */
+
+    const currentFileMatches = matches.filter((match) => match.symbol.location.uri === uri);
+
+    if (currentFileMatches.length > 0) {
+      const selected = this.selectBestSymbolAtPosition(
+        currentFileMatches.map((match) => match.symbol),
+        position,
+      );
+
+      if (selected) {
+        return selected;
+      }
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2-2. Workspace 全体
+     * ---------------------------------------------------------
+     */
+
+    return this.selectBestSymbolAtPosition(
+      matches.map((match) => match.symbol),
+      position,
+    );
+  }
+  private selectBestSymbolAtPosition(symbols: ShaderSymbol[], position: Position): ShaderSymbol | null {
+    /*
+     * まずカーソル位置が symbol の range 内に
+     * 入っているものを探す。
+     *
+     * これが最優先。
+     */
+    for (const symbol of symbols) {
+      const range = symbol.location.range;
+
+      if (position.line < range.start.line || position.line > range.end.line) {
+        continue;
+      }
+
+      if (position.line === range.start.line && position.character < range.start.character) {
+        continue;
+      }
+
+      if (position.line === range.end.line && position.character > range.end.character) {
+        continue;
+      }
+
+      return symbol;
+    }
+
+    /*
+     * range に入っていない場合は、
+     * 現在位置より前にある symbol を候補にする。
+     */
+    let best: ShaderSymbol | null = null;
+
+    let bestLineDistance = Number.MAX_SAFE_INTEGER;
+
+    for (const symbol of symbols) {
+      const line = symbol.location.range.start.line;
+
+      if (line > position.line) {
+        continue;
+      }
+
+      const distance = position.line - line;
+
+      if (distance < bestLineDistance) {
+        bestLineDistance = distance;
+        best = symbol;
+      }
+    }
+
+    return best;
+  }
+  /*
+   * -------------------------------------------------------------
+   * Member access取得
+   *
+   * cursorが
+   *
+   * data.position
+   *      ^^^^^^^^
+   *
+   * のどこにあっても、
+   *
+   * data
+   *
+   * と
+   *
+   * position
+   *
+   * を取得する。
+   * -------------------------------------------------------------
+   */
+
+  private getMemberAccessAtPosition(
+    text: string,
+    offset: number,
+  ): {
+    objectName: string;
+    memberName: string;
+  } | null {
+    if (text.length === 0) {
+      return null;
+    }
+
+    offset = Math.max(0, Math.min(offset, text.length));
+
+    const isIdentifierCharacter = (char: string): boolean => {
+      return /[A-Za-z0-9_]/.test(char);
+    };
+
+    // カーソル位置から member 名の範囲を探す
+    let memberStart = offset;
+
+    while (memberStart > 0 && isIdentifierCharacter(text[memberStart - 1])) {
+      memberStart--;
+    }
+
+    let memberEnd = offset;
+
+    while (memberEnd < text.length && isIdentifierCharacter(text[memberEnd])) {
+      memberEnd++;
+    }
+
+    if (memberStart === memberEnd) {
+      return null;
+    }
+
+    const memberName = text.substring(memberStart, memberEnd);
+
+    // member の左側にある空白を飛ばす
+    let dotOffset = memberStart;
+
+    while (dotOffset > 0 && /\s/.test(text[dotOffset - 1])) {
+      dotOffset--;
+    }
+
+    // "." がなければメンバーアクセスではない
+    if (dotOffset <= 0 || text[dotOffset - 1] !== '.') {
+      return null;
+    }
+
+    dotOffset--;
+
+    // "." の左側の空白を飛ばす
+    let objectEnd = dotOffset;
+
+    while (objectEnd > 0 && /\s/.test(text[objectEnd - 1])) {
+      objectEnd--;
+    }
+
+    // object 名を探す
+    let objectStart = objectEnd;
+
+    while (objectStart > 0 && isIdentifierCharacter(text[objectStart - 1])) {
+      objectStart--;
+    }
+
+    if (objectStart === objectEnd) {
+      return null;
+    }
+
+    const objectName = text.substring(objectStart, objectEnd);
+
+    console.log(`[DefinitionProvider] getMemberAccessAtPosition -> ${objectName}.${memberName}`);
+
+    return {
+      objectName,
+      memberName,
+    };
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * ソースから変数宣言を探す
+   *
+   * float4 color = ...
+   * float3 position;
+   * MyStruct data;
+   *
+   * -------------------------------------------------------------
+   */
+
+  private findVariableDeclarationInSource(
+    document: TextDocument,
+    variableName: string,
+    usageOffset: number,
+  ): {
+    name: string;
+    typeName: string;
+    uri: string;
+    range: {
+      start: {
+        line: number;
+        character: number;
+      };
+      end: {
+        line: number;
+        character: number;
+      };
+    };
+  } | null {
+    const text = document.getText();
+
+    const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    /*
+     * ---------------------------------------------------------
+     * 1. 通常の変数宣言
+     *
+     * float4 color;
      * float3 position;
      * MyStruct data;
+     * const MyStruct data;
+     * static MyStruct data;
+     * ---------------------------------------------------------
+     */
+
+    const variablePattern = new RegExp(
+      '\\b' +
+        '(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*' +
+        '([A-Za-z_][A-Za-z0-9_]*)' +
+        '\\s+' +
+        escapedName +
+        '\\s*(?==|;|,|\\[|:)',
+      'g',
+    );
+
+    let best: {
+      name: string;
+      typeName: string;
+      startOffset: number;
+      endOffset: number;
+    } | null = null;
+
+    let match: RegExpExecArray | null;
+
+    while ((match = variablePattern.exec(text)) !== null) {
+      const startOffset = match.index;
+
+      if (startOffset >= usageOffset) {
+        continue;
+      }
+
+      const typeName = match[1];
+
+      if (this.isVariableDeclarationKeyword(typeName)) {
+        continue;
+      }
+
+      const nameStart = text.indexOf(variableName, startOffset);
+
+      if (nameStart < 0) {
+        continue;
+      }
+
+      if (!best || startOffset > best.startOffset) {
+        best = {
+          name: variableName,
+
+          typeName,
+
+          startOffset: nameStart,
+
+          endOffset: nameStart + variableName.length,
+        };
+      }
+    }
+
+    if (best) {
+      return {
+        name: best.name,
+
+        typeName: best.typeName,
+
+        uri: document.uri,
+
+        range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
+      };
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 2. 関数パラメータ
      *
-     * -------------------------------------------------------------
+     * float4 Test(MyStruct a, MyStruct b)
+     *
+     * a.position
+     * b.position
+     *
+     * ここを現在の実装では拾えていなかった。
+     * ---------------------------------------------------------
      */
 
-    private findVariableDeclarationInSource(
-        document: TextDocument,
-        variableName: string,
-        usageOffset: number
-    ): {
-        name: string;
-        typeName: string;
-        uri: string;
-        range: {
-            start: {
-                line: number;
-                character: number;
-            };
-            end: {
-                line: number;
-                character: number;
-            };
+    const parameterPattern = new RegExp(
+      '\\b' + '([A-Za-z_][A-Za-z0-9_]*)' + '\\s+' + escapedName + '\\s*(?=[,)])',
+      'g',
+    );
+
+    while ((match = parameterPattern.exec(text)) !== null) {
+      const startOffset = match.index;
+
+      if (startOffset >= usageOffset) {
+        continue;
+      }
+
+      const typeName = match[1];
+
+      if (this.isVariableDeclarationKeyword(typeName)) {
+        continue;
+      }
+
+      /*
+       * structのフィールドなどを
+       * parameterと誤認しないため、
+       * 直前が "(" または "," のケースを優先する。
+       */
+
+      let before = startOffset - 1;
+
+      while (before >= 0 && /\s/.test(text[before])) {
+        before--;
+      }
+
+      if (before < 0) {
+        continue;
+      }
+
+      const beforeChar = text[before];
+
+      if (beforeChar !== '(' && beforeChar !== ',') {
+        continue;
+      }
+
+      const nameStart = text.indexOf(variableName, startOffset);
+
+      if (nameStart < 0) {
+        continue;
+      }
+
+      if (!best || startOffset > best.startOffset) {
+        best = {
+          name: variableName,
+
+          typeName,
+
+          startOffset: nameStart,
+
+          endOffset: nameStart + variableName.length,
         };
-    } | null {
-
-        const text =
-            document.getText();
-
-        const escapedName =
-            variableName.replace(
-                /[.*+?^${}()|[\]\\]/g,
-                "\\$&"
-            );
-
-        /*
-         * ---------------------------------------------------------
-         * 1. 通常の変数宣言
-         *
-         * float4 color;
-         * float3 position;
-         * MyStruct data;
-         * const MyStruct data;
-         * static MyStruct data;
-         * ---------------------------------------------------------
-         */
-
-        const variablePattern =
-            new RegExp(
-                "\\b" +
-                "(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*" +
-                "([A-Za-z_][A-Za-z0-9_]*)" +
-                "\\s+" +
-                escapedName +
-                "\\s*(?==|;|,|\\[|:)",
-                "g"
-            );
-
-        let best:
-            {
-                name: string;
-                typeName: string;
-                startOffset: number;
-                endOffset: number;
-            } | null = null;
-
-        let match:
-            RegExpExecArray | null;
-
-        while (
-            (match = variablePattern.exec(text)) !== null
-        ) {
-
-            const startOffset =
-                match.index;
-
-            if (
-                startOffset >= usageOffset
-            ) {
-                continue;
-            }
-
-            const typeName =
-                match[1];
-
-            if (
-                this.isVariableDeclarationKeyword(
-                    typeName
-                )
-            ) {
-                continue;
-            }
-
-            const nameStart =
-                text.indexOf(
-                    variableName,
-                    startOffset
-                );
-
-            if (
-                nameStart < 0
-            ) {
-                continue;
-            }
-
-            if (
-                !best ||
-                startOffset >
-                best.startOffset
-            ) {
-                best = {
-                    name:
-                        variableName,
-
-                    typeName,
-
-                    startOffset:
-                        nameStart,
-
-                    endOffset:
-                        nameStart +
-                        variableName.length
-                };
-            }
-        }
-
-        if (best) {
-            return {
-                name:
-                    best.name,
-
-                typeName:
-                    best.typeName,
-
-                uri:
-                    document.uri,
-
-                range:
-                    this.rangeFromOffsets(
-                        document,
-                        best.startOffset,
-                        best.endOffset
-                    )
-            };
-        }
-
-        /*
-         * ---------------------------------------------------------
-         * 2. 関数パラメータ
-         *
-         * float4 Test(MyStruct a, MyStruct b)
-         *
-         * a.position
-         * b.position
-         *
-         * ここを現在の実装では拾えていなかった。
-         * ---------------------------------------------------------
-         */
-
-        const parameterPattern =
-            new RegExp(
-                "\\b" +
-                "([A-Za-z_][A-Za-z0-9_]*)" +
-                "\\s+" +
-                escapedName +
-                "\\s*(?=[,)])",
-                "g"
-            );
-
-        while (
-            (match =
-                parameterPattern.exec(text)) !== null
-        ) {
-
-            const startOffset =
-                match.index;
-
-            if (
-                startOffset >= usageOffset
-            ) {
-                continue;
-            }
-
-            const typeName =
-                match[1];
-
-            if (
-                this.isVariableDeclarationKeyword(
-                    typeName
-                )
-            ) {
-                continue;
-            }
-
-            /*
-             * structのフィールドなどを
-             * parameterと誤認しないため、
-             * 直前が "(" または "," のケースを優先する。
-             */
-
-            let before =
-                startOffset - 1;
-
-            while (
-                before >= 0 &&
-                /\s/.test(text[before])
-            ) {
-                before--;
-            }
-
-            if (
-                before < 0
-            ) {
-                continue;
-            }
-
-            const beforeChar =
-                text[before];
-
-            if (
-                beforeChar !== "(" &&
-                beforeChar !== ","
-            ) {
-                continue;
-            }
-
-            const nameStart =
-                text.indexOf(
-                    variableName,
-                    startOffset
-                );
-
-            if (
-                nameStart < 0
-            ) {
-                continue;
-            }
-
-            if (
-                !best ||
-                startOffset >
-                best.startOffset
-            ) {
-                best = {
-                    name:
-                        variableName,
-
-                    typeName,
-
-                    startOffset:
-                        nameStart,
-
-                    endOffset:
-                        nameStart +
-                        variableName.length
-                };
-            }
-        }
-
-        if (!best) {
-            return null;
-        }
-
-        return {
-            name:
-                best.name,
-
-            typeName:
-                best.typeName,
-
-            uri:
-                document.uri,
-
-            range:
-                this.rangeFromOffsets(
-                    document,
-                    best.startOffset,
-                    best.endOffset
-                )
-        };
+      }
     }
 
-    /*
-     * -------------------------------------------------------------
-     * struct.field を検索
-     * -------------------------------------------------------------
-     */
+    if (!best) {
+      return null;
+    }
 
-    private findStructField(
-        typeName: string,
-        memberName: string
-    ): ShaderSymbol | null {
+    return {
+      name: best.name,
 
-        const normalizedType =
-            typeName
-                .replace(
-                    /\b(const|static|uniform|volatile|in|out|inout)\b/g,
-                    ""
-                )
-                .trim();
+      typeName: best.typeName,
 
-        const structMatches =
-            this.documentManager
-                .getWorkspaceIndex()
-                .findByKind(
-                    normalizedType,
-                    "struct"
-                );
+      uri: document.uri,
 
+      range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
+    };
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * struct.field を検索
+   * -------------------------------------------------------------
+   */
+
+  private findStructField(typeName: string, memberName: string): ShaderSymbol | null {
+    const normalizedType = typeName.replace(/\b(const|static|uniform|volatile|in|out|inout)\b/g, '').trim();
+
+    const structMatches = this.documentManager.getWorkspaceIndex().findByKind(normalizedType, 'struct');
+
+    console.log(`[DefinitionProvider] Struct lookup: ` + `${normalizedType} -> ${structMatches.length}`);
+
+    const normalizedMember = memberName.toLowerCase();
+
+    for (const match of structMatches) {
+      const struct = match.symbol;
+
+      const field = struct.children.find(
+        (child) => child.kind === 'field' && child.name.toLowerCase() === normalizedMember,
+      );
+
+      if (field) {
         console.log(
-            `[DefinitionProvider] Struct lookup: ` +
-            `${normalizedType} -> ${structMatches.length}`
+          `[DefinitionProvider] Field resolved: ` + `${normalizedType}.${memberName} @ ` + `${field.location.uri}`,
         );
 
-        const normalizedMember =
-            memberName.toLowerCase();
-
-        for (
-            const match
-            of structMatches
-        ) {
-
-            const struct =
-                match.symbol;
-
-            const field =
-                struct.children.find(
-                    child =>
-                        child.kind === "field" &&
-                        child.name.toLowerCase() ===
-                        normalizedMember
-                );
-
-            if (field) {
-
-                console.log(
-                    `[DefinitionProvider] Field resolved: ` +
-                    `${normalizedType}.${memberName} @ ` +
-                    `${field.location.uri}`
-                );
-
-                return field;
-            }
-        }
-
-        return null;
+        return field;
+      }
     }
 
-    /*
-     * -------------------------------------------------------------
-     * ローカル / Workspace object選択
-     * -------------------------------------------------------------
-     */
+    return null;
+  }
 
-    private selectBestObjectSymbol(
-        currentUri: string,
-        currentOffset: number,
-        symbols: ShaderSymbol[]
-    ): ShaderSymbol | null {
+  /*
+   * -------------------------------------------------------------
+   * ローカル / Workspace object選択
+   * -------------------------------------------------------------
+   */
 
-        const localSymbols =
-            symbols.filter(
-                symbol =>
-                    symbol.location.uri ===
-                    currentUri
-            );
+  private selectBestObjectSymbol(
+    currentUri: string,
+    currentOffset: number,
+    symbols: ShaderSymbol[],
+  ): ShaderSymbol | null {
+    const localSymbols = symbols.filter((symbol) => symbol.location.uri === currentUri);
 
-        if (
-            localSymbols.length === 0
-        ) {
-            return symbols[0] ?? null;
-        }
-
-        const beforeCursor =
-            localSymbols.filter(
-                symbol =>
-                    symbol.location.range.start.offset <=
-                    currentOffset
-            );
-
-        if (
-            beforeCursor.length > 0
-        ) {
-
-            beforeCursor.sort(
-                (a, b) =>
-                    b.location.range.start.offset -
-                    a.location.range.start.offset
-            );
-
-            return beforeCursor[0];
-        }
-
-        return localSymbols[0];
+    if (localSymbols.length === 0) {
+      return symbols[0] ?? null;
     }
 
-    /*
-     * -------------------------------------------------------------
-     * Include再帰
-     * -------------------------------------------------------------
-     */
+    const beforeCursor = localSymbols.filter((symbol) => symbol.location.range.start.offset <= currentOffset);
 
-    private loadIncludedDocuments(
-        rootUri: string
-    ): void {
+    if (beforeCursor.length > 0) {
+      beforeCursor.sort((a, b) => b.location.range.start.offset - a.location.range.start.offset);
 
-        const visited =
-            new Set<string>();
-
-        const parsed =
-            this.documentManager
-                .getParsed(rootUri);
-
-        if (!parsed) {
-            return;
-        }
-
-        this.loadIncludedDocumentsRecursive(
-            rootUri,
-            parsed,
-            visited
-        );
+      return beforeCursor[0];
     }
 
-    private loadIncludedDocumentsRecursive(
-        uri: string,
-        parsed: ParsedDocument,
-        visited: Set<string>,
-        source?: string
-    ): void {
+    return localSymbols[0];
+  }
 
-        if (
-            visited.has(uri)
-        ) {
-            return;
-        }
+  /*
+   * -------------------------------------------------------------
+   * Include再帰
+   * -------------------------------------------------------------
+   */
 
-        visited.add(uri);
+  private loadIncludedDocuments(rootUri: string): void {
+    const visited = new Set<string>();
 
-        let includePaths: string[];
+    const parsed = this.documentManager.getParsed(rootUri);
 
-        if (
-            parsed.languageId === "hlsl" &&
-            source !== undefined
-        ) {
-
-            includePaths =
-                this.collectRawHlslIncludes(
-                    source
-                );
-
-        } else {
-
-            includePaths =
-                this.collectIncludes(
-                    parsed
-                );
-        }
-
-        for (
-            const includePath
-            of includePaths
-        ) {
-
-            const resolved =
-                this.documentManager
-                    .getProjectService()
-                    .resolveInclude(
-                        includePath,
-                        uri
-                    );
-
-            if (!resolved) {
-                continue;
-            }
-
-            const externalDocument =
-                this.documentManager
-                    .ensureExternalDocument(
-                        resolved.uri
-                    );
-
-            if (!externalDocument) {
-                continue;
-            }
-
-            const externalSource =
-                this.documentManager
-                    .getProjectService()
-                    .readFile(
-                        resolved.resolvedPath
-                    );
-
-            this.loadIncludedDocumentsRecursive(
-                resolved.uri,
-                externalDocument,
-                visited,
-                externalSource
-            );
-        }
+    if (!parsed) {
+      return;
     }
 
-    /*
-     * -------------------------------------------------------------
-     * Include収集
-     * -------------------------------------------------------------
-     */
+    this.loadIncludedDocumentsRecursive(rootUri, parsed, visited);
+  }
 
-    private collectIncludes(
-        parsed: ParsedDocument
-    ): string[] {
-
-        const result: string[] = [];
-
-        if (
-            parsed.ast.kind ===
-            "ShaderDocument"
-        ) {
-
-            this.collectShaderLabIncludes(
-                parsed.ast,
-                result
-            );
-
-        } else {
-
-            this.collectHlslIncludes(
-                parsed.ast,
-                result
-            );
-        }
-
-        return result;
+  private loadIncludedDocumentsRecursive(
+    uri: string,
+    parsed: ParsedDocument,
+    visited: Set<string>,
+    source?: string,
+  ): void {
+    if (visited.has(uri)) {
+      return;
     }
 
-    private collectHlslIncludes(
-        ast: any,
-        result: string[]
-    ): void {
+    visited.add(uri);
 
-        if (
-            !ast ||
-            !Array.isArray(
-                ast.declarations
-            )
-        ) {
-            return;
-        }
+    let includePaths: string[];
 
-        for (
-            const declaration
-            of ast.declarations
-        ) {
-
-            if (
-                declaration?.kind ===
-                "HlslInclude" &&
-                typeof declaration.path ===
-                "string"
-            ) {
-
-                result.push(
-                    declaration.path
-                );
-            }
-        }
+    if (parsed.languageId === 'hlsl' && source !== undefined) {
+      includePaths = this.collectRawHlslIncludes(source);
+    } else {
+      includePaths = this.collectIncludes(parsed);
     }
 
-    private collectShaderLabIncludes(
-        ast: any,
-        result: string[]
-    ): void {
+    for (const includePath of includePaths) {
+      const resolved = this.documentManager.getProjectService().resolveInclude(includePath, uri);
 
-        if (!ast) {
-            return;
-        }
+      if (!resolved) {
+        continue;
+      }
 
-        if (
-            Array.isArray(
-                ast.hlslBlocks
-            )
-        ) {
+      const externalDocument = this.documentManager.ensureExternalDocument(resolved.uri);
 
-            for (
-                const block
-                of ast.hlslBlocks
-            ) {
+      if (!externalDocument) {
+        continue;
+      }
 
-                this.collectHlslIncludes(
-                    block?.hlsl,
-                    result
-                );
-            }
-        }
+      const externalSource = this.documentManager.getProjectService().readFile(resolved.resolvedPath);
 
-        if (
-            !Array.isArray(
-                ast.subShaders
-            )
-        ) {
-            return;
-        }
+      this.loadIncludedDocumentsRecursive(resolved.uri, externalDocument, visited, externalSource);
+    }
+  }
 
-        for (
-            const subShader
-            of ast.subShaders
-        ) {
+  /*
+   * -------------------------------------------------------------
+   * Include収集
+   * -------------------------------------------------------------
+   */
 
-            if (
-                Array.isArray(
-                    subShader.hlslBlocks
-                )
-            ) {
+  private collectIncludes(parsed: ParsedDocument): string[] {
+    const result: string[] = [];
 
-                for (
-                    const block
-                    of subShader.hlslBlocks
-                ) {
-
-                    this.collectHlslIncludes(
-                        block?.hlsl,
-                        result
-                    );
-                }
-            }
-
-            if (
-                !Array.isArray(
-                    subShader.passes
-                )
-            ) {
-                continue;
-            }
-
-            for (
-                const pass
-                of subShader.passes
-            ) {
-
-                if (
-                    !Array.isArray(
-                        pass.hlslBlocks
-                    )
-                ) {
-                    continue;
-                }
-
-                for (
-                    const block
-                    of pass.hlslBlocks
-                ) {
-
-                    this.collectHlslIncludes(
-                        block?.hlsl,
-                        result
-                    );
-                }
-            }
-        }
+    if (parsed.ast.kind === 'ShaderDocument') {
+      this.collectShaderLabIncludes(parsed.ast, result);
+    } else {
+      this.collectHlslIncludes(parsed.ast, result);
     }
 
-    /*
-     * -------------------------------------------------------------
-     * Raw HLSL include
-     * -------------------------------------------------------------
-     */
+    return result;
+  }
 
-    private collectRawHlslIncludes(
-        source: string
-    ): string[] {
-
-        const includes: string[] = [];
-
-        const lines =
-            source.split(/\r?\n/);
-
-        for (
-            const line
-            of lines
-        ) {
-
-            const match =
-                line.match(
-                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/
-                );
-
-            if (!match) {
-                continue;
-            }
-
-            const includePath =
-                match[1] ?? match[2];
-
-            if (!includePath) {
-                continue;
-            }
-
-            includes.push(
-                includePath
-            );
-        }
-
-        return includes;
+  private collectHlslIncludes(ast: any, result: string[]): void {
+    if (!ast || !Array.isArray(ast.declarations)) {
+      return;
     }
 
-    /*
-     * -------------------------------------------------------------
-     * Definition選択
-     * -------------------------------------------------------------
-     */
+    for (const declaration of ast.declarations) {
+      if (declaration?.kind === 'HlslInclude' && typeof declaration.path === 'string') {
+        result.push(declaration.path);
+      }
+    }
+  }
 
-    private selectBestDefinition(
-        currentUri: string,
-        symbols: ShaderSymbol[]
-    ): ShaderSymbol | null {
-
-        if (
-            symbols.length === 0
-        ) {
-            return null;
-        }
-
-        const localSymbols =
-            symbols.filter(
-                symbol =>
-                    symbol.location.uri ===
-                    currentUri
-            );
-
-        if (
-            localSymbols.length > 0
-        ) {
-
-            const priority:
-                ShaderSymbol["kind"][] = [
-
-                    "parameter",
-                    "variable",
-                    "field",
-                    "function",
-                    "struct",
-                    "cbuffer",
-                    "property",
-                    "pass",
-                    "subShader",
-                    "shader",
-                    "macro",
-                    "include"
-                ];
-
-            const selected =
-                this.selectByPriority(
-                    localSymbols,
-                    priority
-                );
-
-            if (selected) {
-                return selected;
-            }
-        }
-
-        const externalPriority:
-            ShaderSymbol["kind"][] = [
-
-                "function",
-                "struct",
-                "field",
-                "variable",
-                "cbuffer",
-                "macro",
-                "property",
-                "parameter",
-                "include"
-            ];
-
-        return this.selectByPriority(
-            symbols,
-            externalPriority
-        );
+  private collectShaderLabIncludes(ast: any, result: string[]): void {
+    if (!ast) {
+      return;
     }
 
-    private selectByPriority(
-        symbols: ShaderSymbol[],
-        priority: ShaderSymbol["kind"][]
-    ): ShaderSymbol | null {
-
-        for (
-            const kind
-            of priority
-        ) {
-
-            const found =
-                symbols.find(
-                    symbol =>
-                        symbol.kind ===
-                        kind
-                );
-
-            if (found) {
-                return found;
-            }
-        }
-
-        return symbols[0] ?? null;
+    if (Array.isArray(ast.hlslBlocks)) {
+      for (const block of ast.hlslBlocks) {
+        this.collectHlslIncludes(block?.hlsl, result);
+      }
     }
 
-    /*
-     * -------------------------------------------------------------
-     * Built-in HLSL type
-     * -------------------------------------------------------------
-     */
-
-    private isBuiltinHlslType(
-        word: string
-    ): boolean {
-
-        const builtinTypes =
-            new Set([
-
-                "void",
-
-                "bool",
-                "bool2",
-                "bool3",
-                "bool4",
-
-                "int",
-                "int2",
-                "int3",
-                "int4",
-
-                "uint",
-                "uint2",
-                "uint3",
-                "uint4",
-
-                "half",
-                "half2",
-                "half3",
-                "half4",
-
-                "float",
-                "float2",
-                "float3",
-                "float4",
-
-                "double",
-                "double2",
-                "double3",
-                "double4",
-
-                "min16float",
-                "min16float2",
-                "min16float3",
-                "min16float4",
-
-                "min16int",
-                "min16int2",
-                "min16int3",
-                "min16int4",
-
-                "min16uint",
-                "min16uint2",
-                "min16uint3",
-                "min16uint4"
-            ]);
-
-        return builtinTypes.has(
-            word
-        );
+    if (!Array.isArray(ast.subShaders)) {
+      return;
     }
 
-    /*
-     * -------------------------------------------------------------
-     * HLSL semantic
-     * -------------------------------------------------------------
-     */
+    for (const subShader of ast.subShaders) {
+      if (Array.isArray(subShader.hlslBlocks)) {
+        for (const block of subShader.hlslBlocks) {
+          this.collectHlslIncludes(block?.hlsl, result);
+        }
+      }
 
-    private isHlslSemantic(word: string): boolean {
-        // HLSL semantic は大文字表記だけを対象にする。
-        // "position" のような通常の変数名・field 名は semantic として扱わない。
-        if (word !== word.toUpperCase()) {
-            return false;
+      if (!Array.isArray(subShader.passes)) {
+        continue;
+      }
+
+      for (const pass of subShader.passes) {
+        if (!Array.isArray(pass.hlslBlocks)) {
+          continue;
         }
 
-        return (
-            /^SV_[A-Z0-9_]+$/.test(word) ||
-            /^POSITION\d*$/.test(word) ||
-            /^NORMAL\d*$/.test(word) ||
-            /^TANGENT\d*$/.test(word) ||
-            /^BINORMAL\d*$/.test(word) ||
-            /^BLENDINDICES\d*$/.test(word) ||
-            /^BLENDWEIGHT\d*$/.test(word) ||
-            /^TEXCOORD\d*$/.test(word) ||
-            /^COLOR\d*$/.test(word) ||
-            /^PSIZE\d*$/.test(word) ||
-            /^FOG\d*$/.test(word)
-        );
+        for (const block of pass.hlslBlocks) {
+          this.collectHlslIncludes(block?.hlsl, result);
+        }
+      }
     }
-    /*
-     * -------------------------------------------------------------
-     * HLSL Swizzle
-     * -------------------------------------------------------------
-     */
+  }
 
-    private isHlslSwizzle(
-        word: string
-    ): boolean {
+  /*
+   * -------------------------------------------------------------
+   * Raw HLSL include
+   * -------------------------------------------------------------
+   */
 
-        if (
-            word.length < 1 ||
-            word.length > 4
-        ) {
-            return false;
-        }
+  private collectRawHlslIncludes(source: string): string[] {
+    const includes: string[] = [];
 
-        const lower =
-            word.toLowerCase();
+    const lines = source.split(/\r?\n/);
 
-        const swizzleCharacters =
-            new Set([
+    for (const line of lines) {
+      const match = line.match(/^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/);
 
-                "x",
-                "y",
-                "z",
-                "w",
+      if (!match) {
+        continue;
+      }
 
-                "r",
-                "g",
-                "b",
-                "a",
+      const includePath = match[1] ?? match[2];
 
-                "s",
-                "t",
-                "p",
-                "q"
-            ]);
+      if (!includePath) {
+        continue;
+      }
 
-        for (
-            const character
-            of lower
-        ) {
-
-            if (
-                !swizzleCharacters.has(
-                    character
-                )
-            ) {
-                return false;
-            }
-        }
-
-        return true;
+      includes.push(includePath);
     }
 
-    /*
-     * -------------------------------------------------------------
-     * 変数宣言として扱わないkeyword
-     * -------------------------------------------------------------
-     */
+    return includes;
+  }
 
-    private isVariableDeclarationKeyword(
-        word: string
-    ): boolean {
+  /*
+   * -------------------------------------------------------------
+   * Definition選択
+   * -------------------------------------------------------------
+   */
 
-        return new Set([
-
-            "if",
-            "else",
-            "for",
-            "while",
-            "switch",
-            "case",
-
-            "return",
-
-            "struct",
-            "class",
-
-            "cbuffer",
-            "tbuffer",
-
-            "SamplerState",
-            "SamplerComparisonState",
-
-            "Texture1D",
-            "Texture2D",
-            "Texture3D",
-            "TextureCube",
-
-            "RWTexture1D",
-            "RWTexture2D",
-            "RWTexture3D",
-
-            "Buffer",
-            "StructuredBuffer",
-            "RWStructuredBuffer",
-
-            "ByteAddressBuffer",
-            "RWByteAddressBuffer"
-        ]).has(
-            word
-        );
+  private selectBestDefinition(currentUri: string, symbols: ShaderSymbol[]): ShaderSymbol | null {
+    if (symbols.length === 0) {
+      return null;
     }
 
-    /*
-     * -------------------------------------------------------------
-     * Offset → Range
-     * -------------------------------------------------------------
-     */
+    const localSymbols = symbols.filter((symbol) => symbol.location.uri === currentUri);
 
-    private rangeFromOffsets(
-        document: TextDocument,
-        startOffset: number,
-        endOffset: number
-    ) {
+    if (localSymbols.length > 0) {
+      const priority: ShaderSymbol['kind'][] = [
+        'parameter',
+        'variable',
+        'field',
+        'function',
+        'struct',
+        'cbuffer',
+        'property',
+        'pass',
+        'subShader',
+        'shader',
+        'macro',
+        'include',
+      ];
 
-        return {
-            start:
-                document.positionAt(
-                    startOffset
-                ),
+      const selected = this.selectByPriority(localSymbols, priority);
 
-            end:
-                document.positionAt(
-                    endOffset
-                )
-        };
+      if (selected) {
+        return selected;
+      }
     }
 
-    /*
-     * -------------------------------------------------------------
-     * ShaderSymbol → LSP Location
-     * -------------------------------------------------------------
-     */
+    const externalPriority: ShaderSymbol['kind'][] = [
+      'function',
+      'struct',
+      'field',
+      'variable',
+      'cbuffer',
+      'macro',
+      'property',
+      'parameter',
+      'include',
+    ];
 
-    private toLocation(
-        symbol: ShaderSymbol
-    ): Location {
+    return this.selectByPriority(symbols, externalPriority);
+  }
 
-        return {
+  private selectByPriority(symbols: ShaderSymbol[], priority: ShaderSymbol['kind'][]): ShaderSymbol | null {
+    for (const kind of priority) {
+      const found = symbols.find((symbol) => symbol.kind === kind);
 
-            uri:
-                symbol.location.uri,
-
-            range: {
-
-                start: {
-
-                    line:
-                        symbol.location
-                            .selectionRange
-                            .start.line,
-
-                    character:
-                        symbol.location
-                            .selectionRange
-                            .start.character
-                },
-
-                end: {
-
-                    line:
-                        symbol.location
-                            .selectionRange
-                            .end.line,
-
-                    character:
-                        symbol.location
-                            .selectionRange
-                            .end.character
-                }
-            }
-        };
+      if (found) {
+        return found;
+      }
     }
 
-    /*
-     * -------------------------------------------------------------
-     * identifier取得
-     * -------------------------------------------------------------
-     */
+    return symbols[0] ?? null;
+  }
 
-    private getWordAtPosition(
-        text: string,
-        offset: number
-    ): string | null {
+  /*
+   * -------------------------------------------------------------
+   * Built-in HLSL type
+   * -------------------------------------------------------------
+   */
 
-        if (
-            text.length === 0
-        ) {
-            return null;
-        }
+  private isBuiltinHlslType(word: string): boolean {
+    const builtinTypes = new Set([
+      'void',
 
-        offset =
-            Math.max(
-                0,
-                Math.min(
-                    offset,
-                    text.length
-                )
-            );
+      'bool',
+      'bool2',
+      'bool3',
+      'bool4',
 
-        let start =
-            offset;
+      'int',
+      'int2',
+      'int3',
+      'int4',
 
-        let end =
-            offset;
+      'uint',
+      'uint2',
+      'uint3',
+      'uint4',
 
-        const isIdentifierCharacter =
-            (char: string): boolean => {
+      'half',
+      'half2',
+      'half3',
+      'half4',
 
-                return /[A-Za-z0-9_]/.test(
-                    char
-                );
-            };
+      'float',
+      'float2',
+      'float3',
+      'float4',
 
-        while (
-            start > 0 &&
-            isIdentifierCharacter(
-                text[start - 1]
-            )
-        ) {
-            start--;
-        }
+      'double',
+      'double2',
+      'double3',
+      'double4',
 
-        while (
-            end < text.length &&
-            isIdentifierCharacter(
-                text[end]
-            )
-        ) {
-            end++;
-        }
+      'min16float',
+      'min16float2',
+      'min16float3',
+      'min16float4',
 
-        if (
-            start === end
-        ) {
-            return null;
-        }
+      'min16int',
+      'min16int2',
+      'min16int3',
+      'min16int4',
 
-        return text.substring(
-            start,
-            end
-        );
+      'min16uint',
+      'min16uint2',
+      'min16uint3',
+      'min16uint4',
+    ]);
+
+    return builtinTypes.has(word);
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * HLSL semantic
+   * -------------------------------------------------------------
+   */
+
+  private isHlslSemantic(word: string): boolean {
+    // HLSL semantic は大文字表記だけを対象にする。
+    // "position" のような通常の変数名・field 名は semantic として扱わない。
+    if (word !== word.toUpperCase()) {
+      return false;
     }
+
+    return (
+      /^SV_[A-Z0-9_]+$/.test(word) ||
+      /^POSITION\d*$/.test(word) ||
+      /^NORMAL\d*$/.test(word) ||
+      /^TANGENT\d*$/.test(word) ||
+      /^BINORMAL\d*$/.test(word) ||
+      /^BLENDINDICES\d*$/.test(word) ||
+      /^BLENDWEIGHT\d*$/.test(word) ||
+      /^TEXCOORD\d*$/.test(word) ||
+      /^COLOR\d*$/.test(word) ||
+      /^PSIZE\d*$/.test(word) ||
+      /^FOG\d*$/.test(word)
+    );
+  }
+  /*
+   * -------------------------------------------------------------
+   * HLSL Swizzle
+   * -------------------------------------------------------------
+   */
+
+  private isHlslSwizzle(word: string): boolean {
+    if (word.length < 1 || word.length > 4) {
+      return false;
+    }
+
+    const lower = word.toLowerCase();
+
+    const swizzleCharacters = new Set(['x', 'y', 'z', 'w', 'r', 'g', 'b', 'a', 's', 't', 'p', 'q']);
+
+    for (const character of lower) {
+      if (!swizzleCharacters.has(character)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * 変数宣言として扱わないkeyword
+   * -------------------------------------------------------------
+   */
+
+  private isVariableDeclarationKeyword(word: string): boolean {
+    return new Set([
+      'if',
+      'else',
+      'for',
+      'while',
+      'switch',
+      'case',
+
+      'return',
+
+      'struct',
+      'class',
+
+      'cbuffer',
+      'tbuffer',
+
+      'SamplerState',
+      'SamplerComparisonState',
+
+      'Texture1D',
+      'Texture2D',
+      'Texture3D',
+      'TextureCube',
+
+      'RWTexture1D',
+      'RWTexture2D',
+      'RWTexture3D',
+
+      'Buffer',
+      'StructuredBuffer',
+      'RWStructuredBuffer',
+
+      'ByteAddressBuffer',
+      'RWByteAddressBuffer',
+    ]).has(word);
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * Offset → Range
+   * -------------------------------------------------------------
+   */
+
+  private rangeFromOffsets(document: TextDocument, startOffset: number, endOffset: number) {
+    return {
+      start: document.positionAt(startOffset),
+
+      end: document.positionAt(endOffset),
+    };
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * ShaderSymbol → LSP Location
+   * -------------------------------------------------------------
+   */
+
+  private toLocation(symbol: ShaderSymbol): Location {
+    return {
+      uri: symbol.location.uri,
+
+      range: {
+        start: {
+          line: symbol.location.selectionRange.start.line,
+
+          character: symbol.location.selectionRange.start.character,
+        },
+
+        end: {
+          line: symbol.location.selectionRange.end.line,
+
+          character: symbol.location.selectionRange.end.character,
+        },
+      },
+    };
+  }
+
+  /*
+   * -------------------------------------------------------------
+   * identifier取得
+   * -------------------------------------------------------------
+   */
+
+  private getWordAtPosition(text: string, offset: number): string | null {
+    if (text.length === 0) {
+      return null;
+    }
+
+    offset = Math.max(0, Math.min(offset, text.length));
+
+    let start = offset;
+
+    let end = offset;
+
+    const isIdentifierCharacter = (char: string): boolean => {
+      return /[A-Za-z0-9_]/.test(char);
+    };
+
+    while (start > 0 && isIdentifierCharacter(text[start - 1])) {
+      start--;
+    }
+
+    while (end < text.length && isIdentifierCharacter(text[end])) {
+      end++;
+    }
+
+    if (start === end) {
+      return null;
+    }
+
+    return text.substring(start, end);
+  }
 }

@@ -1,38 +1,29 @@
-import * as vscode from "vscode";
+import * as vscode from 'vscode';
 
-import {
-    startLanguageClient,
-    stopLanguageClient
-} from "./client/languageClient";
+import { startLanguageClient, stopLanguageClient } from './client/languageClient';
 
 let clientStarted = false;
 
-export async function activate(
-    context: vscode.ExtensionContext
-): Promise<void> {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  const configuration = vscode.workspace.getConfiguration('urpShaderLab');
 
-    const configuration =
-        vscode.workspace.getConfiguration("urpShaderLab");
+  const enabled = configuration.get<boolean>('enable', true);
 
-    const enabled =
-        configuration.get<boolean>("enable", true);
+  if (!enabled) {
+    return;
+  }
 
-    if (!enabled) {
-        return;
-    }
+  await startLanguageClient(context);
 
-    await startLanguageClient(context);
-
-    clientStarted = true;
+  clientStarted = true;
 }
 
 export async function deactivate(): Promise<void> {
+  if (!clientStarted) {
+    return;
+  }
 
-    if (!clientStarted) {
-        return;
-    }
+  await stopLanguageClient();
 
-    await stopLanguageClient();
-
-    clientStarted = false;
+  clientStarted = false;
 }

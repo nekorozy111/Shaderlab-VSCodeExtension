@@ -1,44 +1,41 @@
-import {
-    SourceRange
-} from "../parser/token";
+import { SourceRange } from '../parser/token';
 
 export type SymbolKind =
-    | "shader"
-    | "property"
-    | "subShader"
-    | "pass"
-    | "struct"
-    | "field"
-    | "function"
-    | "parameter"
-    | "variable"
-    | "cbuffer"
-    | "macro"
-    | "include";
+  | 'shader'
+  | 'property'
+  | 'subShader'
+  | 'pass'
+  | 'struct'
+  | 'field'
+  | 'function'
+  | 'parameter'
+  | 'variable'
+  | 'cbuffer'
+  | 'macro'
+  | 'include';
 
 export interface SymbolLocation {
-    uri: string;
+  uri: string;
 
-    range: SourceRange;
+  range: SourceRange;
 
-    selectionRange: SourceRange;
+  selectionRange: SourceRange;
 }
 
 export interface ShaderSymbol {
+  name: string;
 
-    name: string;
+  kind: SymbolKind;
 
-    kind: SymbolKind;
+  location: SymbolLocation;
 
-    location: SymbolLocation;
+  typeName?: string;
 
-    typeName?: string;
+  returnType?: string;
 
-    returnType?: string;
+  semantic?: string;
 
-    semantic?: string;
+  parentName?: string;
 
-    parentName?: string;
-
-    children: ShaderSymbol[];
+  children: ShaderSymbol[];
 }
