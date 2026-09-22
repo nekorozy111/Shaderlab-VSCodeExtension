@@ -1,12 +1,14 @@
 import { CompletionItem, CompletionItemKind, Position } from 'vscode-languageserver/node';
 import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
-
+import { IncludeResolver } from '../project/includeResolver';
 export class CompletionProvider {
-  public constructor(private readonly documentManager: DocumentManager) {}
+  public constructor(
+    private readonly documentManager: DocumentManager,
+    private readonly includeResolver: IncludeResolver,
+  ) {}
 
   private readonly completionSource = 'ShaderLab IntelliSense';
-
   public provideCompletion(uri: string, position: Position): CompletionItem[] {
     const document = this.documentManager.get(uri);
 
@@ -22,6 +24,23 @@ export class CompletionProvider {
       return [];
     }
 
+    /*
+     * ============================================================
+     * #include Completion
+     * ============================================================
+     *
+     * #include "..." の中は通常の string として扱われるため、
+     * isInsideString() より前に判定する必要がある。
+     */
+    const includeContext = this.getIncludeCompletionContext(text, offset);
+
+    if (includeContext) {
+      return this.provideIncludeCompletion(uri, includeContext, offset);
+    }
+
+    /*
+     * 通常の string 内では Completion を出さない。
+     */
     if (this.isInsideString(text, offset)) {
       return [];
     }
@@ -1350,5 +1369,107 @@ export class CompletionProvider {
       'SV_ISFRONTFACE',
       'SV_SAMPLEINDEX',
     ];
+  }
+  private getIncludeCompletionContext(
+    text: string,
+    offset: number,
+  ): {
+    path: string;
+    prefix: string;
+  } | null {
+    const beforeCursor = text.substring(0, offset);
+
+    /*
+     * 現在行だけを見る。
+     */
+    const lineStart = beforeCursor.lastIndexOf('\n') + 1;
+    const line = beforeCursor.substring(lineStart);
+
+    /*
+     * #include "..."
+     *
+     * まだ閉じる " がない状態だけを対象にする。
+     */
+    const match = line.match(/^\s*#\s*include\s*(?:"([^"]*)|<([^>]*)?)$/);
+
+    if (!match) {
+      return null;
+    }
+
+    const includePath = match[1] ?? match[2] ?? '';
+
+    /*
+     * 最後の / より後ろを prefix とする。
+     *
+     * 例:
+     *
+     * Packages/com.unity.render-pipelines.universal/ShaderLibrary/Co
+     *
+     * path:
+     * Packages/com.unity.render-pipelines.universal/ShaderLibrary/
+     *
+     * prefix:
+     * Co
+     */
+    const slashIndex = Math.max(includePath.lastIndexOf('/'), includePath.lastIndexOf('\\'));
+
+    if (slashIndex < 0) {
+      return {
+        path: '',
+        prefix: includePath,
+      };
+    }
+
+    return {
+      path: includePath.substring(0, slashIndex + 1),
+      prefix: includePath.substring(slashIndex + 1),
+    };
+  }
+  private provideIncludeCompletion(
+    uri: string,
+    context: { path: string; prefix: string },
+    offset: number,
+  ): CompletionItem[] {
+    console.log(`[CompletionProvider] Include completion: ` + `path="${context.path}" prefix="${context.prefix}"`);
+
+    const includePath = `${context.path}${context.prefix}`;
+
+    const candidates = this.includeResolver.getCompletionCandidates(includePath, uri);
+
+    const document = this.documentManager.get(uri);
+
+    if (!document) {
+      return [];
+    }
+
+    const includeStartOffset = offset - includePath.length;
+
+    const startPosition = document.positionAt(includeStartOffset);
+
+    const endPosition = document.positionAt(offset);
+
+    const result: CompletionItem[] = [];
+
+    for (const candidate of candidates) {
+      result.push({
+        label: candidate.includePath,
+        kind: CompletionItemKind.File,
+        detail: 'include',
+
+        textEdit: {
+          range: {
+            start: startPosition,
+            end: endPosition,
+          },
+          newText: candidate.includePath,
+        },
+
+        sortText: candidate.includePath,
+      });
+    }
+
+    console.log(`[CompletionProvider] Include candidates: ${result.length}`);
+
+    return result;
   }
 }

@@ -19,6 +19,7 @@ import { DefinitionProvider } from './language/definitionProvider';
 import { HoverProvider } from './language/hoverProvider';
 
 import { CompletionProvider } from './language/completionProvider';
+import { IncludeResolver } from './project/includeResolver';
 
 const connection = createConnection(ProposedFeatures.all);
 
@@ -30,7 +31,7 @@ const definitionProvider = new DefinitionProvider(documentManager);
 
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 
-const completionProvider = new CompletionProvider(documentManager);
+const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
 connection.onInitialize((params) => {
   documentManager.initializeProject(params);
 
