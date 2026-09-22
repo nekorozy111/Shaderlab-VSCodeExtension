@@ -18,6 +18,7 @@ export interface IncludeCompletionCandidate {
 export class IncludeResolver {
   private readonly projectRoot: ProjectRoot;
   private readonly fileSystem: FileSystem;
+  private projectIncludeFiles: string[] | undefined;
 
   public constructor(projectRoot: ProjectRoot, fileSystem: FileSystem) {
     this.projectRoot = projectRoot;
@@ -107,6 +108,12 @@ export class IncludeResolver {
     }
 
     return undefined;
+  }
+
+  public invalidateProjectIncludeCache(): void {
+    this.projectIncludeFiles = undefined;
+
+    console.log('[IncludeResolver] Project include file cache invalidated');
   }
 
   public getCompletionCandidates(includePath: string, fromUri: string): IncludeCompletionCandidate[] {
@@ -398,13 +405,33 @@ export class IncludeResolver {
     prefix: string,
     candidates: Map<string, IncludeCompletionCandidate>,
   ): void {
-    this.collectProjectRelativeIncludeFilesRecursive(
-      projectRoot,
-      projectRoot,
-      fromDirectory,
-      prefix.toLowerCase(),
-      candidates,
-    );
+    const projectFiles = this.getProjectIncludeFiles(projectRoot);
+    const normalizedPrefix = prefix.toLowerCase();
+
+    for (const entryPath of projectFiles) {
+      const fileName = path.basename(entryPath);
+
+      if (!fileName.toLowerCase().startsWith(normalizedPrefix)) {
+        continue;
+      }
+
+      const relativePath = path.relative(fromDirectory, entryPath).replace(/\\/g, '/');
+
+      if (!relativePath) {
+        continue;
+      }
+
+      console.log(
+        `[IncludeResolver] Cached project candidate:` +
+          ` fromDirectory="${fromDirectory}"` +
+          ` entryPath="${entryPath}"` +
+          ` relativePath="${relativePath}"`,
+      );
+
+      candidates.set(relativePath, {
+        includePath: relativePath,
+      });
+    }
   }
   private collectProjectRelativeIncludeFilesRecursive(
     directoryPath: string,
@@ -588,5 +615,51 @@ export class IncludeResolver {
     } catch {
       return undefined;
     }
+  }
+  private getProjectIncludeFiles(projectRoot: string): string[] {
+    if (this.projectIncludeFiles !== undefined) {
+      console.log(`[IncludeResolver] Using cached project include files: ${this.projectIncludeFiles.length}`);
+
+      return this.projectIncludeFiles;
+    }
+
+    const files: string[] = [];
+
+    const collect = (directoryPath: string): void => {
+      for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+        const entryPath = path.join(directoryPath, entry);
+
+        if (this.fileSystem.isDirectory(entryPath)) {
+          // Unityプロジェクトの外部・巨大な管理フォルダは検索対象外。
+          if (
+            directoryPath === projectRoot &&
+            (entry === 'Library' || entry === 'Packages' || entry === 'ProjectSettings')
+          ) {
+            continue;
+          }
+
+          collect(entryPath);
+          continue;
+        }
+
+        if (!this.fileSystem.isFile(entryPath)) {
+          continue;
+        }
+
+        if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+          continue;
+        }
+
+        files.push(entryPath);
+      }
+    };
+
+    collect(projectRoot);
+
+    this.projectIncludeFiles = files;
+
+    console.log(`[IncludeResolver] Cached project include files: ${files.length}`);
+
+    return files;
   }
 }

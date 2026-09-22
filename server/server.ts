@@ -5,6 +5,8 @@ import {
   ProposedFeatures,
   TextDocuments,
   TextDocumentSyncKind,
+  DidChangeWatchedFilesNotification,
+  WatchKind,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -48,6 +50,7 @@ connection.onInitialize((params) => {
 
       completionProvider: {
         resolveProvider: false,
+        triggerCharacters: ['/', '\\'],
       },
 
       hoverProvider: true,
@@ -57,6 +60,18 @@ connection.onInitialize((params) => {
       referencesProvider: true,
     },
   };
+});
+connection.onInitialized(async () => {
+  await connection.client.register(DidChangeWatchedFilesNotification.type, {
+    watchers: [
+      {
+        globPattern: '**/*.{hlsl,hlsli,cginc}',
+        kind: WatchKind.Create | WatchKind.Change | WatchKind.Delete,
+      },
+    ],
+  });
+
+  connection.console.log('[URP ShaderLab] Registered HLSL file watcher');
 });
 
 connection.onDefinition((params) => {
@@ -90,6 +105,12 @@ documents.onDidChangeContent((event) => {
   logParsedDocument(parsed);
 
   logWorkspaceIndex();
+});
+
+connection.onDidChangeWatchedFiles(() => {
+  documentManager.getProjectService().invalidateIncludeCache();
+
+  connection.console.log('[URP ShaderLab] Include cache invalidated by file change');
 });
 
 documents.onDidClose((event) => {

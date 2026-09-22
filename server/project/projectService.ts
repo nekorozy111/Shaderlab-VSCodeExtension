@@ -21,6 +21,10 @@ export class ProjectService {
     return this.includeResolver.resolve(includePath, fromUri);
   }
 
+  public invalidateIncludeCache(): void {
+    this.includeResolver.invalidateProjectIncludeCache();
+  }
+
   public readFile(filePath: string): string | undefined {
     return this.fileSystem.readText(filePath);
   }

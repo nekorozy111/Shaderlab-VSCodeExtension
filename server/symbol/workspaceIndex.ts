@@ -88,6 +88,10 @@ export class WorkspaceIndex {
     return this.documents.size;
   }
 
+  public getDocumentUris(): string[] {
+    return Array.from(this.documents.keys());
+  }
+
   public findPrefix(prefix: string): SymbolMatch[] {
     const normalized = prefix.toLowerCase();
 
