@@ -279,7 +279,7 @@ export class DefinitionProvider {
     const localMatches = this.documentManager
       .getWorkspaceIndex()
       .findExact(word)
-      .filter((match) => match.uri === uri);
+      .filter((match) => match.uri === uri && match.symbol.kind !== 'parameter');
 
     console.log(`[DefinitionProvider] Local matches: ` + `${localMatches.length}`);
 
@@ -346,9 +346,19 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
 
-    const matches = this.documentManager.getWorkspaceIndex().findExact(word);
+    const relatedUris = new Set<string>();
 
-    console.log(`[DefinitionProvider] Global search "${word}" -> ` + `${matches.length}`);
+    relatedUris.add(uri);
+    this.collectRelatedIncludeUris(uri, relatedUris);
+
+    const matches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(word)
+      .filter((match) => relatedUris.has(match.symbol.location.uri) && match.symbol.kind !== 'parameter');
+
+    console.log(
+      `[DefinitionProvider] Related search "${word}" -> ` + `${matches.length} ` + `(related=${relatedUris.size})`,
+    );
 
     for (const match of matches) {
       console.log(
@@ -368,9 +378,7 @@ export class DefinitionProvider {
       return null;
     }
 
-    console.log(
-      `[DefinitionProvider] Global -> ` + `${selected.kind} ` + `${selected.name} @ ` + `${selected.location.uri}`,
-    );
+    console.log(`[DefinitionProvider] Related -> ` + `${selected.kind} ${selected.name} @ ${selected.location.uri}`);
 
     return this.toLocation(selected);
   }
@@ -728,7 +736,57 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
 
-    const matches = this.documentManager.getWorkspaceIndex().findExact(word);
+    const relatedUris = new Set<string>();
+
+    relatedUris.add(uri);
+    this.collectRelatedIncludeUris(uri, relatedUris);
+    const localVariable = this.findVariableDeclarationInSource(document, word, offset);
+    if (localVariable) {
+      console.log(
+        `[DefinitionProvider] Resolve local source variable: ` + `${localVariable.name} : ${localVariable.typeName}`,
+      );
+
+      const start = localVariable.range.start;
+      const end = localVariable.range.end;
+
+      return {
+        name: localVariable.name,
+        kind: 'variable',
+        location: {
+          uri: localVariable.uri,
+          range: {
+            start: {
+              line: start.line,
+              character: start.character,
+              offset: document.offsetAt(start),
+            },
+            end: {
+              line: end.line,
+              character: end.character,
+              offset: document.offsetAt(end),
+            },
+          },
+          selectionRange: {
+            start: {
+              line: start.line,
+              character: start.character,
+              offset: document.offsetAt(start),
+            },
+            end: {
+              line: end.line,
+              character: end.character,
+              offset: document.offsetAt(end),
+            },
+          },
+        },
+        typeName: localVariable.typeName,
+        children: [],
+      };
+    }
+    const matches = this.documentManager
+      .getWorkspaceIndex()
+      .findExact(word)
+      .filter((match) => relatedUris.has(match.symbol.location.uri) && match.symbol.kind !== 'parameter');
 
     if (matches.length === 0) {
       /*
@@ -736,8 +794,10 @@ export class DefinitionProvider {
        */
       this.loadIncludedDocuments(uri);
 
-      const retryMatches = this.documentManager.getWorkspaceIndex().findExact(word);
-
+      const retryMatches = this.documentManager
+        .getWorkspaceIndex()
+        .findExact(word)
+        .filter((match) => relatedUris.has(match.symbol.location.uri) && match.symbol.kind !== 'parameter');
       if (retryMatches.length === 0) {
         return null;
       }
@@ -988,6 +1048,7 @@ export class DefinitionProvider {
       typeName: string;
       startOffset: number;
       endOffset: number;
+      blockDepth?: number;
     } | null = null;
 
     let match: RegExpExecArray | null;
@@ -1016,15 +1077,50 @@ export class DefinitionProvider {
       }
 
       if (!best || startOffset > best.startOffset) {
-        best = {
-          name: variableName,
+        const declarationBlock = this.findBlockScopeAtOffset(text, startOffset);
 
-          typeName,
+        if (!declarationBlock) {
+          continue;
+        }
 
-          startOffset: nameStart,
+        /*
+         * 宣言を含むblockのスコープ内に
+         * 使用位置が存在する必要がある。
+         *
+         * 外側block:
+         *
+         * {
+         *     position;        // declarationBlock = 外側
+         *
+         *     {
+         *         position;    // declarationBlock = 内側
+         *     }
+         *
+         *     position;        // 内側positionはここでは不可
+         * }
+         */
+        if (usageOffset < declarationBlock.startOffset || usageOffset > declarationBlock.endOffset) {
+          continue;
+        }
 
-          endOffset: nameStart + variableName.length,
-        };
+        /*
+         * 同名変数が複数ある場合、
+         * 使用位置を含む最も内側のblockを優先する。
+         */
+        if (
+          !best ||
+          best.blockDepth === undefined ||
+          declarationBlock.depth > best.blockDepth ||
+          (declarationBlock.depth === best.blockDepth && startOffset > best.startOffset)
+        ) {
+          best = {
+            name: variableName,
+            typeName,
+            startOffset: nameStart,
+            endOffset: nameStart + variableName.length,
+            blockDepth: declarationBlock.depth,
+          };
+        }
       }
     }
 
@@ -1064,11 +1160,29 @@ export class DefinitionProvider {
       if (startOffset >= usageOffset) {
         continue;
       }
+
       if (functionScope) {
-        if (startOffset < functionScope.startOffset || startOffset > functionScope.endOffset) {
+        /*
+         * parameter は function body の外側にある。
+         *
+         *     float2 GetUV(float2 uv)
+         *     {
+         *         return uv;
+         *     }
+         *
+         *                 ^ functionScope.startOffset
+         *
+         * なので、
+         *
+         *   signatureStartOffset <= parameter < startOffset
+         *
+         * の範囲を parameter として扱う。
+         */
+        if (startOffset < functionScope.signatureStartOffset || startOffset >= functionScope.startOffset) {
           continue;
         }
       }
+
       const typeName = match[1];
 
       if (this.isVariableDeclarationKeyword(typeName)) {
@@ -1078,9 +1192,9 @@ export class DefinitionProvider {
       /*
        * structのフィールドなどを
        * parameterと誤認しないため、
-       * 直前が "(" または "," のケースを優先する。
+       * 直前が "(" または "," のケースだけを
+       * parameterとして扱う。
        */
-
       let before = startOffset - 1;
 
       while (before >= 0 && /\s/.test(text[before])) {
@@ -1106,11 +1220,8 @@ export class DefinitionProvider {
       if (!best || startOffset > best.startOffset) {
         best = {
           name: variableName,
-
           typeName,
-
           startOffset: nameStart,
-
           endOffset: nameStart + variableName.length,
         };
       }
@@ -1704,10 +1815,67 @@ export class DefinitionProvider {
 
     return text.substring(start, end);
   }
+  private findBlockScopeAtOffset(
+    text: string,
+    offset: number,
+  ): {
+    startOffset: number;
+    endOffset: number;
+    depth: number;
+  } | null {
+    const stack: number[] = [];
+
+    let bestStart = -1;
+    let bestEnd = -1;
+    let bestDepth = -1;
+
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+
+      if (char === '{') {
+        stack.push(i);
+        continue;
+      }
+
+      if (char !== '}') {
+        continue;
+      }
+
+      if (stack.length === 0) {
+        continue;
+      }
+
+      const startOffset = stack.pop()!;
+
+      /*
+       * このblockが使用位置を含むか確認。
+       */
+      if (offset >= startOffset && offset <= i + 1) {
+        const depth = stack.length + 1;
+
+        if (depth > bestDepth) {
+          bestStart = startOffset;
+          bestEnd = i + 1;
+          bestDepth = depth;
+        }
+      }
+    }
+
+    if (bestStart < 0) {
+      return null;
+    }
+
+    return {
+      startOffset: bestStart,
+      endOffset: bestEnd,
+      depth: bestDepth,
+    };
+  }
   private findFunctionScopeAtOffset(
     document: TextDocument,
     offset: number,
   ): {
+    signatureStartOffset: number;
     startOffset: number;
     endOffset: number;
   } | null {
@@ -1730,6 +1898,7 @@ export class DefinitionProvider {
     const functionPattern = /\b[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^{};]*\)\s*\{/g;
 
     let match: RegExpExecArray | null;
+    let bestSignatureStart = -1;
     let bestStart = -1;
     let bestEnd = -1;
 
@@ -1773,6 +1942,7 @@ export class DefinitionProvider {
        */
       if (offset >= openBraceOffset && offset <= endOffset) {
         if (bestStart < 0 || openBraceOffset > bestStart) {
+          bestSignatureStart = match.index;
           bestStart = openBraceOffset;
           bestEnd = endOffset;
         }
@@ -1784,6 +1954,7 @@ export class DefinitionProvider {
     }
 
     return {
+      signatureStartOffset: bestSignatureStart,
       startOffset: bestStart,
       endOffset: bestEnd,
     };
