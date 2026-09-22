@@ -7,7 +7,7 @@ export class ProjectService {
   private readonly projectRoot = new ProjectRoot();
   private readonly fileSystem = new FileSystem();
 
-  private readonly includeResolver = new IncludeResolver(this.projectRoot, this.fileSystem);
+  public readonly includeResolver = new IncludeResolver(this.projectRoot, this.fileSystem);
 
   public initialize(params: Parameters<ProjectRoot['initialize']>[0]): void {
     this.projectRoot.initialize(params);

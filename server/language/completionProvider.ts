@@ -1,12 +1,14 @@
 import { CompletionItem, CompletionItemKind, Position } from 'vscode-languageserver/node';
 import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
-
+import { IncludeResolver } from '../project/includeResolver';
 export class CompletionProvider {
-  public constructor(private readonly documentManager: DocumentManager) {}
+  public constructor(
+    private readonly documentManager: DocumentManager,
+    private readonly includeResolver: IncludeResolver,
+  ) {}
 
   private readonly completionSource = 'ShaderLab IntelliSense';
-
   public provideCompletion(uri: string, position: Position): CompletionItem[] {
     const document = this.documentManager.get(uri);
 
@@ -1423,15 +1425,27 @@ export class CompletionProvider {
       prefix: includePath.substring(slashIndex + 1),
     };
   }
-  private provideIncludeCompletion(
-    uri: string,
-    context: {
-      path: string;
-      prefix: string;
-    },
-  ): CompletionItem[] {
+  private provideIncludeCompletion(uri: string, context: { path: string; prefix: string }): CompletionItem[] {
     console.log(`[CompletionProvider] Include completion: ` + `path="${context.path}" prefix="${context.prefix}"`);
 
-    return [];
+    const includePath = `${context.path}${context.prefix}`;
+
+    const candidates = this.includeResolver.getCompletionCandidates(includePath, uri);
+
+    const result: CompletionItem[] = [];
+
+    for (const candidate of candidates) {
+      result.push({
+        label: candidate.includePath,
+        kind: CompletionItemKind.File,
+        detail: 'include',
+        insertText: candidate.includePath,
+        sortText: candidate.includePath,
+      });
+    }
+
+    console.log(`[CompletionProvider] Include candidates: ${result.length}`);
+
+    return result;
   }
 }
