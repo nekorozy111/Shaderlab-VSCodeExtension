@@ -1434,6 +1434,8 @@ export class CompletionProvider {
 
     const includePath = `${context.path}${context.prefix}`;
 
+    console.log(`[CompletionProvider] Include request: ` + `"${includePath}"`);
+
     const candidates = this.includeResolver.getCompletionCandidates(includePath, uri);
 
     const document = this.documentManager.get(uri);

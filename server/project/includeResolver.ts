@@ -187,7 +187,11 @@ export class IncludeResolver {
 
       this.collectRelativeIncludeCandidates(fromDirectory, normalizedInclude, candidates);
     }
+    if (fromPath && !normalizedInclude.includes('/')) {
+      const fromDirectory = path.dirname(fromPath);
 
+      this.collectProjectRelativeIncludeCandidates(root, fromDirectory, normalizedInclude, candidates);
+    }
     return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
   }
 
@@ -458,29 +462,45 @@ export class IncludeResolver {
 
     const directoryPart = slashIndex >= 0 ? includePath.substring(0, slashIndex + 1) : '';
 
-    const prefix = slashIndex >= 0 ? includePath.substring(slashIndex + 1) : includePath;
-
-    /*
-     * 現在のファイルのディレクトリを基準に
-     * ../ や ../../ を解決する。
-     *
-     * 例:
-     *
-     * Assets/Folder1
-     * ../Folder2/
-     *
-     * ↓
-     *
-     * Assets/Folder2
-     */
     const targetDirectory = path.resolve(fromDirectory, directoryPart || '.');
 
     if (!this.fileSystem.isDirectory(targetDirectory)) {
       return;
     }
 
-    for (const entry of this.fileSystem.listDirectory(targetDirectory)) {
-      const entryPath = path.join(targetDirectory, entry);
+    this.collectRelativeIncludeFilesRecursive(targetDirectory, directoryPart, includePath, slashIndex >= 0, candidates);
+  }
+  private collectProjectRelativeIncludeCandidates(
+    projectRoot: string,
+    fromDirectory: string,
+    prefix: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    const normalizedPrefix = prefix.toLowerCase();
+
+    this.collectProjectRelativeIncludeFilesRecursive(
+      projectRoot,
+      projectRoot,
+      fromDirectory,
+      normalizedPrefix,
+      candidates,
+    );
+  }
+  private collectProjectRelativeIncludeFilesRecursive(
+    directoryPath: string,
+    projectRoot: string,
+    fromDirectory: string,
+    prefix: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+      const entryPath = path.join(directoryPath, entry);
+
+      if (this.fileSystem.isDirectory(entryPath)) {
+        this.collectProjectRelativeIncludeFilesRecursive(entryPath, projectRoot, fromDirectory, prefix, candidates);
+
+        continue;
+      }
 
       if (!this.fileSystem.isFile(entryPath)) {
         continue;
@@ -490,18 +510,68 @@ export class IncludeResolver {
         continue;
       }
 
-      if (!entry.toLowerCase().startsWith(prefix.toLowerCase())) {
+      if (!entry.toLowerCase().startsWith(prefix)) {
         continue;
       }
 
-      const candidatePath = `${directoryPart}${entry}`.replace(/\\/g, '/');
+      const relativePath = path.relative(fromDirectory, entryPath).replace(/\\/g, '/');
+
+      if (!relativePath) {
+        continue;
+      }
+
+      candidates.set(relativePath, {
+        includePath: relativePath,
+      });
+    }
+  }
+  private collectRelativeIncludeFilesRecursive(
+    directoryPath: string,
+    includeBasePath: string,
+    includePrefix: string,
+    hasPathPrefix: boolean,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+      const entryPath = path.join(directoryPath, entry);
+
+      if (this.fileSystem.isDirectory(entryPath)) {
+        this.collectRelativeIncludeFilesRecursive(
+          entryPath,
+          `${includeBasePath}${entry}/`,
+          includePrefix,
+          hasPathPrefix,
+          candidates,
+        );
+
+        continue;
+      }
+
+      if (!this.fileSystem.isFile(entryPath)) {
+        continue;
+      }
+
+      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+        continue;
+      }
+
+      const candidatePath = `${includeBasePath}${entry}`.replace(/\\/g, '/');
+
+      if (hasPathPrefix) {
+        if (!candidatePath.toLowerCase().startsWith(includePrefix.toLowerCase())) {
+          continue;
+        }
+      } else {
+        if (!entry.toLowerCase().startsWith(includePrefix.toLowerCase())) {
+          continue;
+        }
+      }
 
       candidates.set(candidatePath, {
         includePath: candidatePath,
       });
     }
   }
-
   private uriToPath(uri: string): string | undefined {
     if (!uri.startsWith('file://')) {
       return undefined;
