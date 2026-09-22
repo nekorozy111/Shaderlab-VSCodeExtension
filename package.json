@@ -4,6 +4,7 @@
     "description": "IntelliSense, navigation and language features for Unity URP ShaderLab and HLSL.",
     "version": "0.1.0",
     "publisher": "urp-shaderlab-tools",
+    "repository": "https://github.com/nekorozy111/Shaderlab-VSCodeExtension",
     "license": "MIT",
     "engines": {
         "vscode": "^1.90.0"
