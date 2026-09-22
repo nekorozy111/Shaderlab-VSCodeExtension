@@ -27,7 +27,14 @@ export class HoverProvider {
     if (!word) {
       return null;
     }
-
+    /*
+     * ---------------------------------------------------------
+     * コメント内では Hover を表示しない
+     * ---------------------------------------------------------
+     */
+    if (this.isInsideComment(text, offset)) {
+      return null;
+    }
     console.log(`[HoverProvider] Request "${word}" in ${uri}`);
 
     /*
@@ -584,5 +591,45 @@ export class HoverProvider {
     }
 
     return null;
+  }
+  private isInsideComment(text: string, offset: number): boolean {
+    let inLineComment = false;
+    let inBlockComment = false;
+
+    for (let i = 0; i < offset; i++) {
+      const current = text[i];
+      const next = text[i + 1];
+
+      if (inLineComment) {
+        if (current === '\n') {
+          inLineComment = false;
+        }
+
+        continue;
+      }
+
+      if (inBlockComment) {
+        if (current === '*' && next === '/') {
+          inBlockComment = false;
+          i++;
+        }
+
+        continue;
+      }
+
+      if (current === '/' && next === '/') {
+        inLineComment = true;
+        i++;
+        continue;
+      }
+
+      if (current === '/' && next === '*') {
+        inBlockComment = true;
+        i++;
+        continue;
+      }
+    }
+
+    return inLineComment || inBlockComment;
   }
 }
