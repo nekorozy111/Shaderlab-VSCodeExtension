@@ -491,25 +491,6 @@ export class ShaderLabParser {
 
         const localAst = new HlslParser(source).parse();
 
-        console.log(`[ShaderLabParser] HLSL block: ${blockType}`);
-
-        console.log(`[ShaderLabParser] HLSL source contains #include: ${source.includes('#include')}`);
-
-        console.log(`[ShaderLabParser] HLSL declarations: ${localAst.declarations.length}`);
-
-        console.log(
-          `[ShaderLabParser] HLSL declaration kinds: ${localAst.declarations
-            .map((declaration) => declaration.kind)
-            .join(', ')}`,
-        );
-
-        console.log(
-          `[ShaderLabParser] HLSL includes: ${localAst.declarations
-            .filter((declaration) => declaration.kind === 'HlslInclude')
-            .map((declaration) => declaration.path)
-            .join(', ')}`,
-        );
-
         const hlsl = this.shiftHlslDocument(localAst, contentStart);
 
         this.advance();
