@@ -51,6 +51,15 @@ export class CompletionProvider {
             return [];
         }
 
+        if (
+            this.isInsideString(
+                text,
+                offset
+            )
+        ) {
+            return [];
+        }
+
         const word =
             this.getWordBeforeCursor(
                 text,
@@ -125,32 +134,32 @@ export class CompletionProvider {
         }
 
         const builtinSemantics =
-    this.getBuiltinSemantics();
+            this.getBuiltinSemantics();
 
-for (const semantic of builtinSemantics) {
-    if (
-        semantic
-            .toLowerCase()
-            .startsWith(
-                word.toLowerCase()
-            )
-    ) {
-        result.push({
-            label: semantic,
-            kind: CompletionItemKind.Keyword,
-            detail:
-                "HLSL Semantic",
-            documentation:
-                `${semantic} semantic`,
-            sortText:
-                `2_${semantic}`,
-            data: {
-                source:
-                    this.completionSource
+        for (const semantic of builtinSemantics) {
+            if (
+                semantic
+                    .toLowerCase()
+                    .startsWith(
+                        word.toLowerCase()
+                    )
+            ) {
+                result.push({
+                    label: semantic,
+                    kind: CompletionItemKind.Keyword,
+                    detail:
+                        "HLSL Semantic",
+                    documentation:
+                        `${semantic} semantic`,
+                    sortText:
+                        `2_${semantic}`,
+                    data: {
+                        source:
+                            this.completionSource
+                    }
+                });
             }
-        });
-    }
-}
+        }
 
         /*
          * Workspace symbols
@@ -175,8 +184,8 @@ for (const semantic of builtinSemantics) {
                 );
 
         this.addSymbolCompletions(
-            matches,
             result,
+            matches,
             new Set<string>()
         );
 
@@ -184,31 +193,39 @@ for (const semantic of builtinSemantics) {
     }
 
     private addSymbolCompletions(
-        matches: Array<{
-            symbol: ShaderSymbol;
-            uri: string;
-        }>,
-        items: CompletionItem[],
+        result: CompletionItem[],
+        matches: any[],
         seen: Set<string>
     ): void {
-        for (
-            const match
-            of matches
-        ) {
+
+        for (const match of matches) {
+
             const symbol =
                 match.symbol;
 
-            if (
-                seen.has(symbol.name)
-            ) {
+            if (!symbol) {
                 continue;
             }
 
-            seen.add(symbol.name);
+            const name =
+                symbol.name;
 
-            items.push({
-                label:
-                    symbol.name,
+            if (!name) {
+                continue;
+            }
+
+            /*
+             * 同じ名前の Completion は
+             * 1件だけ表示する。
+             */
+            if (seen.has(name)) {
+                continue;
+            }
+
+            seen.add(name);
+
+            result.push({
+                label: name,
 
                 kind:
                     this.getCompletionKind(
@@ -216,11 +233,22 @@ for (const semantic of builtinSemantics) {
                     ),
 
                 detail:
-                    `${this.completionSource} • ` +
                     this.getSymbolDetail(
                         symbol
-                    )
+                    ),
 
+                documentation: {
+                    kind: "markdown",
+                    value:
+                        this.getSymbolDocumentation(
+                            symbol
+                        )
+                },
+
+                sortText:
+                    this.getCompletionSortText(
+                        symbol
+                    )
             });
         }
     }
@@ -271,39 +299,54 @@ for (const semantic of builtinSemantics) {
     private getSymbolDetail(
         symbol: ShaderSymbol
     ): string {
+
         switch (symbol.kind) {
-            case "property":
-                return "ShaderLab Property";
-
-            case "cbuffer":
-                return "HLSL CBuffer";
-
-            case "struct":
-                return "HLSL struct";
-
-            case "field":
-                if (symbol.typeName) {
-                    return `field: ${symbol.typeName}`;
-                }
-                return "HLSL field";
 
             case "function":
-                if (symbol.returnType) {
-                    return `function: ${symbol.returnType}`;
-                }
-                return "HLSL function";
+                return symbol.returnType
+                    ? `function ${symbol.returnType}`
+                    : "function";
+
+            case "struct":
+                return "struct";
+
+            case "field":
+                return symbol.typeName
+                    ? `field ${symbol.typeName}`
+                    : "field";
 
             case "parameter":
-                if (symbol.typeName) {
-                    return `parameter: ${symbol.typeName}`;
-                }
-                return "HLSL parameter";
+                return symbol.typeName
+                    ? `parameter ${symbol.typeName}`
+                    : "parameter";
 
             case "variable":
-                if (symbol.typeName) {
-                    return `variable: ${symbol.typeName}`;
-                }
-                return "HLSL variable";
+                return symbol.typeName
+                    ? `variable ${symbol.typeName}`
+                    : "variable";
+
+            case "cbuffer":
+                return "cbuffer";
+
+            case "property":
+                return symbol.typeName
+                    ? `property ${symbol.typeName}`
+                    : "property";
+
+            case "macro":
+                return "macro";
+
+            case "include":
+                return "include";
+
+            case "shader":
+                return "shader";
+
+            case "subShader":
+                return "SubShader";
+
+            case "pass":
+                return "Pass";
 
             default:
                 return symbol.kind;
@@ -448,6 +491,45 @@ for (const semantic of builtinSemantics) {
                 }
             }
         }
+        // 関数戻り値
+        if (!typeName) {
+
+            const relatedUris =
+                this.documentManager
+                    .getRelatedIncludeUris(uri);
+
+            const functionMatches =
+                this.documentManager
+                    .getWorkspaceIndex()
+                    .findExact(objectName)
+                    .filter(
+                        match =>
+                            relatedUris.has(
+                                match.uri
+                            )
+                    );
+
+            const functionMatch =
+                functionMatches.find(
+                    match =>
+                        match.symbol.kind ===
+                        "function"
+                );
+
+            if (
+                functionMatch &&
+                functionMatch.symbol.returnType
+            ) {
+                typeName =
+                    functionMatch.symbol.returnType;
+
+                console.log(
+                    `[CompletionProvider] ` +
+                    `Function return type resolved: ` +
+                    `${objectName} -> ${typeName}`
+                );
+            }
+        }
 
         /*
          * ============================================================
@@ -504,6 +586,15 @@ for (const semantic of builtinSemantics) {
          * → y
          * → z
          * → w
+         */
+        /*
+         * Swizzle:
+         *
+         *     color.xy.
+         *     color.xyz.
+         *
+         * のようなケースでは、
+         * swizzle 結果の型を推論する。
          */
         const builtinMembers =
             this.getBuiltinTypeMembers(
@@ -720,6 +811,7 @@ for (const semantic of builtinSemantics) {
 
         return result;
     }
+
     private findLocalVariableDeclaration(
         uri: string,
         variableName: string,
@@ -795,7 +887,9 @@ for (const semantic of builtinSemantics) {
          */
         const pattern =
             new RegExp(
-                `\\b([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+                `\\b` +
+                `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
+                `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
                 `${escapedName}\\s*` +
                 `(?:;|=|\\[|,)`,
                 "g"
@@ -975,42 +1069,6 @@ for (const semantic of builtinSemantics) {
         return result;
     }
 
-    private positionFromOffset(
-        text: string,
-        offset: number
-    ): {
-        offset: number;
-        line: number;
-        character: number;
-    } {
-
-        let line = 0;
-        let character = 0;
-
-        for (
-            let i = 0;
-            i < offset;
-            i++
-        ) {
-            if (
-                text[i] === "\n"
-            ) {
-                line++;
-                character = 0;
-            } else {
-                character++;
-            }
-        }
-
-        return {
-            offset,
-            line,
-            character
-        };
-
-    }
-
-
     private isInsideComment(
         text: string,
         offset: number
@@ -1101,6 +1159,61 @@ for (const semantic of builtinSemantics) {
 
     }
 
+    private isInsideString(
+        text: string,
+        offset: number
+    ): boolean {
+
+        let inString = false;
+        let quote = "";
+
+        let escaped = false;
+
+        for (
+            let index = 0;
+            index < offset;
+            index++
+        ) {
+
+            const char =
+                text[index];
+
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+
+            if (
+                char === "\\"
+            ) {
+                escaped = true;
+                continue;
+            }
+
+            if (!inString) {
+
+                if (
+                    char === '"' ||
+                    char === "'"
+                ) {
+                    inString = true;
+                    quote = char;
+                }
+
+                continue;
+            }
+
+            if (
+                char === quote
+            ) {
+                inString = false;
+                quote = "";
+            }
+        }
+
+        return inString;
+    }
+
     private getMemberAccessAtPosition(
         text: string,
         offset: number
@@ -1108,110 +1221,399 @@ for (const semantic of builtinSemantics) {
         objectName: string;
         prefix: string;
     } | null {
-
-
-        let cursor = Math.max(
-            0,
-            Math.min(
-                offset,
-                text.length
-            )
-        );
-
-        /*
-         * カーソル直前の識別子を取得。
-         *
-         * 例:
-         *
-         * surface.po
-         *
-         *           ↑ cursor
-         *
-         * prefix = "po"
-         */
-        let prefixStart = cursor;
-
-        while (
-            prefixStart > 0 &&
-            /[A-Za-z0-9_]/.test(
-                text[prefixStart - 1]
-            )
-        ) {
-            prefixStart--;
-        }
-
-        const prefix =
+        const beforeCursor =
             text.substring(
-                prefixStart,
-                cursor
+                0,
+                Math.max(
+                    0,
+                    Math.min(
+                        offset,
+                        text.length
+                    )
+                )
             );
 
         /*
-         * prefix の直前が "." か確認。
+         * ---------------------------------------------------------
+         * Function call:
+         *
+         *     GetColor().
+         *     GetColor(uv).
+         *     GetColor(GetUV()).
+         *     GetColor(GetUV(uv)).
+         *     GetColor(a, GetUV()).
+         *
+         * ---------------------------------------------------------
          */
-        let dotPosition =
-            prefixStart - 1;
 
-        while (
-            dotPosition >= 0 &&
-            /\s/.test(
-                text[dotPosition]
-            )
-        ) {
-            dotPosition--;
-        }
+        const functionMemberMatch =
+            beforeCursor.match(
+                /\.([A-Za-z0-9_]*)$/
+            );
 
-        if (
-            dotPosition < 0 ||
-            text[dotPosition] !== "."
-        ) {
-            return null;
+        if (functionMemberMatch) {
+            const prefix =
+                functionMemberMatch[1];
+
+            const dotIndex =
+                beforeCursor.length -
+                prefix.length -
+                1;
+
+            let closeParenIndex =
+                dotIndex - 1;
+
+            while (
+                closeParenIndex >= 0 &&
+                /\s/.test(
+                    beforeCursor[closeParenIndex]
+                )
+            ) {
+                closeParenIndex--;
+            }
+
+            if (
+                closeParenIndex >= 0 &&
+                beforeCursor[closeParenIndex] === ")"
+            ) {
+                const openParenIndex =
+                    this.findMatchingOpenParen(
+                        beforeCursor,
+                        closeParenIndex
+                    );
+
+                if (openParenIndex >= 0) {
+                    const functionPrefix =
+                        beforeCursor.substring(
+                            0,
+                            openParenIndex
+                        );
+
+                    const functionMatch =
+                        functionPrefix.match(
+                            /([A-Za-z_][A-Za-z0-9_]*)\s*$/
+                        );
+
+                    if (functionMatch) {
+                        return {
+                            objectName:
+                                functionMatch[1],
+                            prefix
+                        };
+                    }
+                }
+            }
         }
 
         /*
-         * "." の左側にある object 名を取得。
+         * ---------------------------------------------------------
+         * Variable / array:
+         *
+         *     output.
+         *     color[1].
+         *     color[1].xy
+         *     color[1][2].
+         *
+         * ---------------------------------------------------------
          */
-        let objectEnd =
-            dotPosition;
 
-        while (
-            objectEnd > 0 &&
-            /\s/.test(
-                text[objectEnd - 1]
-            )
-        ) {
-            objectEnd--;
-        }
+        const variableMatch =
+            beforeCursor.match(
+                /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/
+            );
 
-        let objectStart =
-            objectEnd;
-
-        while (
-            objectStart > 0 &&
-            /[A-Za-z0-9_]/.test(
-                text[objectStart - 1]
-            )
-        ) {
-            objectStart--;
-        }
-
-        if (
-            objectStart === objectEnd
-        ) {
+        if (!variableMatch) {
             return null;
         }
-
-        const objectName =
-            text.substring(
-                objectStart,
-                objectEnd
-            );
 
         return {
-            objectName,
-            prefix
+            objectName:
+                variableMatch[1],
+            prefix:
+                variableMatch[2]
         };
+    }
 
+    private findMatchingOpenParen(
+        text: string,
+        closeParenIndex: number
+    ): number {
+        let depth = 0;
+
+        let inString = false;
+        let quote = "";
+        let escaped = false;
+
+        for (
+            let index = closeParenIndex;
+            index >= 0;
+            index--
+        ) {
+            const char = text[index];
+
+            /*
+             * 文字列中の括弧は無視する。
+             */
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+
+                if (char === "\\") {
+                    escaped = true;
+                    continue;
+                }
+
+                if (char === quote) {
+                    inString = false;
+                    quote = "";
+                }
+
+                continue;
+            }
+
+            /*
+             * 逆方向に読むので、
+             * quote の開始位置を見つけたら
+             * 文字列中として扱う。
+             */
+            if (
+                char === '"' ||
+                char === "'"
+            ) {
+                inString = true;
+                quote = char;
+                continue;
+            }
+
+            if (char === ")") {
+                depth++;
+                continue;
+            }
+
+            if (char === "(") {
+                depth--;
+
+                if (depth === 0) {
+                    return index;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    private getCompletionSortText(
+        symbol: ShaderSymbol
+    ): string {
+
+        switch (symbol.kind) {
+
+            case "variable":
+                return `1_${symbol.name}`;
+
+            case "parameter":
+                return `1_${symbol.name}`;
+
+            case "field":
+                return `2_${symbol.name}`;
+
+            case "property":
+                return `2_${symbol.name}`;
+
+            case "cbuffer":
+                return `3_${symbol.name}`;
+
+            case "struct":
+                return `3_${symbol.name}`;
+
+            case "function":
+                return `3_${symbol.name}`;
+
+            case "macro":
+                return `3_${symbol.name}`;
+
+            case "include":
+                return `4_${symbol.name}`;
+
+            default:
+                return `5_${symbol.name}`;
+        }
+    }
+
+    private getSymbolDocumentation(
+        symbol: ShaderSymbol
+    ): string {
+
+        const lines: string[] = [];
+
+        switch (symbol.kind) {
+
+            case "function":
+
+                lines.push(
+                    `**Function**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.returnType) {
+                    lines.push(
+                        `Return type: \`${symbol.returnType}\``
+                    );
+                }
+
+                break;
+
+            case "struct":
+
+                lines.push(
+                    `**Struct**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            case "field":
+
+                lines.push(
+                    `**Field**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                if (symbol.parentName) {
+                    lines.push(
+                        `Parent: \`${symbol.parentName}\``
+                    );
+                }
+
+                if (symbol.semantic) {
+                    lines.push(
+                        `Semantic: \`${symbol.semantic}\``
+                    );
+                }
+
+                break;
+
+            case "parameter":
+
+                lines.push(
+                    `**Parameter**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                break;
+
+            case "variable":
+
+                lines.push(
+                    `**Variable**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                break;
+
+            case "cbuffer":
+
+                lines.push(
+                    `**Constant Buffer**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            case "property":
+
+                lines.push(
+                    `**Shader Property**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                if (symbol.typeName) {
+                    lines.push(
+                        `Type: \`${symbol.typeName}\``
+                    );
+                }
+
+                break;
+
+            case "macro":
+
+                lines.push(
+                    `**Macro**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            case "include":
+
+                lines.push(
+                    `**Include**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+
+            default:
+
+                lines.push(
+                    `**${symbol.kind}**`
+                );
+
+                lines.push(
+                    `\`${symbol.name}\``
+                );
+
+                break;
+        }
+
+        return lines.join("\n\n");
     }
 
     private getWordBeforeCursor(

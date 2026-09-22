@@ -209,144 +209,144 @@ export class DocumentManager {
         }
     }
 
-public getRelatedIncludeUris(
-    rootUri: string
-): Set<string> {
-    const result =
-        new Set<string>();
+    public getRelatedIncludeUris(
+        rootUri: string
+    ): Set<string> {
+        const result =
+            new Set<string>();
 
-    result.add(rootUri);
+        result.add(rootUri);
 
-    const visited =
-        new Set<string>();
+        const visited =
+            new Set<string>();
 
-    const parsed =
-        this.getParsed(rootUri);
+        const parsed =
+            this.getParsed(rootUri);
 
-    if (!parsed) {
+        if (!parsed) {
+            return result;
+        }
+
+        this.collectRelatedIncludeUrisRecursive(
+            rootUri,
+            parsed,
+            visited,
+            result
+        );
+
         return result;
     }
 
-    this.collectRelatedIncludeUrisRecursive(
-        rootUri,
-        parsed,
-        visited,
-        result
-    );
-
-    return result;
-}
-
-private collectRelatedIncludeUrisRecursive(
-    uri: string,
-    parsed: ParsedDocument,
-    visited: Set<string>,
-    result: Set<string>,
-    source?: string
-): void {
-    if (
-        visited.has(uri)
-    ) {
-        return;
-    }
-
-    visited.add(uri);
-
-    let includePaths:
-        string[];
-
-    /*
-     * 外部 HLSL は実ファイルの内容から
-     * #include を取得する。
-     */
-    if (
-        parsed.languageId === "hlsl" &&
-        source !== undefined
-    ) {
-        includePaths =
-            this.collectRawHlslIncludes(
-                source
-            );
-    } else {
-        includePaths =
-            this.collectIncludes(
-                parsed
-            );
-    }
-
-    for (
-        const includePath
-        of includePaths
-    ) {
-        const resolved =
-            this.projectService
-                .resolveInclude(
-                    includePath,
-                    uri
-                );
-
-        if (!resolved) {
-            continue;
+    private collectRelatedIncludeUrisRecursive(
+        uri: string,
+        parsed: ParsedDocument,
+        visited: Set<string>,
+        result: Set<string>,
+        source?: string
+    ): void {
+        if (
+            visited.has(uri)
+        ) {
+            return;
         }
 
-        result.add(
-            resolved.uri
-        );
+        visited.add(uri);
+
+        let includePaths:
+            string[];
 
         /*
-         * include 先を Parse / Index。
+         * 外部 HLSL は実ファイルの内容から
+         * #include を取得する。
          */
-        const externalDocument =
-            this.ensureExternalDocument(
+        if (
+            parsed.languageId === "hlsl" &&
+            source !== undefined
+        ) {
+            includePaths =
+                this.collectRawHlslIncludes(
+                    source
+                );
+        } else {
+            includePaths =
+                this.collectIncludes(
+                    parsed
+                );
+        }
+
+        for (
+            const includePath
+            of includePaths
+        ) {
+            const resolved =
+                this.projectService
+                    .resolveInclude(
+                        includePath,
+                        uri
+                    );
+
+            if (!resolved) {
+                continue;
+            }
+
+            result.add(
                 resolved.uri
             );
 
-        if (!externalDocument) {
-            continue;
+            /*
+             * include 先を Parse / Index。
+             */
+            const externalDocument =
+                this.ensureExternalDocument(
+                    resolved.uri
+                );
+
+            if (!externalDocument) {
+                continue;
+            }
+
+            /*
+             * 再帰的な #include を調べるため、
+             * 外部ファイルの raw source を取得する。
+             */
+            const externalSource =
+                this.projectService.readFile(
+                    resolved.resolvedPath
+                );
+
+            this.collectRelatedIncludeUrisRecursive(
+                resolved.uri,
+                externalDocument,
+                visited,
+                result,
+                externalSource
+            );
+        }
+    }
+
+    private collectIncludes(
+        parsed: ParsedDocument
+    ): string[] {
+        const result:
+            string[] = [];
+
+        if (
+            parsed.ast.kind ===
+            "ShaderDocument"
+        ) {
+            this.collectShaderLabIncludes(
+                parsed.ast,
+                result
+            );
+        } else {
+            this.collectHlslIncludes(
+                parsed.ast,
+                result
+            );
         }
 
-        /*
-         * 再帰的な #include を調べるため、
-         * 外部ファイルの raw source を取得する。
-         */
-        const externalSource =
-            this.projectService.readFile(
-                resolved.resolvedPath
-            );
-
-        this.collectRelatedIncludeUrisRecursive(
-            resolved.uri,
-            externalDocument,
-            visited,
-            result,
-            externalSource
-        );
+        return result;
     }
-}
-
-private collectIncludes(
-    parsed: ParsedDocument
-): string[] {
-    const result:
-        string[] = [];
-
-    if (
-        parsed.ast.kind ===
-        "ShaderDocument"
-    ) {
-        this.collectShaderLabIncludes(
-            parsed.ast,
-            result
-        );
-    } else {
-        this.collectHlslIncludes(
-            parsed.ast,
-            result
-        );
-    }
-
-    return result;
-}
 
     private collectShaderLabIncludes(
         ast: any,
@@ -445,19 +445,24 @@ private collectIncludes(
     private collectRawHlslIncludes(
         source: string
     ): string[] {
-        const includes:
-            string[] = [];
+
+        const result: string[] = [];
 
         const lines =
             source.split(/\r?\n/);
 
-        for (
-            const line
-            of lines
-        ) {
+        for (const line of lines) {
+
+            /*
+             * 行末コメントを除去する。
+             *
+             * ただし include path 内の
+             * // は対象外になるよう、
+             * include path を先に取得する。
+             */
             const match =
                 line.match(
-                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)/
+                    /^\s*#\s*include\s*(?:"([^"]+)"|<([^>]+)>)(?:\s*\/\/.*)?$/
                 );
 
             if (!match) {
@@ -472,12 +477,12 @@ private collectIncludes(
                 continue;
             }
 
-            includes.push(
-                includePath
+            result.push(
+                includePath.trim()
             );
         }
 
-        return includes;
+        return result;
     }
     private parseDocument(
         document: TextDocument
