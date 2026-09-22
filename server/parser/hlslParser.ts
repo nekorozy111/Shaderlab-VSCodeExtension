@@ -31,17 +31,11 @@ export class HlslParser {
     const declarations: HlslDeclarationNode[] = [];
 
     while (!this.isAtEnd()) {
-      console.log(
-        `[HlslParser] declaration token: ${this.current().kind} "${this.current().value}" ` +
-          `line=${this.current().range.start.line + 1}`,
-      );
-
       const wasPreprocessor = this.current().kind === 'preprocessor';
 
       const declaration = this.parseDeclaration();
 
       if (declaration) {
-        console.log(`[HlslParser] parsed declaration: ${declaration.kind}`);
         declarations.push(declaration);
       } else {
         /*
@@ -53,16 +47,8 @@ export class HlslParser {
          * ここで advance() してはいけない。
          */
         if (wasPreprocessor) {
-          console.log(`[HlslParser] preprocessor handled without declaration`);
-
           continue;
         }
-
-        console.log(
-          `[HlslParser] failed declaration, advancing from ` +
-            `"${this.current().value}" ` +
-            `line=${this.current().range.start.line + 1}`,
-        );
 
         this.advance();
       }

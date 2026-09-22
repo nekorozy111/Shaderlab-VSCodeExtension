@@ -18,6 +18,8 @@ export interface IncludeCompletionCandidate {
 export class IncludeResolver {
   private readonly projectRoot: ProjectRoot;
   private readonly fileSystem: FileSystem;
+  private projectIncludeFiles: string[] | undefined;
+  private projectIncludeCacheGeneration = 0;
 
   public constructor(projectRoot: ProjectRoot, fileSystem: FileSystem) {
     this.projectRoot = projectRoot;
@@ -107,6 +109,12 @@ export class IncludeResolver {
     }
 
     return undefined;
+  }
+
+  public invalidateProjectIncludeCache(): void {
+    this.projectIncludeFiles = undefined;
+
+    console.log('[IncludeResolver] Project include file cache invalidated');
   }
 
   public getCompletionCandidates(includePath: string, fromUri: string): IncludeCompletionCandidate[] {
@@ -398,13 +406,33 @@ export class IncludeResolver {
     prefix: string,
     candidates: Map<string, IncludeCompletionCandidate>,
   ): void {
-    this.collectProjectRelativeIncludeFilesRecursive(
-      projectRoot,
-      projectRoot,
-      fromDirectory,
-      prefix.toLowerCase(),
-      candidates,
-    );
+    const projectFiles = this.getProjectIncludeFiles(projectRoot);
+    const normalizedPrefix = prefix.toLowerCase();
+
+    for (const entryPath of projectFiles) {
+      const fileName = path.basename(entryPath);
+
+      if (!fileName.toLowerCase().includes(normalizedPrefix)) {
+        continue;
+      }
+
+      const relativePath = path.relative(fromDirectory, entryPath).replace(/\\/g, '/');
+
+      if (!relativePath) {
+        continue;
+      }
+
+      console.log(
+        `[IncludeResolver] Cached project candidate:` +
+          ` fromDirectory="${fromDirectory}"` +
+          ` entryPath="${entryPath}"` +
+          ` relativePath="${relativePath}"`,
+      );
+
+      candidates.set(relativePath, {
+        includePath: relativePath,
+      });
+    }
   }
   private collectProjectRelativeIncludeFilesRecursive(
     directoryPath: string,
@@ -588,5 +616,60 @@ export class IncludeResolver {
     } catch {
       return undefined;
     }
+  }
+  private getProjectIncludeFiles(projectRoot: string): string[] {
+    const isRegeneration = this.projectIncludeFiles === undefined;
+
+    if (this.projectIncludeFiles !== undefined) {
+      console.log(`[IncludeResolver] Using cached project include files: ${this.projectIncludeFiles.length}`);
+      return this.projectIncludeFiles;
+    }
+
+    console.log(
+      `[IncludeResolver] ${isRegeneration ? 'Generating project include cache' : 'Generating project include cache'}`,
+    );
+
+    const files: string[] = [];
+
+    const collect = (directoryPath: string): void => {
+      for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+        const entryPath = path.join(directoryPath, entry);
+
+        if (this.fileSystem.isDirectory(entryPath)) {
+          if (
+            directoryPath === projectRoot &&
+            (entry === 'Library' || entry === 'Packages' || entry === 'ProjectSettings')
+          ) {
+            continue;
+          }
+
+          collect(entryPath);
+          continue;
+        }
+
+        if (!this.fileSystem.isFile(entryPath)) {
+          continue;
+        }
+
+        if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+          continue;
+        }
+
+        files.push(entryPath);
+      }
+    };
+
+    collect(projectRoot);
+
+    this.projectIncludeFiles = files;
+    this.projectIncludeCacheGeneration++;
+
+    console.log(
+      `[IncludeResolver] Project include cache generated:` +
+        ` generation=${this.projectIncludeCacheGeneration}` +
+        ` files=${files.length}`,
+    );
+
+    return files;
   }
 }

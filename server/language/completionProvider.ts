@@ -23,7 +23,6 @@ export class CompletionProvider {
     if (this.isInsideComment(text, offset)) {
       return [];
     }
-
     /*
      * ============================================================
      * #include Completion
@@ -48,7 +47,6 @@ export class CompletionProvider {
     const word = this.getWordBeforeCursor(text, offset);
 
     if (!this.isInsideHlslContext(text, offset)) {
-      console.log(`[CompletionProvider] ` + `Outside HLSL context -> no completion`);
       return [];
     }
 
@@ -264,8 +262,6 @@ export class CompletionProvider {
 
     if (localVariable) {
       typeName = localVariable.typeName;
-
-      console.log(`[CompletionProvider] ` + `Local variable resolved: ` + `${objectName} -> ${typeName}`);
     }
 
     /*
@@ -298,8 +294,6 @@ export class CompletionProvider {
         typeName = match.symbol.typeName;
 
         if (typeName) {
-          console.log(`[CompletionProvider] ` + `Indexed object resolved: ` + `${objectName} -> ${typeName}`);
-
           break;
         }
       }
@@ -317,8 +311,6 @@ export class CompletionProvider {
           typeName = match.symbol.typeName;
 
           if (typeName) {
-            console.log(`[CompletionProvider] ` + `Workspace object resolved: ` + `${objectName} -> ${typeName}`);
-
             break;
           }
         }
@@ -337,8 +329,6 @@ export class CompletionProvider {
 
       if (functionMatch && functionMatch.symbol.returnType) {
         typeName = functionMatch.symbol.returnType;
-
-        console.log(`[CompletionProvider] ` + `Function return type resolved: ` + `${objectName} -> ${typeName}`);
       }
     }
 
@@ -352,17 +342,12 @@ export class CompletionProvider {
 
       if (propertyType) {
         typeName = propertyType;
-
-        console.log(`[CompletionProvider] ` + `Property resolved: ` + `${objectName} -> ${typeName}`);
       }
     }
 
     if (!typeName) {
-      console.log(`[CompletionProvider] ` + `Object not found: ${objectName}`);
       return [];
     }
-
-    console.log(`[CompletionProvider] ` + `Resolving members of type: ` + `${typeName}`);
 
     /*
      * ============================================================
@@ -472,8 +457,6 @@ export class CompletionProvider {
         });
       }
     }
-
-    console.log(`[CompletionProvider] ` + `Member candidates: ${items.length}`);
 
     return items;
   }
@@ -588,8 +571,6 @@ export class CompletionProvider {
     }
 
     if (!lastMatch) {
-      console.log(`[CompletionProvider] ` + `Local declaration not found: ` + `${variableName}`);
-
       return null;
     }
 
@@ -616,8 +597,6 @@ export class CompletionProvider {
         offset: declarationEnd,
       },
     };
-
-    console.log(`[CompletionProvider] ` + `Local declaration found: ` + `${variableName}: ${typeName}`);
 
     return {
       name: variableName,
@@ -1430,11 +1409,7 @@ export class CompletionProvider {
     context: { path: string; prefix: string },
     offset: number,
   ): CompletionItem[] {
-    console.log(`[CompletionProvider] Include completion: ` + `path="${context.path}" prefix="${context.prefix}"`);
-
     const includePath = `${context.path}${context.prefix}`;
-
-    console.log(`[CompletionProvider] Include request: ` + `"${includePath}"`);
 
     const candidates = this.includeResolver.getCompletionCandidates(includePath, uri);
 
@@ -1455,6 +1430,7 @@ export class CompletionProvider {
     for (const candidate of candidates) {
       result.push({
         label: candidate.includePath,
+        filterText: context.prefix,
         kind: CompletionItemKind.File,
         detail: 'include',
 
@@ -1469,8 +1445,6 @@ export class CompletionProvider {
         sortText: candidate.includePath,
       });
     }
-
-    console.log(`[CompletionProvider] Include candidates: ${result.length}`);
 
     return result;
   }
