@@ -36,17 +36,34 @@ export class HlslParser {
           `line=${this.current().range.start.line + 1}`,
       );
 
+      const wasPreprocessor = this.current().kind === 'preprocessor';
+
       const declaration = this.parseDeclaration();
 
       if (declaration) {
         console.log(`[HlslParser] parsed declaration: ${declaration.kind}`);
         declarations.push(declaration);
       } else {
+        /*
+         * parsePreprocessor() は #endif / #else / #elif / #ifdef
+         * などを消費して undefined を返す場合がある。
+         *
+         * その場合、parsePreprocessor() 自身がすでに
+         * 次のトークンまで進んでいるので、
+         * ここで advance() してはいけない。
+         */
+        if (wasPreprocessor) {
+          console.log(`[HlslParser] preprocessor handled without declaration`);
+
+          continue;
+        }
+
         console.log(
           `[HlslParser] failed declaration, advancing from ` +
             `"${this.current().value}" ` +
             `line=${this.current().range.start.line + 1}`,
         );
+
         this.advance();
       }
     }
