@@ -185,7 +185,7 @@ export class IncludeResolver {
     if (fromPath) {
       const fromDirectory = path.dirname(fromPath);
 
-      this.collectRelativeIncludeFiles(fromDirectory, '', prefix, candidates);
+      this.collectRelativeIncludeCandidates(fromDirectory, normalizedInclude, candidates);
     }
 
     return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
@@ -449,45 +449,56 @@ export class IncludeResolver {
     }
   }
 
-  private collectRelativeIncludeFiles(
-    directoryPath: string,
-    relativeBasePath: string,
-    prefix: string,
+  private collectRelativeIncludeCandidates(
+    fromDirectory: string,
+    includePath: string,
     candidates: Map<string, IncludeCompletionCandidate>,
   ): void {
-    if (!this.fileSystem.isDirectory(directoryPath)) {
+    const slashIndex = includePath.lastIndexOf('/');
+
+    const directoryPart = slashIndex >= 0 ? includePath.substring(0, slashIndex + 1) : '';
+
+    const prefix = slashIndex >= 0 ? includePath.substring(slashIndex + 1) : includePath;
+
+    /*
+     * 現在のファイルのディレクトリを基準に
+     * ../ や ../../ を解決する。
+     *
+     * 例:
+     *
+     * Assets/Folder1
+     * ../Folder2/
+     *
+     * ↓
+     *
+     * Assets/Folder2
+     */
+    const targetDirectory = path.resolve(fromDirectory, directoryPart || '.');
+
+    if (!this.fileSystem.isDirectory(targetDirectory)) {
       return;
     }
 
-    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
-      const entryPath = path.join(directoryPath, entry);
+    for (const entry of this.fileSystem.listDirectory(targetDirectory)) {
+      const entryPath = path.join(targetDirectory, entry);
 
-      const relativePath = `${relativeBasePath}${entry}`;
-
-      /*
-       * prefix と同じ階層にある候補だけを対象にする。
-       */
-      const normalizedRelativePath = relativePath.replace(/\\/g, '/');
-
-      if (this.fileSystem.isFile(entryPath)) {
-        if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
-          continue;
-        }
-
-        if (!normalizedRelativePath.toLowerCase().startsWith(prefix)) {
-          continue;
-        }
-
-        candidates.set(normalizedRelativePath, {
-          includePath: normalizedRelativePath,
-        });
-
+      if (!this.fileSystem.isFile(entryPath)) {
         continue;
       }
 
-      if (this.fileSystem.isDirectory(entryPath)) {
-        this.collectRelativeIncludeFiles(entryPath, `${relativePath}/`, prefix, candidates);
+      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+        continue;
       }
+
+      if (!entry.toLowerCase().startsWith(prefix.toLowerCase())) {
+        continue;
+      }
+
+      const candidatePath = `${directoryPart}${entry}`.replace(/\\/g, '/');
+
+      candidates.set(candidatePath, {
+        includePath: candidatePath,
+      });
     }
   }
 

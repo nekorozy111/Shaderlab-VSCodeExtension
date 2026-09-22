@@ -35,7 +35,7 @@ export class CompletionProvider {
     const includeContext = this.getIncludeCompletionContext(text, offset);
 
     if (includeContext) {
-      return this.provideIncludeCompletion(uri, includeContext);
+      return this.provideIncludeCompletion(uri, includeContext, offset);
     }
 
     /*
@@ -1425,12 +1425,28 @@ export class CompletionProvider {
       prefix: includePath.substring(slashIndex + 1),
     };
   }
-  private provideIncludeCompletion(uri: string, context: { path: string; prefix: string }): CompletionItem[] {
+  private provideIncludeCompletion(
+    uri: string,
+    context: { path: string; prefix: string },
+    offset: number,
+  ): CompletionItem[] {
     console.log(`[CompletionProvider] Include completion: ` + `path="${context.path}" prefix="${context.prefix}"`);
 
     const includePath = `${context.path}${context.prefix}`;
 
     const candidates = this.includeResolver.getCompletionCandidates(includePath, uri);
+
+    const document = this.documentManager.get(uri);
+
+    if (!document) {
+      return [];
+    }
+
+    const includeStartOffset = offset - includePath.length;
+
+    const startPosition = document.positionAt(includeStartOffset);
+
+    const endPosition = document.positionAt(offset);
 
     const result: CompletionItem[] = [];
 
@@ -1439,7 +1455,15 @@ export class CompletionProvider {
         label: candidate.includePath,
         kind: CompletionItemKind.File,
         detail: 'include',
-        insertText: candidate.includePath,
+
+        textEdit: {
+          range: {
+            start: startPosition,
+            end: endPosition,
+          },
+          newText: candidate.includePath,
+        },
+
         sortText: candidate.includePath,
       });
     }
