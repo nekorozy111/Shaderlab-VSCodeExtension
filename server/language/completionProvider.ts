@@ -17,6 +17,10 @@ export class CompletionProvider {
       return [];
     }
 
+    // Completion要求時点で最新AST/WorkspaceIndexを必ず同期する。
+    // debounce中に編集された generic resource declaration も即時反映する。
+    this.documentManager.getParsed(uri);
+
     const text = document.getText();
 
     const offset = document.offsetAt(position);
@@ -461,7 +465,7 @@ export class CompletionProvider {
 
     const result: CompletionItem[] = [];
 
-    const pattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
+    const pattern = /\b([A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
 
     let match: RegExpExecArray | null;
 

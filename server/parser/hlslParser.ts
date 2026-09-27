@@ -300,13 +300,11 @@ export class HlslParser {
   private parseFunctionOrVariable(): HlslFunctionNode | HlslVariableNode | undefined {
     const startIndex = this.index;
 
-    const typeToken = this.current();
+    const typeToken = this.parseTypeName();
 
-    if (typeToken.kind !== 'identifier') {
+    if (typeToken === undefined) {
       return undefined;
     }
-
-    this.advance();
 
     const nameToken = this.current();
 
@@ -447,15 +445,13 @@ export class HlslParser {
       this.advance();
     }
 
-    const typeToken = this.current();
+    const typeToken = this.parseTypeName();
 
-    if (typeToken.kind !== 'identifier') {
+    if (typeToken === undefined) {
       this.index = startIndex;
 
       return undefined;
     }
-
-    this.advance();
 
     const nameToken = this.current();
 
@@ -501,6 +497,108 @@ export class HlslParser {
     };
   }
 
+  /**
+   * Parses an HLSL type name, including template/generic resource types such as
+   * RWTexture2D<float4> and StructuredBuffer<MyStruct>.
+   *
+   * Unity compute shaders make heavy use of these declarations. The tokenizer
+   * represents '<' and '>' as operators, so the parser must consume the whole
+   * type before looking for the variable name.
+   */
+  private parseTypeName(): Token | undefined {
+    const startIndex = this.index;
+    const baseToken = this.current();
+
+    if (baseToken.kind !== 'identifier') {
+      return undefined;
+    }
+
+    this.advance();
+
+    let typeName = baseToken.value;
+    let end = baseToken.range.end;
+
+    if (this.checkValue('<')) {
+      let depth = 0;
+
+      while (!this.isAtEnd()) {
+        const token = this.current();
+
+        if (token.value === '<') {
+          depth++;
+          typeName += token.value;
+          end = token.range.end;
+          this.advance();
+          continue;
+        }
+
+        if (token.value === '>') {
+          depth--;
+          typeName += token.value;
+          end = token.range.end;
+          this.advance();
+
+          if (depth === 0) {
+            break;
+          }
+
+          continue;
+        }
+
+        // The tokenizer combines `>>` into one operator. In a nested generic
+        // type it can represent two closing angle brackets.
+        if (token.value === '>>' && depth > 0) {
+          typeName += '>>';
+          end = token.range.end;
+          this.advance();
+          depth -= 2;
+
+          if (depth <= 0) {
+            break;
+          }
+
+          continue;
+        }
+
+        // A generic type may contain identifiers, numbers, commas and nested
+        // type punctuation. Stop if the sequence cannot be part of a type.
+        if (
+          token.kind === 'identifier' ||
+          token.kind === 'number' ||
+          token.value === ',' ||
+          token.value === '.' ||
+          token.value === ':' ||
+          token.value === '[' ||
+          token.value === ']' ||
+          token.value === '*' ||
+          token.value === '&'
+        ) {
+          typeName += token.value;
+          end = token.range.end;
+          this.advance();
+          continue;
+        }
+
+        this.index = startIndex;
+        return undefined;
+      }
+
+      if (depth !== 0) {
+        this.index = startIndex;
+        return undefined;
+      }
+    }
+
+    return {
+      ...baseToken,
+      value: typeName,
+      range: {
+        start: baseToken.range.start,
+        end,
+      },
+    };
+  }
+
   private parseVariableStatement(): HlslVariableNode | undefined {
     const startIndex = this.index;
 
@@ -513,15 +611,13 @@ export class HlslParser {
       this.advance();
     }
 
-    const typeToken = this.current();
+    const typeToken = this.parseTypeName();
 
-    if (typeToken.kind !== 'identifier') {
+    if (typeToken === undefined) {
       this.index = startIndex;
 
       return undefined;
     }
-
-    this.advance();
 
     const nameToken = this.current();
 

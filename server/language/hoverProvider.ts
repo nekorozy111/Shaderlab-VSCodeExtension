@@ -17,6 +17,10 @@ export class HoverProvider {
     if (!document) {
       return null;
     }
+
+    // Hover要求時点で最新AST/WorkspaceIndexを同期する。
+    this.documentManager.getParsed(uri);
+
     const offset = document.offsetAt(position);
 
     const text = document.getText();
@@ -198,7 +202,7 @@ export class HoverProvider {
     // ------------------------------------------------------------
 
     const declarationPattern =
-      /\b(?:(?:const|static|uniform|volatile|inline)\s+)*([A-Za-z_][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
+      /\b(?:(?:const|static|uniform|volatile|inline)\s+)*([A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
 
     let match: RegExpExecArray | null;
     let bestMatch: RegExpExecArray | null = null;

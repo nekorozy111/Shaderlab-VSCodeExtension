@@ -18,6 +18,9 @@ export class DefinitionProvider {
       return null;
     }
 
+    // Definition要求時点で最新AST/WorkspaceIndexを同期する。
+    this.documentManager.getParsed(uri);
+
     const text = document.getText();
 
     const offset = document.offsetAt(position);
@@ -530,6 +533,9 @@ export class DefinitionProvider {
       return null;
     }
 
+    // Hoverから直接呼ばれる場合も最新ASTを保証する。
+    this.documentManager.getParsed(uri);
+
     const text = document.getText();
 
     const offset = document.offsetAt(position);
@@ -957,7 +963,7 @@ export class DefinitionProvider {
     const variablePattern = new RegExp(
       '\\b' +
         '(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*' +
-        '([A-Za-z_][A-Za-z0-9_]*)' +
+        '([A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^<>\\r\\n]+>)?)' +
         '\\s+' +
         escapedName +
         '\\s*(?==|;|,|\\[|:)',
@@ -1071,7 +1077,7 @@ export class DefinitionProvider {
      */
 
     const parameterPattern = new RegExp(
-      '\\b' + '([A-Za-z_][A-Za-z0-9_]*)' + '\\s+' + escapedName + '\\s*(?=[,)])',
+      '\\b' + '([A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^<>\\r\\n]+>)?)' + '\\s+' + escapedName + '\\s*(?=[,)])',
       'g',
     );
 
