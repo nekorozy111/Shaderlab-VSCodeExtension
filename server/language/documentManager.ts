@@ -35,6 +35,13 @@ export class DocumentManager {
    */
   private readonly externalReferenceCounts = new Map<string, number>();
 
+  /**
+   * include URI -> root document URI。
+   * 外部ファイルが変更されたとき、そのファイルに依存する root だけを
+   * include graph cache から無効化するために使用する。
+   */
+  private readonly includeDependents = new Map<string, Set<string>>();
+
   private readonly externalSources = new Map<string, string>();
 
   public initializeProject(params: Parameters<ProjectService['initialize']>[0]): void {
@@ -118,6 +125,7 @@ export class DocumentManager {
     this.externalDocuments.clear();
     this.externalSources.clear();
     this.includeDependencies.clear();
+    this.includeDependents.clear();
     this.externalReferenceCounts.clear();
     this.workspaceIndex.clear();
   }
@@ -137,7 +145,47 @@ export class DocumentManager {
     this.externalDocuments.clear();
     this.externalSources.clear();
     this.includeDependencies.clear();
+    this.includeDependents.clear();
     this.externalReferenceCounts.clear();
+  }
+
+  /**
+   * 変更された HLSL/HLSLI/CGINC に依存する root だけを無効化する。
+   *
+   * 従来の invalidateExternalIncludeCache() は1ファイル変更するだけで
+   * プロジェクト全体の include AST を捨てていた。大規模な Unity project では
+   * 次の F12/Completion で全て再解析されるため、不要な遅延が発生する。
+   */
+  public invalidateChangedExternalIncludes(changedUris: string[]): void {
+    if (changedUris.length === 0) {
+      return;
+    }
+
+    const affectedRoots = new Set<string>();
+
+    for (const changedUri of changedUris) {
+      const dependents = this.includeDependents.get(changedUri);
+
+      if (dependents) {
+        for (const rootUri of dependents) {
+          affectedRoots.add(rootUri);
+        }
+      }
+
+      // 変更された external document 自体も古い AST を保持しない。
+      if (this.externalDocuments.has(changedUri)) {
+        this.externalDocuments.delete(changedUri);
+        this.externalSources.delete(changedUri);
+        this.workspaceIndex.remove(changedUri);
+      }
+
+      // 依存 root が存在しない場合でも、古い reverse edge を残さない。
+      this.includeDependents.delete(changedUri);
+    }
+
+    for (const rootUri of affectedRoots) {
+      this.releaseIncludeDependencies(rootUri);
+    }
   }
 
   public ensureExternalDocument(uri: string): ParsedDocument | undefined {
@@ -192,6 +240,15 @@ export class DocumentManager {
     this.includeDependencies.delete(rootUri);
 
     for (const uri of dependencies) {
+      const dependents = this.includeDependents.get(uri);
+
+      if (dependents) {
+        dependents.delete(rootUri);
+
+        if (dependents.size === 0) {
+          this.includeDependents.delete(uri);
+        }
+      }
       const nextCount = (this.externalReferenceCounts.get(uri) ?? 1) - 1;
 
       if (nextCount > 0) {
@@ -243,6 +300,10 @@ export class DocumentManager {
 
     for (const uri of result) {
       this.externalReferenceCounts.set(uri, (this.externalReferenceCounts.get(uri) ?? 0) + 1);
+
+      const dependents = this.includeDependents.get(uri) ?? new Set<string>();
+      dependents.add(rootUri);
+      this.includeDependents.set(uri, dependents);
     }
 
     return new Set([rootUri, ...result]);

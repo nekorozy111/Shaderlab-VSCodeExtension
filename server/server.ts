@@ -121,9 +121,12 @@ documents.onDidChangeContent((event) => {
   pendingDocumentUpdates.set(uri, timer);
 });
 
-connection.onDidChangeWatchedFiles(() => {
+connection.onDidChangeWatchedFiles((event) => {
   documentManager.getProjectService().invalidateIncludeCache();
-  documentManager.invalidateExternalIncludeCache();
+
+  // 変更されたファイルを参照している root だけを include graph から無効化する。
+  // PackageCache 全体を毎回捨てる必要はない。
+  documentManager.invalidateChangedExternalIncludes(event.changes.map((change) => change.uri));
 });
 
 documents.onDidClose((event) => {
