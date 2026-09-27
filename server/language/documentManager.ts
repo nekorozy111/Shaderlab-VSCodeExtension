@@ -197,6 +197,14 @@ export class DocumentManager {
     return Array.from(this.parsedDocuments.values());
   }
 
+  /**
+   * LSPサーバー終了時に、保持しているDocument/AST/include graphを全て解放する。
+   * Nodeプロセス終了時にはGC対象になるが、明示的に破棄して終了時の保持期間を短くする。
+   */
+  public dispose(): void {
+    this.clear();
+  }
+
   public clear(): void {
     this.documents.clear();
     this.parsedDocuments.clear();

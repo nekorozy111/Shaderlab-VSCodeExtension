@@ -1,7 +1,5 @@
 import {
   createConnection,
-  InitializeParams,
-  InitializeResult,
   ProposedFeatures,
   TextDocuments,
   TextDocumentSyncKind,
@@ -21,7 +19,6 @@ import { DefinitionProvider } from './language/definitionProvider';
 import { HoverProvider } from './language/hoverProvider';
 
 import { CompletionProvider } from './language/completionProvider';
-import { IncludeResolver } from './project/includeResolver';
 
 const connection = createConnection(ProposedFeatures.all);
 
@@ -39,7 +36,66 @@ const completionProvider = new CompletionProvider(documentManager, documentManag
 // F12/hover等で最新ASTが必要になった場合はDocumentManager.getParsed()が
 // version差分を検出して即時更新するため、定義ジャンプの正確性は維持される。
 const UPDATE_DEBOUNCE_MS = 150;
+const REQUEST_CACHE_TTL_MS = 100;
+const REQUEST_CACHE_MAX_ENTRIES = 32;
 const pendingDocumentUpdates = new Map<string, ReturnType<typeof setTimeout>>();
+
+type CachedRequestResult = {
+  version: number;
+  expiresAt: number;
+  value: any;
+};
+
+// 同じ位置へのF12/Hover/Completion要求が短時間に重複するケースを抑える。
+// versionをキーに含めるため、編集後の古い結果を再利用しない。
+const requestResultCache = new Map<string, CachedRequestResult>();
+
+function getCachedRequest<T>(key: string, version: number): T | undefined {
+  const cached = requestResultCache.get(key);
+  if (!cached) {
+    return undefined;
+  }
+
+  if (cached.version !== version || cached.expiresAt <= Date.now()) {
+    requestResultCache.delete(key);
+    return undefined;
+  }
+
+  // LRU: 最近使ったエントリを末尾へ移動する。
+  requestResultCache.delete(key);
+  requestResultCache.set(key, cached);
+  return cached.value as T;
+}
+
+function setCachedRequest(key: string, version: number, value: any): void {
+  requestResultCache.delete(key);
+  requestResultCache.set(key, {
+    version,
+    expiresAt: Date.now() + REQUEST_CACHE_TTL_MS,
+    value,
+  });
+
+  while (requestResultCache.size > REQUEST_CACHE_MAX_ENTRIES) {
+    const oldestKey = requestResultCache.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    requestResultCache.delete(oldestKey);
+  }
+}
+
+function invalidateRequestCache(uri?: string): void {
+  if (!uri) {
+    requestResultCache.clear();
+    return;
+  }
+
+  for (const key of requestResultCache.keys()) {
+    if (key.startsWith(`${uri}|`)) {
+      requestResultCache.delete(key);
+    }
+  }
+}
 connection.onInitialize((params) => {
   documentManager.initializeProject(params);
 
@@ -77,26 +133,61 @@ connection.onInitialized(async () => {
 });
 
 connection.onDefinition((params) => {
-  return definitionProvider.provideDefinition(params.textDocument.uri, params.position);
+  const uri = params.textDocument.uri;
+  const document = documentManager.get(uri);
+  const version = document?.version ?? -1;
+  const key = `definition|${uri}|${params.position.line}|${params.position.character}`;
+  const cached = getCachedRequest<ReturnType<DefinitionProvider['provideDefinition']>>(key, version);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = definitionProvider.provideDefinition(uri, params.position);
+  setCachedRequest(key, version, result);
+  return result;
 });
+
 connection.onHover((params) => {
-  return hoverProvider.provideHover(params.textDocument.uri, params.position);
+  const uri = params.textDocument.uri;
+  const document = documentManager.get(uri);
+  const version = document?.version ?? -1;
+  const key = `hover|${uri}|${params.position.line}|${params.position.character}`;
+  const cached = getCachedRequest<ReturnType<HoverProvider['provideHover']>>(key, version);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = hoverProvider.provideHover(uri, params.position);
+  setCachedRequest(key, version, result);
+  return result;
 });
 
 connection.onCompletion((params) => {
-  return completionProvider.provideCompletion(params.textDocument.uri, params.position);
+  const uri = params.textDocument.uri;
+  const document = documentManager.get(uri);
+  const version = document?.version ?? -1;
+  const key = `completion|${uri}|${params.position.line}|${params.position.character}`;
+  const cached = getCachedRequest<ReturnType<CompletionProvider['provideCompletion']>>(key, version);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = completionProvider.provideCompletion(uri, params.position);
+  setCachedRequest(key, version, result);
+  return result;
 });
 
 documents.onDidOpen((event) => {
-  logIncludeResolution(
-    documentManager,
-    'Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl',
-    event.document.uri,
-  );
+  // Open時点でDocumentManagerにも登録しておく。
+  // 変更通知を待たずにF12/Hover/Completionを要求されても最新Documentを取得できる。
+  const parsed = documentManager.open(event.document);
+  // 初回Parse結果はDocumentManager/WorkspaceIndexへ登録済み。
+  void parsed;
 });
 
 documents.onDidChangeContent((event) => {
   const uri = event.document.uri;
+  invalidateRequestCache(uri);
 
   // 最新Documentはすぐ保持するが、重いParse/Index更新はdebounceする。
   documentManager.set(event.document);
@@ -114,8 +205,7 @@ documents.onDidChangeContent((event) => {
       return;
     }
 
-    const parsed = documentManager.update(latest);
-    logParsedDocument(parsed);
+    documentManager.update(latest);
   }, UPDATE_DEBOUNCE_MS);
 
   pendingDocumentUpdates.set(uri, timer);
@@ -130,6 +220,8 @@ connection.onDidChangeWatchedFiles((event) => {
 });
 
 documents.onDidClose((event) => {
+  invalidateRequestCache(event.document.uri);
+
   const pending = pendingDocumentUpdates.get(event.document.uri);
   if (pending) {
     clearTimeout(pending);
@@ -139,28 +231,18 @@ documents.onDidClose((event) => {
   documentManager.close(event.document);
 });
 
-function logParsedDocument(parsed: ParsedDocument): void {
-  if (parsed.ast.kind === 'ShaderDocument') {
-    const hlslBlockCount =
-      parsed.ast.hlslBlocks.length +
-      parsed.ast.subShaders.reduce((total, subShader) => {
-        return (
-          total +
-          subShader.hlslBlocks.length +
-          subShader.passes.reduce((passTotal, pass) => passTotal + pass.hlslBlocks.length, 0)
-        );
-      }, 0);
-    return;
+connection.onShutdown(() => {
+  for (const timer of pendingDocumentUpdates.values()) {
+    clearTimeout(timer);
   }
-}
+  pendingDocumentUpdates.clear();
 
-function logIncludeResolution(documentManager: DocumentManager, includePath: string, fromUri: string): void {
-  const result = documentManager.getProjectService().resolveInclude(includePath, fromUri);
+  // TTLを待たず、LSP終了時にリクエスト結果を即時解放する。
+  requestResultCache.clear();
 
-  if (!result) {
-    return;
-  }
-}
+  // Document / AST / include graph / external documentを明示的に解放する。
+  documentManager.dispose();
+});
 
 documents.listen(connection);
 
