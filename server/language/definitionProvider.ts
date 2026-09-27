@@ -551,71 +551,17 @@ export class DefinitionProvider {
     return null;
   }
 
+  /**
+   * 現在のドキュメントから到達可能な include URI を取得する。
+   *
+   * include graph の構築と外部 HLSL の Index 登録は DocumentManager 側で
+   * キャッシュされるため、DefinitionProvider では再帰探索しない。
+   */
   private collectRelatedIncludeUris(rootUri: string, result: Set<string>): void {
-    const visited = new Set<string>();
+    const relatedUris = this.documentManager.getRelatedIncludeUris(rootUri);
 
-    const parsed = this.documentManager.getParsed(rootUri);
-
-    if (!parsed) {
-      return;
-    }
-
-    this.collectRelatedIncludeUrisRecursive(rootUri, parsed, visited, result);
-  }
-  private collectRelatedIncludeUrisRecursive(
-    uri: string,
-    parsed: ParsedDocument,
-    visited: Set<string>,
-    result: Set<string>,
-    source?: string,
-  ): void {
-    if (visited.has(uri)) {
-      return;
-    }
-
-    visited.add(uri);
-
-    let includePaths: string[];
-
-    /*
-     * HLSL外部ファイルの場合は、
-     * 実ファイルのsourceからincludeを取得する。
-     */
-    if (parsed.languageId === 'hlsl' && source !== undefined) {
-      includePaths = this.collectRawHlslIncludes(source);
-    } else {
-      includePaths = this.collectIncludes(parsed);
-    }
-
-    for (const includePath of includePaths) {
-      const resolved = this.documentManager.getProjectService().resolveInclude(includePath, uri);
-
-      if (!resolved) {
-        continue;
-      }
-
-      /*
-       * Include先のURIを関連ファイルとして登録。
-       */
-      result.add(resolved.uri);
-
-      /*
-       * Include先をWorkspaceIndexへ登録。
-       */
-      const externalDocument = this.documentManager.ensureExternalDocument(resolved.uri);
-
-      if (!externalDocument) {
-        continue;
-      }
-
-      /*
-       * Include先の実ソースを取得。
-       *
-       * 次のincludeを再帰的に調べるために必要。
-       */
-      const externalSource = this.documentManager.getProjectService().readFile(resolved.resolvedPath);
-
-      this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
+    for (const uri of relatedUris) {
+      result.add(uri);
     }
   }
 
@@ -1422,55 +1368,14 @@ export class DefinitionProvider {
    * -------------------------------------------------------------
    */
 
+  /**
+   * include graph を必要なら構築する。
+   *
+   * 実際の探索は DocumentManager が担当する。既にキャッシュ済みなら
+   * ここでは再帰的なファイルI/OやParseを発生させない。
+   */
   private loadIncludedDocuments(rootUri: string): void {
-    const visited = new Set<string>();
-
-    const parsed = this.documentManager.getParsed(rootUri);
-
-    if (!parsed) {
-      return;
-    }
-
-    this.loadIncludedDocumentsRecursive(rootUri, parsed, visited);
-  }
-
-  private loadIncludedDocumentsRecursive(
-    uri: string,
-    parsed: ParsedDocument,
-    visited: Set<string>,
-    source?: string,
-  ): void {
-    if (visited.has(uri)) {
-      return;
-    }
-
-    visited.add(uri);
-
-    let includePaths: string[];
-
-    if (parsed.languageId === 'hlsl' && source !== undefined) {
-      includePaths = this.collectRawHlslIncludes(source);
-    } else {
-      includePaths = this.collectIncludes(parsed);
-    }
-
-    for (const includePath of includePaths) {
-      const resolved = this.documentManager.getProjectService().resolveInclude(includePath, uri);
-
-      if (!resolved) {
-        continue;
-      }
-
-      const externalDocument = this.documentManager.ensureExternalDocument(resolved.uri);
-
-      if (!externalDocument) {
-        continue;
-      }
-
-      const externalSource = this.documentManager.getProjectService().readFile(resolved.resolvedPath);
-
-      this.loadIncludedDocumentsRecursive(resolved.uri, externalDocument, visited, externalSource);
-    }
+    this.documentManager.getRelatedIncludeUris(rootUri);
   }
 
   /*

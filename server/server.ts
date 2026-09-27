@@ -34,6 +34,12 @@ const definitionProvider = new DefinitionProvider(documentManager);
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
+
+// 連続入力中のParseをまとめる。
+// F12/hover等で最新ASTが必要になった場合はDocumentManager.getParsed()が
+// version差分を検出して即時更新するため、定義ジャンプの正確性は維持される。
+const UPDATE_DEBOUNCE_MS = 150;
+const pendingDocumentUpdates = new Map<string, ReturnType<typeof setTimeout>>();
 connection.onInitialize((params) => {
   documentManager.initializeProject(params);
 
@@ -90,9 +96,29 @@ documents.onDidOpen((event) => {
 });
 
 documents.onDidChangeContent((event) => {
-  const parsed = documentManager.update(event.document);
+  const uri = event.document.uri;
 
-  logParsedDocument(parsed);
+  // 最新Documentはすぐ保持するが、重いParse/Index更新はdebounceする。
+  documentManager.set(event.document);
+
+  const pending = pendingDocumentUpdates.get(uri);
+  if (pending) {
+    clearTimeout(pending);
+  }
+
+  const timer = setTimeout(() => {
+    pendingDocumentUpdates.delete(uri);
+
+    const latest = documentManager.get(uri);
+    if (!latest) {
+      return;
+    }
+
+    const parsed = documentManager.update(latest);
+    logParsedDocument(parsed);
+  }, UPDATE_DEBOUNCE_MS);
+
+  pendingDocumentUpdates.set(uri, timer);
 });
 
 connection.onDidChangeWatchedFiles(() => {
@@ -101,6 +127,12 @@ connection.onDidChangeWatchedFiles(() => {
 });
 
 documents.onDidClose((event) => {
+  const pending = pendingDocumentUpdates.get(event.document.uri);
+  if (pending) {
+    clearTimeout(pending);
+    pendingDocumentUpdates.delete(event.document.uri);
+  }
+
   documentManager.close(event.document);
 });
 

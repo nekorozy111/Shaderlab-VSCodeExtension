@@ -51,6 +51,14 @@ export class DocumentManager {
     return this.parseDocument(document);
   }
 
+  /**
+   * VS Codeから受け取った最新Documentを保持する。
+   * Parseは呼び出し側のdebounce後に行う。
+   */
+  public set(document: TextDocument): void {
+    this.documents.set(document.uri, document);
+  }
+
   public update(document: TextDocument): ParsedDocument {
     // 編集前の include graph を破棄する。
     // 新しい内容で再構築されるまで古い依存関係を参照しない。
@@ -76,7 +84,16 @@ export class DocumentManager {
   }
 
   public getParsed(uri: string): ParsedDocument | undefined {
-    return this.parsedDocuments.get(uri);
+    const document = this.documents.get(uri);
+    const parsed = this.parsedDocuments.get(uri);
+
+    // debounce中でもF12/hover等から要求された場合は、
+    // 古いASTを返さず最新Documentを同期的に再解析する。
+    if (document && (!parsed || parsed.version !== document.version)) {
+      return this.update(document);
+    }
+
+    return parsed;
   }
 
   public getWorkspaceIndex(): WorkspaceIndex {
