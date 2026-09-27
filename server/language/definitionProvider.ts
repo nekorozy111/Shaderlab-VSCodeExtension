@@ -677,7 +677,6 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
 
-    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
     const localVariable = this.findVariableDeclarationInSource(document, word, offset);
     if (localVariable) {
       console.log(
@@ -726,21 +725,7 @@ export class DefinitionProvider {
       .filter((match) => match.symbol.kind !== 'parameter');
 
     if (matches.length === 0) {
-      /*
-       * findExactInRelated() は必要時にinclude graphを構築するため、
-       * 同じ検索を再実行する必要はない。
-       */
-      const retryMatches = this.documentManager
-        .findExactInRelated(uri, word)
-        .filter((match) => match.symbol.kind !== 'parameter');
-      if (retryMatches.length === 0) {
-        return null;
-      }
-
-      return this.selectBestSymbolAtPosition(
-        retryMatches.map((match) => match.symbol),
-        position,
-      );
+      return null;
     }
 
     /*

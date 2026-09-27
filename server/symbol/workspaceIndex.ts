@@ -69,18 +69,6 @@ export class WorkspaceIndex {
     return this.symbols.get(uri) ?? [];
   }
 
-  public find(name: string): SymbolMatch[] {
-    const normalized = name.toLowerCase();
-
-    const results: SymbolMatch[] = [];
-
-    for (const [uri, symbols] of this.symbols) {
-      this.collectMatchingSymbols(uri, symbols, normalized, results);
-    }
-
-    return results;
-  }
-
   public findExact(name: string): SymbolMatch[] {
     const normalized = name.toLowerCase();
 
@@ -212,21 +200,6 @@ export class WorkspaceIndex {
 
       if (symbol.children.length > 0) {
         this.removeFromNameIndex(uri, symbol.children);
-      }
-    }
-  }
-
-  private collectMatchingSymbols(uri: string, symbols: ShaderSymbol[], name: string, results: SymbolMatch[]): void {
-    for (const symbol of symbols) {
-      if (symbol.name.toLowerCase().includes(name)) {
-        results.push({
-          symbol,
-          uri,
-        });
-      }
-
-      if (symbol.children.length > 0) {
-        this.collectMatchingSymbols(uri, symbol.children, name, results);
       }
     }
   }
