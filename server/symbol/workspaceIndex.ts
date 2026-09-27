@@ -20,13 +20,15 @@ export class WorkspaceIndex {
   private readonly symbolsByName = new Map<string, SymbolMatch[]>();
 
   private readonly prefixCache = new Map<string, SymbolMatch[]>();
+  private readonly maxPrefixCacheEntries = 256;
+  private sortedSymbolNames: string[] = [];
+  private symbolNamesDirty = true;
 
   private readonly symbolExtractor = new SymbolExtractor();
 
   public update(document: ParsedDocument): void {
     // 同じ URI の古い symbol を先に除去する。
     this.remove(document.uri);
-    this.prefixCache.clear();
 
     this.documents.set(document.uri, document);
 
@@ -47,6 +49,7 @@ export class WorkspaceIndex {
 
     this.symbols.delete(uri);
     this.prefixCache.clear();
+    this.symbolNamesDirty = true;
   }
 
   public clear(): void {
@@ -54,6 +57,8 @@ export class WorkspaceIndex {
     this.symbols.clear();
     this.symbolsByName.clear();
     this.prefixCache.clear();
+    this.sortedSymbolNames = [];
+    this.symbolNamesDirty = true;
   }
 
   public getDocument(uri: string): ParsedDocument | undefined {
@@ -122,18 +127,58 @@ export class WorkspaceIndex {
     }
 
     const results: SymbolMatch[] = [];
+    const names = this.getSortedSymbolNames();
+    const start = this.lowerBound(names, normalized);
 
-    // ASTを再帰走査する代わりに、名前Indexだけを走査する。
-    for (const [name, matches] of this.symbolsByName) {
+    // 名前をソートした配列から二分探索し、prefixに該当する範囲だけを見る。
+    for (let i = start; i < names.length; i++) {
+      const name = names[i];
       if (!name.startsWith(normalized)) {
-        continue;
+        break;
       }
 
-      results.push(...matches);
+      const matches = this.symbolsByName.get(name);
+      if (matches) {
+        results.push(...matches);
+      }
+    }
+
+    // Completion prefixは入力ごとに増えるため無制限に保持しない。
+    if (this.prefixCache.size >= this.maxPrefixCacheEntries) {
+      const oldest = this.prefixCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.prefixCache.delete(oldest);
+      }
     }
 
     this.prefixCache.set(normalized, results);
     return [...results];
+  }
+
+  private getSortedSymbolNames(): string[] {
+    if (!this.symbolNamesDirty) {
+      return this.sortedSymbolNames;
+    }
+
+    this.sortedSymbolNames = Array.from(this.symbolsByName.keys()).sort();
+    this.symbolNamesDirty = false;
+    return this.sortedSymbolNames;
+  }
+
+  private lowerBound(values: string[], target: string): number {
+    let low = 0;
+    let high = values.length;
+
+    while (low < high) {
+      const mid = low + Math.floor((high - low) / 2);
+      if (values[mid] < target) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+
+    return low;
   }
 
   private addToNameIndex(uri: string, symbols: ShaderSymbol[]): void {
