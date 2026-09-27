@@ -97,6 +97,7 @@ documents.onDidChangeContent((event) => {
 
 connection.onDidChangeWatchedFiles(() => {
   documentManager.getProjectService().invalidateIncludeCache();
+  documentManager.invalidateExternalIncludeCache();
 });
 
 documents.onDidClose((event) => {

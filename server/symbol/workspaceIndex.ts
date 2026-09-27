@@ -13,18 +13,34 @@ export class WorkspaceIndex {
 
   private readonly symbols = new Map<string, ShaderSymbol[]>();
 
+  /**
+   * 正規化したシンボル名 -> 定義一覧。
+   * F12 の完全一致検索で全ドキュメント/全ASTを走査しないための index。
+   */
+  private readonly symbolsByName = new Map<string, SymbolMatch[]>();
+
   private readonly symbolExtractor = new SymbolExtractor();
 
   public update(document: ParsedDocument): void {
+    // 同じ URI の古い symbol を先に除去する。
+    this.remove(document.uri);
+
     this.documents.set(document.uri, document);
 
     const extracted = this.symbolExtractor.extract(document);
 
     this.symbols.set(document.uri, extracted);
+    this.addToNameIndex(document.uri, extracted);
   }
 
   public remove(uri: string): void {
     this.documents.delete(uri);
+
+    const existingSymbols = this.symbols.get(uri);
+
+    if (existingSymbols) {
+      this.removeFromNameIndex(uri, existingSymbols);
+    }
 
     this.symbols.delete(uri);
   }
@@ -32,6 +48,7 @@ export class WorkspaceIndex {
   public clear(): void {
     this.documents.clear();
     this.symbols.clear();
+    this.symbolsByName.clear();
   }
 
   public getDocument(uri: string): ParsedDocument | undefined {
@@ -57,7 +74,7 @@ export class WorkspaceIndex {
   public findExact(name: string): SymbolMatch[] {
     const normalized = name.toLowerCase();
 
-    return this.find(name).filter((match) => match.symbol.name.toLowerCase() === normalized);
+    return [...(this.symbolsByName.get(normalized) ?? [])];
   }
 
   public findByKind(name: string, kind: SymbolKind): SymbolMatch[] {
@@ -94,14 +111,53 @@ export class WorkspaceIndex {
 
   public findPrefix(prefix: string): SymbolMatch[] {
     const normalized = prefix.toLowerCase();
-
     const results: SymbolMatch[] = [];
 
-    for (const [uri, symbols] of this.symbols) {
-      this.collectPrefixSymbols(uri, symbols, normalized, results);
+    // ASTを再帰走査する代わりに、名前Indexだけを走査する。
+    for (const [name, matches] of this.symbolsByName) {
+      if (!name.startsWith(normalized)) {
+        continue;
+      }
+
+      results.push(...matches);
     }
 
     return results;
+  }
+
+  private addToNameIndex(uri: string, symbols: ShaderSymbol[]): void {
+    for (const symbol of symbols) {
+      const normalized = symbol.name.toLowerCase();
+      const matches = this.symbolsByName.get(normalized) ?? [];
+
+      matches.push({ symbol, uri });
+      this.symbolsByName.set(normalized, matches);
+
+      if (symbol.children.length > 0) {
+        this.addToNameIndex(uri, symbol.children);
+      }
+    }
+  }
+
+  private removeFromNameIndex(uri: string, symbols: ShaderSymbol[]): void {
+    for (const symbol of symbols) {
+      const normalized = symbol.name.toLowerCase();
+      const matches = this.symbolsByName.get(normalized);
+
+      if (matches) {
+        const remaining = matches.filter((match) => match.uri !== uri || match.symbol !== symbol);
+
+        if (remaining.length === 0) {
+          this.symbolsByName.delete(normalized);
+        } else {
+          this.symbolsByName.set(normalized, remaining);
+        }
+      }
+
+      if (symbol.children.length > 0) {
+        this.removeFromNameIndex(uri, symbol.children);
+      }
+    }
   }
 
   private collectMatchingSymbols(uri: string, symbols: ShaderSymbol[], name: string, results: SymbolMatch[]): void {

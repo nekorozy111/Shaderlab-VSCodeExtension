@@ -17,6 +17,26 @@ export class DocumentManager {
 
   private readonly projectService = new ProjectService();
 
+  /**
+   * 外部 include から生成した ParsedDocument。
+   * VS Code の open/close lifecycle には属さないため、
+   * open document とは分離して管理する。
+   */
+  private readonly externalDocuments = new Map<string, ParsedDocument>();
+
+  /**
+   * root document -> その document から到達可能な外部 include URI。
+   * F12 / Completion のたびに include tree を再構築しないための cache。
+   */
+  private readonly includeDependencies = new Map<string, Set<string>>();
+
+  /**
+   * 外部 document を何個の open/root document が参照しているか。
+   */
+  private readonly externalReferenceCounts = new Map<string, number>();
+
+  private readonly externalSources = new Map<string, string>();
+
   public initializeProject(params: Parameters<ProjectService['initialize']>[0]): void {
     this.projectService.initialize(params);
   }
@@ -32,6 +52,10 @@ export class DocumentManager {
   }
 
   public update(document: TextDocument): ParsedDocument {
+    // 編集前の include graph を破棄する。
+    // 新しい内容で再構築されるまで古い依存関係を参照しない。
+    this.releaseIncludeDependencies(document.uri);
+
     this.documents.set(document.uri, document);
 
     return this.parseDocument(document);
@@ -41,8 +65,10 @@ export class DocumentManager {
     this.documents.delete(document.uri);
 
     this.parsedDocuments.delete(document.uri);
-
     this.workspaceIndex.remove(document.uri);
+
+    // この root document が保持していた external include の参照を解放する。
+    this.releaseIncludeDependencies(document.uri);
   }
 
   public get(uri: string): TextDocument | undefined {
@@ -72,11 +98,39 @@ export class DocumentManager {
   public clear(): void {
     this.documents.clear();
     this.parsedDocuments.clear();
+    this.externalDocuments.clear();
+    this.externalSources.clear();
+    this.includeDependencies.clear();
+    this.externalReferenceCounts.clear();
     this.workspaceIndex.clear();
   }
 
+  /**
+   * 外部 include のキャッシュを無効化する。
+   *
+   * Unity の PackageCache / HLSL が変更された場合、古い AST を
+   * WorkspaceIndex に残さないよう external document と依存関係を全て捨てる。
+   * open document 自体は保持する。
+   */
+  public invalidateExternalIncludeCache(): void {
+    for (const uri of this.externalDocuments.keys()) {
+      this.workspaceIndex.remove(uri);
+    }
+
+    this.externalDocuments.clear();
+    this.externalSources.clear();
+    this.includeDependencies.clear();
+    this.externalReferenceCounts.clear();
+  }
+
   public ensureExternalDocument(uri: string): ParsedDocument | undefined {
-    const existing = this.workspaceIndex.getDocument(uri);
+    const openDocument = this.parsedDocuments.get(uri);
+
+    if (openDocument) {
+      return openDocument;
+    }
+
+    const existing = this.externalDocuments.get(uri);
 
     if (existing) {
       return existing;
@@ -104,9 +158,38 @@ export class DocumentManager {
 
     const parsed = this.parserService.parse(document);
 
+    this.externalDocuments.set(uri, parsed);
+    this.externalSources.set(uri, text);
     this.workspaceIndex.update(parsed);
 
     return parsed;
+  }
+
+  private releaseIncludeDependencies(rootUri: string): void {
+    const dependencies = this.includeDependencies.get(rootUri);
+
+    if (!dependencies) {
+      return;
+    }
+
+    this.includeDependencies.delete(rootUri);
+
+    for (const uri of dependencies) {
+      const nextCount = (this.externalReferenceCounts.get(uri) ?? 1) - 1;
+
+      if (nextCount > 0) {
+        this.externalReferenceCounts.set(uri, nextCount);
+        continue;
+      }
+
+      this.externalReferenceCounts.delete(uri);
+
+      // open document は externalDocuments に入らないため、ここでは触らない。
+      if (!this.documents.has(uri)) {
+        this.externalDocuments.delete(uri);
+        this.workspaceIndex.remove(uri);
+      }
+    }
   }
 
   private collectHlslIncludes(ast: any, result: string[]): void {
@@ -122,21 +205,30 @@ export class DocumentManager {
   }
 
   public getRelatedIncludeUris(rootUri: string): Set<string> {
+    const cached = this.includeDependencies.get(rootUri);
+
+    if (cached) {
+      return new Set([rootUri, ...cached]);
+    }
+
     const result = new Set<string>();
-
-    result.add(rootUri);
-
     const visited = new Set<string>();
-
     const parsed = this.getParsed(rootUri);
 
     if (!parsed) {
-      return result;
+      return new Set([rootUri]);
     }
 
     this.collectRelatedIncludeUrisRecursive(rootUri, parsed, visited, result);
 
-    return result;
+    result.delete(rootUri);
+    this.includeDependencies.set(rootUri, result);
+
+    for (const uri of result) {
+      this.externalReferenceCounts.set(uri, (this.externalReferenceCounts.get(uri) ?? 0) + 1);
+    }
+
+    return new Set([rootUri, ...result]);
   }
 
   private collectRelatedIncludeUrisRecursive(
@@ -186,7 +278,7 @@ export class DocumentManager {
        * 再帰的な #include を調べるため、
        * 外部ファイルの raw source を取得する。
        */
-      const externalSource = this.projectService.readFile(resolved.resolvedPath);
+      const externalSource = this.externalSources.get(resolved.uri);
 
       this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
     }
