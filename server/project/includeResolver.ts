@@ -340,7 +340,12 @@ export class IncludeResolver {
       /*
        * Shader include として扱うファイルだけ。
        */
-      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+      if (
+        !entry.endsWith('.hlsl') &&
+        !entry.endsWith('.hlsli') &&
+        !entry.endsWith('.cginc') &&
+        !entry.endsWith('.compute')
+      ) {
         continue;
       }
 
@@ -385,7 +390,12 @@ export class IncludeResolver {
           continue;
         }
 
-        if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+        if (
+          !entry.endsWith('.hlsl') &&
+          !entry.endsWith('.hlsli') &&
+          !entry.endsWith('.cginc') &&
+          !entry.endsWith('.compute')
+        ) {
           continue;
         }
 
@@ -475,7 +485,12 @@ export class IncludeResolver {
         continue;
       }
 
-      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+      if (
+        !entry.endsWith('.hlsl') &&
+        !entry.endsWith('.hlsli') &&
+        !entry.endsWith('.cginc') &&
+        !entry.endsWith('.compute')
+      ) {
         continue;
       }
 
@@ -588,7 +603,12 @@ export class IncludeResolver {
         continue;
       }
 
-      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+      if (
+        !entry.endsWith('.hlsl') &&
+        !entry.endsWith('.hlsli') &&
+        !entry.endsWith('.cginc') &&
+        !entry.endsWith('.compute')
+      ) {
         continue;
       }
 
@@ -698,7 +718,12 @@ export class IncludeResolver {
         continue;
       }
 
-      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+      if (
+        !entry.endsWith('.hlsl') &&
+        !entry.endsWith('.hlsli') &&
+        !entry.endsWith('.cginc') &&
+        !entry.endsWith('.compute')
+      ) {
         continue;
       }
 
@@ -740,7 +765,12 @@ export class IncludeResolver {
           continue;
         }
 
-        if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+        if (
+          !entry.endsWith('.hlsl') &&
+          !entry.endsWith('.hlsli') &&
+          !entry.endsWith('.cginc') &&
+          !entry.endsWith('.compute')
+        ) {
           continue;
         }
 

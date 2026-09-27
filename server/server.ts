@@ -125,7 +125,7 @@ connection.onInitialized(async () => {
   await connection.client.register(DidChangeWatchedFilesNotification.type, {
     watchers: [
       {
-        globPattern: '**/*.{hlsl,hlsli,cginc}',
+        globPattern: '**/*.{hlsl,hlsli,compute,cginc}',
         kind: WatchKind.Create | WatchKind.Change | WatchKind.Delete,
       },
     ],

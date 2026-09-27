@@ -46,7 +46,7 @@ export class CompletionProvider {
 
     const word = this.getWordBeforeCursor(text, offset);
 
-    if (!this.isInsideHlslContext(text, offset)) {
+    if (!this.isInsideHlslContext(uri, text, offset)) {
       return [];
     }
 
@@ -1038,25 +1038,30 @@ export class CompletionProvider {
     return text.substring(start, offset);
   }
 
-  private isInsideHlslContext(text: string, offset: number): boolean {
+  private isInsideHlslContext(uri: string, text: string, offset: number): boolean {
+    /*
+     * 独立した .hlsl / .hlsli はファイル全体がHLSLなので、
+     * ShaderLabのブロック境界チェックを行わない。
+     */
+    const document = this.documentManager.get(uri);
+
+    if (document?.languageId === 'hlsl') {
+      return true;
+    }
+
     const beforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
 
     const hlslStart = beforeCursor.lastIndexOf('HLSLPROGRAM');
-
     const hlslEnd = beforeCursor.lastIndexOf('ENDHLSL');
 
     const cgStart = beforeCursor.lastIndexOf('CGPROGRAM');
-
     const cgEnd = beforeCursor.lastIndexOf('ENDCG');
 
     const hlslIncludeStart = beforeCursor.lastIndexOf('HLSLINCLUDE');
-
     const hlslIncludeEnd = beforeCursor.lastIndexOf('ENDHLSL');
 
     const insideHlslProgram = hlslStart > hlslEnd;
-
     const insideCgProgram = cgStart > cgEnd;
-
     const insideHlslInclude = hlslIncludeStart > hlslIncludeEnd;
 
     return insideHlslProgram || insideCgProgram || insideHlslInclude;

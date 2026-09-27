@@ -15,7 +15,8 @@
     "activationEvents": [
         "onLanguage:shaderlab",
         "onLanguage:hlsl",
-        "onLanguage:hlsli"
+        "onLanguage:hlsli",
+        "onLanguage:compute"
     ],
     "main": "./out/src/extension.js",
     "contributes": {
