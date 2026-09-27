@@ -16,10 +16,11 @@ import {
 } from '../parser/ast';
 
 import { ShaderSymbol, SymbolKind } from './symbol';
+import { getSourceLanguage } from '../language/languageId';
 
 export class SymbolExtractor {
   public extract(document: ParsedDocument): ShaderSymbol[] {
-    if (document.languageId === 'shaderlab') {
+    if (getSourceLanguage(document.uri, document.languageId) === 'shaderlab') {
       return this.extractShaderDocument(document);
     }
 

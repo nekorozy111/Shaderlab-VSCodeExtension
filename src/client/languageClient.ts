@@ -35,11 +35,19 @@ export async function startLanguageClient(context: vscode.ExtensionContext): Pro
       },
       {
         scheme: 'file',
+        language: 'UnityShader',
+      },
+      {
+        scheme: 'file',
         language: 'hlsl',
       },
       {
         scheme: 'file',
         language: 'hlsli',
+      },
+      {
+        scheme: 'file',
+        language: 'compute',
       },
     ],
 

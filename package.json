@@ -14,6 +14,7 @@
     ],
     "activationEvents": [
         "onLanguage:shaderlab",
+        "onLanguage:UnityShader",
         "onLanguage:hlsl",
         "onLanguage:hlsli",
         "onLanguage:compute"

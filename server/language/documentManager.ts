@@ -5,6 +5,7 @@ import { ParsedDocument } from '../parser/ast';
 import { ParserService } from '../parser/parserService';
 import { WorkspaceIndex, SymbolMatch } from '../symbol/workspaceIndex';
 import { ProjectService } from '../project/projectService';
+import { isHlslDocument } from './languageId';
 
 export class DocumentManager {
   private readonly documents = new Map<string, TextDocument>();
@@ -429,7 +430,7 @@ export class DocumentManager {
      * 外部 HLSL は実ファイルの内容から
      * #include を取得する。
      */
-    if (parsed.languageId === 'hlsl' && source !== undefined) {
+    if (isHlslDocument(parsed.uri, parsed.languageId) && source !== undefined) {
       includePaths = this.collectRawHlslIncludes(source);
     } else {
       includePaths = this.collectIncludes(parsed);
@@ -588,6 +589,8 @@ export class DocumentManager {
 
       case '.hlsl':
       case '.hlsli':
+      case '.compute':
+      case '.cginc':
         return 'hlsl';
 
       default:

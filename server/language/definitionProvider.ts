@@ -4,6 +4,7 @@ import { ShaderSymbol } from '../symbol/symbol';
 import { ParsedDocument } from '../parser/ast';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { ShaderDocumentNode } from '../parser/ast';
+import { isShaderLabDocument } from './languageId';
 
 export class DefinitionProvider {
   constructor(private readonly documentManager: DocumentManager) {}
@@ -435,7 +436,7 @@ export class DefinitionProvider {
 
     console.log(`[DefinitionProvider] findPropertyByName: ` + `languageId=${parsed.languageId}`);
 
-    if (parsed.languageId !== 'shaderlab') {
+    if (!isShaderLabDocument(parsed.uri, parsed.languageId)) {
       console.log(`[DefinitionProvider] findPropertyByName: ` + `not shaderlab`);
       return null;
     }

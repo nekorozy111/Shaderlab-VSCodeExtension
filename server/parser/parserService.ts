@@ -2,12 +2,15 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { ParsedDocument } from './ast';
 import { HlslParser } from './hlslParser';
 import { ShaderLabParser } from './shaderlabParser';
+import { getSourceLanguage } from '../language/languageId';
 
 export class ParserService {
   public parse(document: TextDocument): ParsedDocument {
     const source = document.getText();
 
-    if (document.languageId === 'shaderlab') {
+    const sourceLanguage = getSourceLanguage(document.uri, document.languageId);
+
+    if (sourceLanguage === 'shaderlab') {
       return {
         uri: document.uri,
 

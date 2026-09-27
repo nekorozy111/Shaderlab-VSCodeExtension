@@ -1,3 +1,4 @@
+import { isHlslDocument } from './languageId';
 import { CompletionItem, CompletionItemKind, Position } from 'vscode-languageserver/node';
 import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
@@ -1045,7 +1046,7 @@ export class CompletionProvider {
      */
     const document = this.documentManager.get(uri);
 
-    if (document?.languageId === 'hlsl') {
+    if (document && isHlslDocument(document.uri, document.languageId)) {
       return true;
     }
 
