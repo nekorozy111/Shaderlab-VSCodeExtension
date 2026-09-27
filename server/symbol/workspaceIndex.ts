@@ -12,6 +12,8 @@ export class WorkspaceIndex {
   private readonly documents = new Map<string, ParsedDocument>();
 
   private readonly symbols = new Map<string, ShaderSymbol[]>();
+  private readonly symbolCounts = new Map<string, number>();
+  private totalSymbolCount = 0;
 
   /**
    * 正規化したシンボル名 -> 定義一覧。
@@ -35,6 +37,13 @@ export class WorkspaceIndex {
     const extracted = this.symbolExtractor.extract(document);
 
     this.symbols.set(document.uri, extracted);
+
+    // Symbol数は更新時に一度だけ計算して保持する。
+    // findPrefixInUris() の検索対象判定で毎回ASTを再帰走査しない。
+    const symbolCount = this.countSymbols(extracted);
+    this.symbolCounts.set(document.uri, symbolCount);
+    this.totalSymbolCount += symbolCount;
+
     this.addToNameIndex(document.uri, extracted);
   }
 
@@ -48,6 +57,13 @@ export class WorkspaceIndex {
     }
 
     this.symbols.delete(uri);
+
+    const symbolCount = this.symbolCounts.get(uri);
+    if (symbolCount !== undefined) {
+      this.totalSymbolCount -= symbolCount;
+      this.symbolCounts.delete(uri);
+    }
+
     this.prefixCache.clear();
     this.symbolNamesDirty = true;
   }
@@ -55,6 +71,8 @@ export class WorkspaceIndex {
   public clear(): void {
     this.documents.clear();
     this.symbols.clear();
+    this.symbolCounts.clear();
+    this.totalSymbolCount = 0;
     this.symbolsByName.clear();
     this.prefixCache.clear();
     this.sortedSymbolNames = [];
@@ -67,6 +85,53 @@ export class WorkspaceIndex {
 
   public getDocumentSymbols(uri: string): ShaderSymbol[] {
     return this.symbols.get(uri) ?? [];
+  }
+
+  /**
+   * 指定URI群に含まれるsymbol数を取得する。
+   * 関連includeが少ない場合に、全体Index検索よりroot側を走査するために使用する。
+   */
+  public getDocumentSymbolCount(uris: Set<string>): number {
+    let count = 0;
+
+    for (const uri of uris) {
+      count += this.symbolCounts.get(uri) ?? 0;
+    }
+
+    return count;
+  }
+
+  /**
+   * 指定URI群だけを対象にsymbolを完全一致検索する。
+   */
+  public findExactInUris(name: string, uris: Set<string>): SymbolMatch[] {
+    const normalized = name.toLowerCase();
+    const matches = this.symbolsByName.get(normalized);
+    if (!matches) {
+      return [];
+    }
+
+    return matches
+      .filter((match) => uris.has(match.uri))
+      .slice();
+  }
+
+  /**
+   * 指定URI群だけを対象にprefix検索する。
+   * 関連Document数が少ないケースでは全Workspaceのprefix候補を作るより安い。
+   */
+  public findPrefixInUris(prefix: string, uris: Set<string>): SymbolMatch[] {
+    const normalized = prefix.toLowerCase();
+    const results: SymbolMatch[] = [];
+
+    for (const uri of uris) {
+      const symbols = this.symbols.get(uri);
+      if (symbols) {
+        this.collectPrefixSymbols(uri, symbols, normalized, results);
+      }
+    }
+
+    return results;
   }
 
   public findExact(name: string): SymbolMatch[] {
@@ -90,13 +155,7 @@ export class WorkspaceIndex {
   }
 
   public getSymbolCount(): number {
-    let count = 0;
-
-    for (const symbols of this.symbols.values()) {
-      count += this.countSymbols(symbols);
-    }
-
-    return count;
+    return this.totalSymbolCount;
   }
 
   public getDocumentCount(): number {

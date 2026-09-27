@@ -11,6 +11,12 @@ export class DocumentManager {
 
   private readonly parsedDocuments = new Map<string, ParsedDocument>();
 
+  /**
+   * URIごとの直前のソース内容ハッシュ。
+   * LSP versionだけが変わって内容が同一になった場合、ASTを再生成しない。
+   */
+  private readonly documentContentHashes = new Map<string, number>();
+
   private readonly parserService = new ParserService();
 
   private readonly workspaceIndex = new WorkspaceIndex();
@@ -29,6 +35,13 @@ export class DocumentManager {
    * F12 / Completion のたびに include tree を再構築しないための cache。
    */
   private readonly includeDependencies = new Map<string, Set<string>>();
+
+  /**
+   * root -> root自身を含む到達可能URI集合。
+   * includeDependenciesとは別に保持し、F12/Completion/Hoverのたびに
+   * Setをコピーするコストを避ける。読み取り専用として内部利用する。
+   */
+  private readonly relatedIncludeUrisCache = new Map<string, Set<string>>();
 
   /**
    * 外部 document を何個の open/root document が参照しているか。
@@ -67,19 +80,38 @@ export class DocumentManager {
   }
 
   public update(document: TextDocument): ParsedDocument {
-    // 編集前の include graph を破棄する。
-    // 新しい内容で再構築されるまで古い依存関係を参照しない。
+    const source = document.getText();
+    const contentHash = this.hashSource(source);
+    const previousHash = this.documentContentHashes.get(document.uri);
+    const previousParsed = this.parsedDocuments.get(document.uri);
+
+    // versionだけが進んで内容が同じ場合はAST / Symbol Index / include graphを再構築しない。
+    // undo/redoや同一内容のchange通知で無駄なParseを発生させない。
+    if (previousParsed && previousHash === contentHash) {
+      const versionedParsed: ParsedDocument = {
+        ...previousParsed,
+        version: document.version,
+      };
+
+      this.documents.set(document.uri, document);
+      this.parsedDocuments.set(document.uri, versionedParsed);
+      return versionedParsed;
+    }
+
+    // 内容が変わった場合だけ、古い include graph を破棄する。
     this.releaseIncludeDependencies(document.uri);
 
     this.documents.set(document.uri, document);
 
-    return this.parseDocument(document);
+    return this.parseDocument(document, contentHash);
   }
+
 
   public close(document: TextDocument): void {
     this.documents.delete(document.uri);
 
     this.parsedDocuments.delete(document.uri);
+    this.documentContentHashes.delete(document.uri);
     this.workspaceIndex.remove(document.uri);
 
     // この root document が保持していた external include の参照を解放する。
@@ -113,23 +145,44 @@ export class DocumentManager {
    */
   public findExactInRelated(rootUri: string, name: string): SymbolMatch[] {
     const relatedUris = this.getRelatedIncludeUris(rootUri);
-    return this.workspaceIndex
-      .findExact(name)
-      .filter((match) => relatedUris.has(match.uri));
+    const globalMatches = this.workspaceIndex.findExact(name);
+
+    // 同名symbolが少ない場合はWorkspace index側の検索が最も安い。
+    // 関連Documentが非常に少ない場合だけURI側を直接走査する。
+    const relatedSymbolCount = this.workspaceIndex.getDocumentSymbolCount(relatedUris);
+    if (relatedSymbolCount < globalMatches.length) {
+      return this.workspaceIndex.findExactInUris(name, relatedUris);
+    }
+
+    return globalMatches.filter((match) => relatedUris.has(match.uri));
   }
 
   public findPrefixInRelated(rootUri: string, prefix: string): SymbolMatch[] {
     const relatedUris = this.getRelatedIncludeUris(rootUri);
-    return this.workspaceIndex
-      .findPrefix(prefix)
-      .filter((match) => relatedUris.has(match.uri));
+    const globalMatches = this.workspaceIndex.findPrefix(prefix);
+    const relatedSymbolCount = this.workspaceIndex.getDocumentSymbolCount(relatedUris);
+
+    // PackageCache全体に対するprefix候補が大量でも、現在のShaderが
+    // 少数のincludeだけを持つなら、そのincludeだけを走査した方が速い。
+    if (relatedSymbolCount < globalMatches.length) {
+      return this.workspaceIndex.findPrefixInUris(prefix, relatedUris);
+    }
+
+    return globalMatches.filter((match) => relatedUris.has(match.uri));
   }
 
   public findByKindInRelated(rootUri: string, name: string, kind: Parameters<WorkspaceIndex['findByKind']>[1]): SymbolMatch[] {
     const relatedUris = this.getRelatedIncludeUris(rootUri);
-    return this.workspaceIndex
-      .findByKind(name, kind)
-      .filter((match) => relatedUris.has(match.uri));
+    const globalMatches = this.workspaceIndex.findByKind(name, kind);
+    const relatedSymbolCount = this.workspaceIndex.getDocumentSymbolCount(relatedUris);
+
+    if (relatedSymbolCount < globalMatches.length) {
+      return this.workspaceIndex
+        .findExactInUris(name, relatedUris)
+        .filter((match) => match.symbol.kind === kind);
+    }
+
+    return globalMatches.filter((match) => relatedUris.has(match.uri));
   }
 
   public has(uri: string): boolean {
@@ -147,9 +200,11 @@ export class DocumentManager {
   public clear(): void {
     this.documents.clear();
     this.parsedDocuments.clear();
+    this.documentContentHashes.clear();
     this.externalDocuments.clear();
     this.externalSources.clear();
     this.includeDependencies.clear();
+    this.relatedIncludeUrisCache.clear();
     this.includeDependents.clear();
     this.externalReferenceCounts.clear();
     this.workspaceIndex.clear();
@@ -170,6 +225,7 @@ export class DocumentManager {
     this.externalDocuments.clear();
     this.externalSources.clear();
     this.includeDependencies.clear();
+    this.relatedIncludeUrisCache.clear();
     this.includeDependents.clear();
     this.externalReferenceCounts.clear();
   }
@@ -263,6 +319,7 @@ export class DocumentManager {
     }
 
     this.includeDependencies.delete(rootUri);
+    this.relatedIncludeUrisCache.delete(rootUri);
 
     for (const uri of dependencies) {
       const dependents = this.includeDependents.get(uri);
@@ -304,10 +361,18 @@ export class DocumentManager {
   }
 
   public getRelatedIncludeUris(rootUri: string): Set<string> {
-    const cached = this.includeDependencies.get(rootUri);
+    const cachedRelatedUris = this.relatedIncludeUrisCache.get(rootUri);
 
-    if (cached) {
-      return new Set([rootUri, ...cached]);
+    if (cachedRelatedUris) {
+      return cachedRelatedUris;
+    }
+
+    const cachedDependencies = this.includeDependencies.get(rootUri);
+
+    if (cachedDependencies) {
+      const relatedUris = new Set([rootUri, ...cachedDependencies]);
+      this.relatedIncludeUrisCache.set(rootUri, relatedUris);
+      return relatedUris;
     }
 
     const result = new Set<string>();
@@ -323,6 +388,9 @@ export class DocumentManager {
     result.delete(rootUri);
     this.includeDependencies.set(rootUri, result);
 
+    const relatedUris = new Set([rootUri, ...result]);
+    this.relatedIncludeUrisCache.set(rootUri, relatedUris);
+
     for (const uri of result) {
       this.externalReferenceCounts.set(uri, (this.externalReferenceCounts.get(uri) ?? 0) + 1);
 
@@ -331,7 +399,7 @@ export class DocumentManager {
       this.includeDependents.set(uri, dependents);
     }
 
-    return new Set([rootUri, ...result]);
+    return relatedUris;
   }
 
   private collectRelatedIncludeUrisRecursive(
@@ -476,14 +544,31 @@ export class DocumentManager {
 
     return result;
   }
-  private parseDocument(document: TextDocument): ParsedDocument {
+  private parseDocument(document: TextDocument, knownContentHash?: number): ParsedDocument {
     const parsed = this.parserService.parse(document);
 
     this.parsedDocuments.set(document.uri, parsed);
+    this.documentContentHashes.set(
+      document.uri,
+      knownContentHash ?? this.hashSource(document.getText()),
+    );
+
 
     this.workspaceIndex.update(parsed);
 
     return parsed;
+  }
+
+  /** FNV-1a 32bit。暗号学的用途ではなく、同一内容判定専用。 */
+  private hashSource(source: string): number {
+    let hash = 0x811c9dc5;
+
+    for (let i = 0; i < source.length; i += 1) {
+      hash ^= source.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+
+    return hash >>> 0;
   }
 
   private detectLanguageId(filePath: string): string | undefined {

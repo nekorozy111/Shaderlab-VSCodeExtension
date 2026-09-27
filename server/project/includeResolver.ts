@@ -22,6 +22,8 @@ export class IncludeResolver {
   private packageIncludeFiles: string[] | undefined;
   private projectIncludeCacheGeneration = 0;
   private packageIncludeCacheGeneration = 0;
+  private readonly resolutionCache = new Map<string, IncludeResolution | null>();
+  private readonly maxResolutionCacheEntries = 4096;
 
   public constructor(projectRoot: ProjectRoot, fileSystem: FileSystem) {
     this.projectRoot = projectRoot;
@@ -35,6 +37,19 @@ export class IncludeResolver {
       return undefined;
     }
 
+    const cacheKey = `${fromUri}\0${normalizedInclude}`;
+    const cached = this.resolutionCache.get(cacheKey);
+
+    if (cached !== undefined) {
+      return cached ?? undefined;
+    }
+
+    const result = this.resolveUncached(normalizedInclude, fromUri);
+    this.setResolutionCache(cacheKey, result);
+    return result;
+  }
+
+  private resolveUncached(normalizedInclude: string, fromUri: string): IncludeResolution | undefined {
     const fromPath = this.uriToPath(fromUri);
 
     /*
@@ -116,8 +131,24 @@ export class IncludeResolver {
   public invalidateProjectIncludeCache(): void {
     this.projectIncludeFiles = undefined;
     this.packageIncludeFiles = undefined;
+    this.resolutionCache.clear();
 
-    console.log('[IncludeResolver] Project/package include file caches invalidated');
+    console.log('[IncludeResolver] Project/package/resolution caches invalidated');
+  }
+
+  private setResolutionCache(key: string, result: IncludeResolution | undefined): void {
+    // undefinedもキャッシュすることで、存在しないincludeを何度もfs.statするのを防ぐ。
+    this.resolutionCache.set(key, result ?? null);
+
+    if (this.resolutionCache.size <= this.maxResolutionCacheEntries) {
+      return;
+    }
+
+    // Mapの挿入順を利用した簡易FIFO。無制限にinclude文字列が増え続けない。
+    const oldestKey = this.resolutionCache.keys().next().value as string | undefined;
+    if (oldestKey !== undefined) {
+      this.resolutionCache.delete(oldestKey);
+    }
   }
 
   public getCompletionCandidates(includePath: string, fromUri: string): IncludeCompletionCandidate[] {
