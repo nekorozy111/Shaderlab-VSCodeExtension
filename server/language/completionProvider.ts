@@ -465,7 +465,7 @@ export class CompletionProvider {
 
     const result: CompletionItem[] = [];
 
-    const pattern = /\b([A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
+    const pattern = /\b((?:[A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
 
     let match: RegExpExecArray | null;
 
@@ -545,7 +545,7 @@ export class CompletionProvider {
     const pattern = new RegExp(
       `\\b` +
         `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
-        `([A-Za-z_][A-Za-z0-9_]*)\\s+` +
+        `((?:[A-Za-z_][A-Za-z0-9_]*)(?:\\s*<[^<>\\r\\n]+>)?)\\s+` +
         `${escapedName}\\s*` +
         `(?:;|=|\\[|,)`,
       'g',
@@ -1073,6 +1073,77 @@ export class CompletionProvider {
   }
 
   private getBuiltinTypes(): string[] {
+    /*
+     * HLSL built-in object/resource types.
+     *
+     * These are language-level types and must be offered even when
+     * the source file does not include a Unity/HLSL header declaring
+     * them. Template arguments such as Texture2D<float4> are handled
+     * by the local declaration parser separately.
+     */
+    const builtinResourceTypes = [
+      // Texture objects
+      'Texture1D',
+      'Texture2D',
+      'Texture3D',
+      'TextureCube',
+      'Texture1DArray',
+      'Texture2DArray',
+      'TextureCubeArray',
+      'Texture2DMS',
+      'Texture2DMSArray',
+
+      // Read/write texture objects
+      'RWTexture1D',
+      'RWTexture2D',
+      'RWTexture3D',
+      'RWTexture1DArray',
+      'RWTexture2DArray',
+
+      // Buffer objects
+      'Buffer',
+      'RWBuffer',
+      'StructuredBuffer',
+      'RWStructuredBuffer',
+      'AppendStructuredBuffer',
+      'ConsumeStructuredBuffer',
+      'ByteAddressBuffer',
+      'RWByteAddressBuffer',
+
+      // Constant / sampler objects
+      'ConstantBuffer',
+      'SamplerState',
+      'SamplerComparisonState',
+
+      // Rasterizer-ordered resources
+      'RasterizerOrderedBuffer',
+      'RasterizerOrderedByteAddressBuffer',
+      'RasterizerOrderedStructuredBuffer',
+      'RasterizerOrderedTexture1D',
+      'RasterizerOrderedTexture2D',
+      'RasterizerOrderedTexture3D',
+
+      // Shader model / ray-tracing resource types
+      'RaytracingAccelerationStructure',
+
+      // Feedback resources (newer HLSL shader models)
+      'SamplerFeedbackTexture2D',
+      'SamplerFeedbackTexture2DArray',
+
+      // Geometry-stream resource types
+      'InputPatch',
+      'OutputPatch',
+      'PointStream',
+      'LineStream',
+      'TriangleStream',
+
+      // Legacy HLSL sampler aliases commonly used by Unity shaders
+      'sampler1D',
+      'sampler2D',
+      'sampler3D',
+      'samplerCUBE',
+    ];
+
     return [
       'bool',
       'bool1',
@@ -1129,10 +1200,80 @@ export class CompletionProvider {
       'float4x2',
       'float4x3',
       'float4x4',
+
+      ...builtinResourceTypes,
     ];
   }
   private getBuiltinTypeMembers(typeName: string): string[] | null {
-    const normalizedType = typeName.toLowerCase();
+    /*
+     * Resource types may have a template argument, e.g.
+     * Texture2D<float4>. Normalize it to its object type before
+     * looking up built-in members.
+     */
+    const normalizedType = typeName
+      .replace(/\s*<[^<>]*>\s*$/, '')
+      .trim()
+      .toLowerCase();
+
+    const textureTypes = new Set([
+      'texture1d',
+      'texture2d',
+      'texture3d',
+      'texturecube',
+      'texture1darray',
+      'texture2darray',
+      'texturecubearray',
+    ]);
+
+    const rwTextureTypes = new Set([
+      'rwtexture1d',
+      'rwtexture2d',
+      'rwtexture3d',
+      'rwtexture1darray',
+      'rwtexture2darray',
+      'rwtexturecube',
+      'rwtexturecubearray',
+    ]);
+
+    if (textureTypes.has(normalizedType)) {
+      return [
+        'Sample',
+        'SampleBias',
+        'SampleGrad',
+        'SampleLevel',
+        'SampleCmp',
+        'SampleCmpLevelZero',
+        'Load',
+        'GetDimensions',
+      ];
+    }
+
+    if (rwTextureTypes.has(normalizedType)) {
+      return [
+        'Load',
+        'GetDimensions',
+      ];
+    }
+
+    if (normalizedType === 'buffer' || normalizedType === 'rwbuffer' ||
+        normalizedType === 'structuredbuffer' || normalizedType === 'rwstructuredbuffer' ||
+        normalizedType === 'appendstructuredbuffer' || normalizedType === 'consumestructuredbuffer' ||
+        normalizedType === 'byteaddressbuffer' || normalizedType === 'rwbyteaddressbuffer' ||
+        normalizedType === 'rasterizerorderedbuffer' ||
+        normalizedType === 'rasterizerorderedbyteaddressbuffer' ||
+        normalizedType === 'rasterizerorderedstructuredbuffer') {
+      return [
+        'Load',
+        'GetDimensions',
+      ];
+    }
+
+    if (normalizedType === 'texture2dms' || normalizedType === 'texture2dmsarray') {
+      return [
+        'Load',
+        'GetDimensions',
+      ];
+    }
 
     /*
      * ============================================================
