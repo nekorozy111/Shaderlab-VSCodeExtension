@@ -3,7 +3,7 @@ import * as path from 'path';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { ParsedDocument } from '../parser/ast';
 import { ParserService } from '../parser/parserService';
-import { WorkspaceIndex } from '../symbol/workspaceIndex';
+import { WorkspaceIndex, SymbolMatch } from '../symbol/workspaceIndex';
 import { ProjectService } from '../project/projectService';
 
 export class DocumentManager {
@@ -105,6 +105,31 @@ export class DocumentManager {
 
   public getWorkspaceIndex(): WorkspaceIndex {
     return this.workspaceIndex;
+  }
+
+  /**
+   * 現在のrootから到達可能なincludeだけを対象に完全一致検索する。
+   * 各Providerでrelated URIの作成とfilterを重複させないための共通入口。
+   */
+  public findExactInRelated(rootUri: string, name: string): SymbolMatch[] {
+    const relatedUris = this.getRelatedIncludeUris(rootUri);
+    return this.workspaceIndex
+      .findExact(name)
+      .filter((match) => relatedUris.has(match.uri));
+  }
+
+  public findPrefixInRelated(rootUri: string, prefix: string): SymbolMatch[] {
+    const relatedUris = this.getRelatedIncludeUris(rootUri);
+    return this.workspaceIndex
+      .findPrefix(prefix)
+      .filter((match) => relatedUris.has(match.uri));
+  }
+
+  public findByKindInRelated(rootUri: string, name: string, kind: Parameters<WorkspaceIndex['findByKind']>[1]): SymbolMatch[] {
+    const relatedUris = this.getRelatedIncludeUris(rootUri);
+    return this.workspaceIndex
+      .findByKind(name, kind)
+      .filter((match) => relatedUris.has(match.uri));
   }
 
   public has(uri: string): boolean {

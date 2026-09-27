@@ -19,11 +19,14 @@ export class WorkspaceIndex {
    */
   private readonly symbolsByName = new Map<string, SymbolMatch[]>();
 
+  private readonly prefixCache = new Map<string, SymbolMatch[]>();
+
   private readonly symbolExtractor = new SymbolExtractor();
 
   public update(document: ParsedDocument): void {
     // 同じ URI の古い symbol を先に除去する。
     this.remove(document.uri);
+    this.prefixCache.clear();
 
     this.documents.set(document.uri, document);
 
@@ -43,12 +46,14 @@ export class WorkspaceIndex {
     }
 
     this.symbols.delete(uri);
+    this.prefixCache.clear();
   }
 
   public clear(): void {
     this.documents.clear();
     this.symbols.clear();
     this.symbolsByName.clear();
+    this.prefixCache.clear();
   }
 
   public getDocument(uri: string): ParsedDocument | undefined {
@@ -111,6 +116,11 @@ export class WorkspaceIndex {
 
   public findPrefix(prefix: string): SymbolMatch[] {
     const normalized = prefix.toLowerCase();
+    const cached = this.prefixCache.get(normalized);
+    if (cached) {
+      return [...cached];
+    }
+
     const results: SymbolMatch[] = [];
 
     // ASTを再帰走査する代わりに、名前Indexだけを走査する。
@@ -122,7 +132,8 @@ export class WorkspaceIndex {
       results.push(...matches);
     }
 
-    return results;
+    this.prefixCache.set(normalized, results);
+    return [...results];
   }
 
   private addToNameIndex(uri: string, symbols: ShaderSymbol[]): void {

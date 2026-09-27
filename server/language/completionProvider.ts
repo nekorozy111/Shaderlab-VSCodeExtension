@@ -103,12 +103,7 @@ export class CompletionProvider {
      * and recursively related includes are
      * available.
      */
-    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
-
-    const matches = this.documentManager
-      .getWorkspaceIndex()
-      .findPrefix(word)
-      .filter((match) => relatedUris.has(match.uri));
+    const matches = this.documentManager.findPrefixInRelated(uri, word);
 
     this.addSymbolCompletions(result, matches, new Set<string>());
 
@@ -241,8 +236,6 @@ export class CompletionProvider {
   }
 
   private provideMemberCompletion(uri: string, objectName: string, prefix: string, offset: number): CompletionItem[] {
-    const index = this.documentManager.getWorkspaceIndex();
-
     let typeName: string | undefined;
 
     /*
@@ -275,9 +268,7 @@ export class CompletionProvider {
      * これで input. も従来通り動く。
      */
     if (!typeName) {
-      const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
-
-      const objectMatches = index.findExact(objectName).filter((match) => relatedUris.has(match.uri));
+      const objectMatches = this.documentManager.findExactInRelated(uri, objectName);
 
       /*
        * 現在のファイルを優先。
@@ -318,12 +309,7 @@ export class CompletionProvider {
     }
     // 関数戻り値
     if (!typeName) {
-      const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
-
-      const functionMatches = this.documentManager
-        .getWorkspaceIndex()
-        .findExact(objectName)
-        .filter((match) => relatedUris.has(match.uri));
+      const functionMatches = this.documentManager.findExactInRelated(uri, objectName);
 
       const functionMatch = functionMatches.find((match) => match.symbol.kind === 'function');
 
@@ -402,9 +388,7 @@ export class CompletionProvider {
      * 5. 型名から struct / cbuffer を探す
      * ============================================================
      */
-    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
-
-    const typeMatches = index.findExact(typeName).filter((match) => relatedUris.has(match.uri));
+    const typeMatches = this.documentManager.findExactInRelated(uri, typeName);
 
     const items: CompletionItem[] = [];
 

@@ -278,7 +278,7 @@ export class HoverProvider {
 
     let typeSymbol: ShaderSymbol | null = null;
 
-    const exactMatches = this.documentManager.getWorkspaceIndex().findExact(typeName);
+    const exactMatches = this.documentManager.findExactInRelated(uri, typeName);
 
     for (const match of exactMatches) {
       if (match.symbol.kind === 'struct' || match.symbol.kind === 'cbuffer') {
@@ -575,12 +575,7 @@ export class HoverProvider {
   }
 
   private findIncludedSymbol(uri: string, name: string): ShaderSymbol | null {
-    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
-
-    const matches = this.documentManager
-      .getWorkspaceIndex()
-      .findExact(name)
-      .filter((match) => relatedUris.has(match.uri));
+    const matches = this.documentManager.findExactInRelated(uri, name);
 
     if (matches.length === 0) {
       return null;

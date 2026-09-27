@@ -170,8 +170,7 @@ export class DefinitionProvider {
        */
 
       const objectMatches = this.documentManager
-        .getWorkspaceIndex()
-        .findExact(memberAccess.objectName)
+        .findExactInRelated(uri, memberAccess.objectName)
         .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
 
       if (objectMatches.length > 0) {
@@ -206,10 +205,11 @@ export class DefinitionProvider {
        * -----------------------------------------------------
        */
 
-      this.loadIncludedDocuments(uri);
-
       /*
        * include先のstruct / fieldを検索
+       *
+       * findStructField() / findExactInRelated() 側で include graph を
+       * 必要時に構築するため、ここで別途ロードしない。
        */
 
       if (localObject) {
@@ -225,8 +225,7 @@ export class DefinitionProvider {
        */
 
       const externalObjectMatches = this.documentManager
-        .getWorkspaceIndex()
-        .findExact(memberAccess.objectName)
+        .findExactInRelated(uri, memberAccess.objectName)
         .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
 
       if (externalObjectMatches.length > 0) {
@@ -384,9 +383,8 @@ export class DefinitionProvider {
 
     console.log(`[DefinitionProvider] Loading includes from ${uri}`);
 
-    this.loadIncludedDocuments(uri);
-
-    console.log(`[DefinitionProvider] Finished loading includes`);
+    // findExactInRelated() が必要時にinclude graphを構築する。
+    console.log(`[DefinitionProvider] Includes will be resolved by related search`);
 
     /*
      * ---------------------------------------------------------
@@ -394,18 +392,12 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
 
-    const relatedUris = new Set<string>();
-
-    relatedUris.add(uri);
-    this.collectRelatedIncludeUris(uri, relatedUris);
-
     const matches = this.documentManager
-      .getWorkspaceIndex()
-      .findExact(word)
-      .filter((match) => relatedUris.has(match.symbol.location.uri) && match.symbol.kind !== 'parameter');
+      .findExactInRelated(uri, word)
+      .filter((match) => match.symbol.kind !== 'parameter');
 
     console.log(
-      `[DefinitionProvider] Related search "${word}" -> ` + `${matches.length} ` + `(related=${relatedUris.size})`,
+      `[DefinitionProvider] Related search "${word}" -> ` + `${matches.length} ` + `(matchedUris=${new Set(matches.map((match) => match.uri)).size})`,
     );
 
     for (const match of matches) {
@@ -494,26 +486,6 @@ export class DefinitionProvider {
 
     /*
      * ---------------------------------------------------------
-     * 現在のShaderと、そのinclude先をロードする。
-     * ---------------------------------------------------------
-     */
-    this.loadIncludedDocuments(uri);
-
-    /*
-     * ---------------------------------------------------------
-     * 現在Shaderから参照可能なURIを取得する。
-     *
-     * rootUri自身も含む。
-     * ---------------------------------------------------------
-     */
-    const relatedUris = new Set<string>();
-
-    relatedUris.add(uri);
-
-    this.collectRelatedIncludeUris(uri, relatedUris);
-
-    /*
-     * ---------------------------------------------------------
      * Propertyと同名のCBuffer fieldを検索。
      *
      * ただし、
@@ -528,9 +500,8 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
     const matches = this.documentManager
-      .getWorkspaceIndex()
-      .findExact(property.name)
-      .filter((match) => relatedUris.has(match.uri) && match.symbol.kind === 'field' && !!match.symbol.parentName);
+      .findExactInRelated(uri, property.name)
+      .filter((match) => match.symbol.kind === 'field' && !!match.symbol.parentName);
 
     console.log(`[DefinitionProvider] ` + `Property CBuffer search "${property.name}" -> ` + `${matches.length}`);
 
@@ -549,20 +520,6 @@ export class DefinitionProvider {
     }
 
     return null;
-  }
-
-  /**
-   * 現在のドキュメントから到達可能な include URI を取得する。
-   *
-   * include graph の構築と外部 HLSL の Index 登録は DocumentManager 側で
-   * キャッシュされるため、DefinitionProvider では再帰探索しない。
-   */
-  private collectRelatedIncludeUris(rootUri: string, result: Set<string>): void {
-    const relatedUris = this.documentManager.getRelatedIncludeUris(rootUri);
-
-    for (const uri of relatedUris) {
-      result.add(uri);
-    }
   }
 
   public resolveSymbolAtPosition(uri: string, position: Position): ShaderSymbol | null {
@@ -633,8 +590,7 @@ export class DefinitionProvider {
        */
 
       const objectMatches = this.documentManager
-        .getWorkspaceIndex()
-        .findExact(memberAccess.objectName)
+        .findExactInRelated(uri, memberAccess.objectName)
         .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
 
       if (objectMatches.length > 0) {
@@ -661,21 +617,12 @@ export class DefinitionProvider {
 
       /*
        * -----------------------------------------------------
-       * 1-3. include を読み込む
-       * -----------------------------------------------------
-       */
-
-      this.loadIncludedDocuments(uri);
-
-      /*
-       * -----------------------------------------------------
-       * 1-4. include 後に WorkspaceIndex を再検索
+       * 1-3. include graphを考慮してWorkspaceIndexを検索
        * -----------------------------------------------------
        */
 
       const externalObjectMatches = this.documentManager
-        .getWorkspaceIndex()
-        .findExact(memberAccess.objectName)
+        .findExactInRelated(uri, memberAccess.objectName)
         .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
 
       if (externalObjectMatches.length > 0) {
@@ -730,10 +677,7 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
 
-    const relatedUris = new Set<string>();
-
-    relatedUris.add(uri);
-    this.collectRelatedIncludeUris(uri, relatedUris);
+    const relatedUris = this.documentManager.getRelatedIncludeUris(uri);
     const localVariable = this.findVariableDeclarationInSource(document, word, offset);
     if (localVariable) {
       console.log(
@@ -778,20 +722,17 @@ export class DefinitionProvider {
       };
     }
     const matches = this.documentManager
-      .getWorkspaceIndex()
-      .findExact(word)
-      .filter((match) => relatedUris.has(match.symbol.location.uri) && match.symbol.kind !== 'parameter');
+      .findExactInRelated(uri, word)
+      .filter((match) => match.symbol.kind !== 'parameter');
 
     if (matches.length === 0) {
       /*
-       * include をロードしてから再検索。
+       * findExactInRelated() は必要時にinclude graphを構築するため、
+       * 同じ検索を再実行する必要はない。
        */
-      this.loadIncludedDocuments(uri);
-
       const retryMatches = this.documentManager
-        .getWorkspaceIndex()
-        .findExact(word)
-        .filter((match) => relatedUris.has(match.symbol.location.uri) && match.symbol.kind !== 'parameter');
+        .findExactInRelated(uri, word)
+        .filter((match) => match.symbol.kind !== 'parameter');
       if (retryMatches.length === 0) {
         return null;
       }
@@ -1266,23 +1207,13 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
 
-    this.loadIncludedDocuments(rootUri);
-
-    const relatedUris = new Set<string>();
-    relatedUris.add(rootUri);
-
-    this.collectRelatedIncludeUris(rootUri, relatedUris);
-
-    const structMatches = this.documentManager
-      .getWorkspaceIndex()
-      .findByKind(normalizedType, 'struct')
-      .filter((match) => relatedUris.has(match.symbol.location.uri));
+    const structMatches = this.documentManager.findByKindInRelated(rootUri, normalizedType, 'struct');
 
     console.log(
       `[DefinitionProvider] Struct lookup: ` +
         `${normalizedType} -> ` +
         `${structMatches.length} ` +
-        `(related=${relatedUris.size})`,
+        `(matchedUris=${new Set(structMatches.map((match) => match.uri)).size})`,
     );
 
     /*
