@@ -19,7 +19,9 @@ export class IncludeResolver {
   private readonly projectRoot: ProjectRoot;
   private readonly fileSystem: FileSystem;
   private projectIncludeFiles: string[] | undefined;
+  private packageIncludeFiles: string[] | undefined;
   private projectIncludeCacheGeneration = 0;
+  private packageIncludeCacheGeneration = 0;
 
   public constructor(projectRoot: ProjectRoot, fileSystem: FileSystem) {
     this.projectRoot = projectRoot;
@@ -113,8 +115,9 @@ export class IncludeResolver {
 
   public invalidateProjectIncludeCache(): void {
     this.projectIncludeFiles = undefined;
+    this.packageIncludeFiles = undefined;
 
-    console.log('[IncludeResolver] Project include file cache invalidated');
+    console.log('[IncludeResolver] Project/package include file caches invalidated');
   }
 
   public getCompletionCandidates(includePath: string, fromUri: string): IncludeCompletionCandidate[] {
@@ -140,46 +143,24 @@ export class IncludeResolver {
     const prefix = normalizedInclude.toLowerCase();
 
     /*
-     * 1. Packages/
+     * 1/2. Packages/ と Library/PackageCache/
      *
-     * Unity Package Manager の Packages フォルダ。
-     */
-    const packagesRoot = path.resolve(root, 'Packages');
-
-    this.collectIncludeFiles(packagesRoot, '', prefix, candidates);
-
-    /*
-     * 2. Library/PackageCache/
+     * ここは補完要求のたびに再帰走査すると非常に重いため、
+     * include path の一覧をキャッシュして prefix だけを毎回絞り込む。
      *
-     * Packages/xxx/... に対応する実体。
+     * 例:
+     *   Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl
+     *
+     * PackageCache 側も同じ Packages/... 形式に正規化する。
      */
-    const packageCacheRoot = path.resolve(root, 'Library', 'PackageCache');
-
-    if (this.fileSystem.isDirectory(packageCacheRoot)) {
-      const packageDirectories = this.fileSystem.listDirectory(packageCacheRoot);
-
-      for (const packageDirectory of packageDirectories) {
-        const packageDirectoryPath = path.join(packageCacheRoot, packageDirectory);
-
-        if (!this.fileSystem.isDirectory(packageDirectoryPath)) {
-          continue;
-        }
-
-        /*
-         * com.unity.render-pipelines.core@...
-         * ↓
-         * Packages/com.unity.render-pipelines.core/...
-         */
-        const atIndex = packageDirectory.indexOf('@');
-
-        if (atIndex <= 0) {
-          continue;
-        }
-
-        const packageName = packageDirectory.substring(0, atIndex);
-
-        this.collectIncludeFiles(packageDirectoryPath, `Packages/${packageName}/`, prefix, candidates);
+    for (const includeFile of this.getPackageIncludeFiles(root)) {
+      if (!includeFile.toLowerCase().startsWith(prefix)) {
+        continue;
       }
+
+      candidates.set(includeFile, {
+        includePath: includeFile,
+      });
     }
 
     /*
@@ -617,6 +598,83 @@ export class IncludeResolver {
       return undefined;
     }
   }
+  private getPackageIncludeFiles(projectRoot: string): string[] {
+    if (this.packageIncludeFiles !== undefined) {
+      return this.packageIncludeFiles;
+    }
+
+    const files: string[] = [];
+
+    /*
+     * Packages/ の実体。
+     */
+    const packagesRoot = path.resolve(projectRoot, 'Packages');
+
+    this.collectIncludeFilePaths(packagesRoot, '', files);
+
+    /*
+     * Library/PackageCache/ の実体。
+     * PackageCache は Packages/<packageName>/... に見せる。
+     */
+    const packageCacheRoot = path.resolve(projectRoot, 'Library', 'PackageCache');
+
+    if (this.fileSystem.isDirectory(packageCacheRoot)) {
+      for (const packageDirectory of this.fileSystem.listDirectory(packageCacheRoot)) {
+        const packageDirectoryPath = path.join(packageCacheRoot, packageDirectory);
+
+        if (!this.fileSystem.isDirectory(packageDirectoryPath)) {
+          continue;
+        }
+
+        const atIndex = packageDirectory.indexOf('@');
+
+        if (atIndex <= 0) {
+          continue;
+        }
+
+        const packageName = packageDirectory.substring(0, atIndex);
+
+        this.collectIncludeFilePaths(packageDirectoryPath, `Packages/${packageName}/`, files);
+      }
+    }
+
+    this.packageIncludeFiles = files;
+    this.packageIncludeCacheGeneration++;
+
+    console.log(
+      `[IncludeResolver] Package include cache generated:` +
+        ` generation=${this.packageIncludeCacheGeneration}` +
+        ` files=${files.length}`,
+    );
+
+    return files;
+  }
+
+  private collectIncludeFilePaths(directoryPath: string, includeBasePath: string, files: string[]): void {
+    if (!this.fileSystem.isDirectory(directoryPath)) {
+      return;
+    }
+
+    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+      const entryPath = path.join(directoryPath, entry);
+
+      if (this.fileSystem.isDirectory(entryPath)) {
+        this.collectIncludeFilePaths(entryPath, `${includeBasePath}${entry}/`, files);
+        continue;
+      }
+
+      if (!this.fileSystem.isFile(entryPath)) {
+        continue;
+      }
+
+      if (!entry.endsWith('.hlsl') && !entry.endsWith('.hlsli') && !entry.endsWith('.cginc')) {
+        continue;
+      }
+
+      files.push(`${includeBasePath}${entry}`.replace(/\\/g, '/'));
+    }
+  }
+
   private getProjectIncludeFiles(projectRoot: string): string[] {
     const isRegeneration = this.projectIncludeFiles === undefined;
 
