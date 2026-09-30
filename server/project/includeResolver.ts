@@ -354,23 +354,26 @@ export class IncludeResolver {
       return;
     }
 
-    const normalizedPrefix = includePath.replace(/\\/g, '/').toLowerCase();
+    // 大文字小文字は比較時だけ無視し、実際の入力パスはそのまま保持する。
+    const normalizedPrefix = includePath.replace(/\\/g, '/');
+    const lowerPrefix = normalizedPrefix.toLowerCase();
     if (!normalizedPrefix.includes('/')) {
       this.ensureProjectDirectoryIndexed(fromDirectory);
       const files = this.projectDirectoryIndex.get(path.normalize(fromDirectory));
-      if (!files) {
-        return;
+      if (files) {
+        for (const filePath of files) {
+          const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
+          if (!relative || relative.includes('/')) {
+            continue;
+          }
+          if (relative.toLowerCase().startsWith(lowerPrefix)) {
+            candidates.set(relative, { includePath: relative });
+          }
+        }
       }
 
-      for (const filePath of files) {
-        const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
-        if (!relative || relative.includes('/')) {
-          continue;
-        }
-        if (relative.toLowerCase().startsWith(normalizedPrefix)) {
-          candidates.set(relative, { includePath: relative });
-        }
-      }
+      // 同階層のディレクトリも候補にする。次の階層を入力できるようにする。
+      this.addProjectDirectoryCandidates(fromDirectory, normalizedPrefix, candidates);
       return;
     }
 
@@ -384,18 +387,45 @@ export class IncludeResolver {
 
     this.ensureProjectDirectoryIndexed(targetDirectory);
     const files = this.projectDirectoryIndex.get(path.normalize(targetDirectory));
-    if (!files) {
+    if (files) {
+      for (const filePath of files) {
+        const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
+        if (!relative.toLowerCase().startsWith(lowerPrefix)) {
+          continue;
+        }
+        if (path.posix.basename(relative).toLowerCase().startsWith(partial.toLowerCase())) {
+          candidates.set(relative, { includePath: relative });
+        }
+      }
+    }
+
+    // ../ や ./ の後にさらにディレクトリを選択できるよう、対象ディレクトリ直下も候補にする。
+    this.addProjectDirectoryCandidates(targetDirectory, partial, candidates, directoryPart);
+  }
+
+  private addProjectDirectoryCandidates(
+    directoryPath: string,
+    partial: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+    includePrefix = '',
+  ): void {
+    if (!this.projectRoot.isInsideProject(directoryPath) || !this.fileSystem.isDirectory(directoryPath)) {
       return;
     }
 
-    for (const filePath of files) {
-      const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
-      if (!relative.toLowerCase().startsWith(normalizedPrefix)) {
+    const lowerPartial = partial.toLowerCase();
+    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
+      if (!entry.toLowerCase().startsWith(lowerPartial)) {
         continue;
       }
-      if (path.posix.basename(relative).toLowerCase().startsWith(partial)) {
-        candidates.set(relative, { includePath: relative });
+
+      const entryPath = path.join(directoryPath, entry);
+      if (!this.fileSystem.isDirectory(entryPath) || !this.projectRoot.isInsideProject(entryPath)) {
+        continue;
       }
+
+      const candidate = `${includePrefix}${entry}/`.replace(/\\/g, '/');
+      candidates.set(candidate, { includePath: candidate });
     }
   }
 
