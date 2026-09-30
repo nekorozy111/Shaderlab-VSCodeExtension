@@ -410,10 +410,26 @@ export class ShaderLabParser {
     document: ReturnType<HlslParser['parse']>,
     offset: number,
   ): ReturnType<HlslParser['parse']> {
+    /*
+     * HLSL側のPositionは、ブロック単体のソースを基準にしている。
+     * 以前は各rangeについてShaderLab全体を先頭から走査して
+     * positionFromOffset()を呼んでいたため、宣言数が増えるほど
+     * O(宣言数 × ソースサイズ)に近いコストが発生していた。
+     *
+     * HLSLブロック開始位置を1回だけ求め、line/characterを直接加算する。
+     */
+    const basePosition = this.positionFromOffset(offset);
+    const shiftPosition = (position: SourcePosition): SourcePosition => {
+      return {
+        offset: position.offset + offset,
+        line: basePosition.line + position.line,
+        character: position.line === 0 ? basePosition.character + position.character : position.character,
+      };
+    };
     const shiftRange = (range: { start: SourcePosition; end: SourcePosition }) => {
       return {
-        start: this.positionFromOffset(range.start.offset + offset),
-        end: this.positionFromOffset(range.end.offset + offset),
+        start: shiftPosition(range.start),
+        end: shiftPosition(range.end),
       };
     };
     for (const declaration of document.declarations) {

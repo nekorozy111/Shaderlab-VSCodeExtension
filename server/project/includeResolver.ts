@@ -24,6 +24,14 @@ export class IncludeResolver {
   private readonly packageIncludePathToFile = new Map<string, string>();
   // Package name -> PackageCache
   private readonly packageDirectories = new Map<string, string>();
+  /**
+   * URP ShaderLab編集で直接必要になるUnity SRPパッケージだけを補完用に索引する。
+   * VFX GraphやHDRP等は明示的にincludeされた場合だけ個別解決し、全体索引には含めない。
+   */
+  private readonly relevantPackageNames = new Set<string>([
+    'com.unity.render-pipelines.core',
+    'com.unity.render-pipelines.universal',
+  ]);
 
   // Directory -> direct include
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
@@ -31,9 +39,6 @@ export class IncludeResolver {
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
   private readonly indexedProjectDirectories = new Set<string>();
 
-  private packageCacheInitialized = false;
-  private packageCacheWarmupStarted = false;
-  private packageCacheGeneration = 0;
   private readonly resolutionCache = new Map<string, IncludeResolution | null>();
   private readonly maxResolutionCacheEntries = 4096;
 
@@ -43,11 +48,10 @@ export class IncludeResolver {
   }
 
   public warmUp(): void {
-    const root = this.projectRoot.getPath();
-    if (!root) {
-      return;
-    }
-    this.startPackageCacheWarmup(root);
+    /*
+     * PackageCache全体の先行走査は行わない。
+     * include解決と補完は必要になったパッケージ/ディレクトリだけ遅延索引する。
+     */
   }
 
   public resolve(includePath: string, fromUri: string): IncludeResolution | undefined {
@@ -105,9 +109,6 @@ export class IncludeResolver {
     this.packageCompletionIndex.clear();
     this.projectDirectoryIndex.clear();
     this.indexedProjectDirectories.clear();
-    this.packageCacheInitialized = false;
-    this.packageCacheWarmupStarted = false;
-    this.packageCacheGeneration += 1;
     this.resolutionCache.clear();
   }
 
@@ -118,8 +119,6 @@ export class IncludeResolver {
     if (!root || !fromPath || !this.projectRoot.isInsideProject(fromPath)) {
       return [];
     }
-
-    this.startPackageCacheWarmup(root);
 
     const candidates = new Map<string, IncludeCompletionCandidate>();
 
@@ -313,42 +312,129 @@ export class IncludeResolver {
   ): void {
     const normalized = includePath.replace(/\\/g, '/');
     const lower = normalized.toLowerCase();
-    const slashIndex = lower.lastIndexOf('/');
-    const parent = slashIndex >= 0 ? normalized.substring(0, slashIndex + 1) : '';
-    const partial = slashIndex >= 0 ? lower.substring(slashIndex + 1) : lower;
+    const packagesPrefix = 'packages/';
 
-    // トークンのみが指定された場合、キャッシュされたすべてのファイルではなく、ベースネームのインデックスのみを検索する。
-    if (slashIndex < 0) {
-      const seen = new Set<string>();
-      for (const include of this.packageIncludeFiles.values()) {
-        const base = path.posix.basename(include).toLowerCase();
-        if (!base.startsWith(partial) || seen.has(include)) {
-          continue;
-        }
-        seen.add(include);
-        candidates.set(include, { includePath: include });
+    if (!lower.startsWith(packagesPrefix)) {
+      // Core.hlslのようにパッケージ接頭辞を省略したincludeでは、
+      // URP Core/Universalだけを必要時に探索する。空入力では全走査しない。
+      if (lower.length > 0) {
+        this.collectRelevantPackageFileCandidates(lower, candidates);
       }
       return;
     }
 
-    let units = this.packageCompletionIndex.get(parent.toLowerCase());
-    if (!units) {
-      this.ensurePackageCompletionDirectory(parent);
-      units = this.packageCompletionIndex.get(parent.toLowerCase());
+    const relative = normalized.substring(packagesPrefix.length);
+    const slashIndex = relative.indexOf('/');
+
+    // Packages/ の直下では、URP ShaderLabに必要なパッケージだけを候補にする。
+    if (slashIndex < 0) {
+      const partial = relative.toLowerCase();
+      this.collectRelevantPackageDirectories(partial, candidates);
+      if (partial.length > 0) {
+        this.collectRelevantPackageFileCandidates(partial, candidates);
+      }
+      return;
     }
+
+    const packageName = relative.substring(0, slashIndex);
+    if (!this.isRelevantPackage(packageName)) {
+      // VFX Graph/HDRP等は全体索引に含めず、明示的includeの解決だけを許可する。
+      return;
+    }
+
+    const parent = `Packages/${relative.substring(0, relative.lastIndexOf('/') + 1)}`;
+    const partial = relative.substring(relative.lastIndexOf('/') + 1).toLowerCase();
+    this.ensurePackageCompletionDirectory(parent);
+    const units = this.packageCompletionIndex.get(parent.toLowerCase());
     if (!units) {
       return;
     }
 
     for (const unit of units) {
-      if (!unit.toLowerCase().startsWith(partial)) {
-        continue;
+      if (unit.toLowerCase().startsWith(partial)) {
+        candidates.set(`${parent}${unit}`, { includePath: `${parent}${unit}` });
       }
-      const candidate = `${parent}${unit}`;
-      if (candidate.endsWith('/')) {
-        candidates.set(candidate, { includePath: candidate });
-      } else {
-        candidates.set(candidate, { includePath: candidate });
+    }
+  }
+
+  private collectRelevantPackageDirectories(
+    partial: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    const root = this.projectRoot.getPath();
+    if (!root) {
+      return;
+    }
+
+    const seen = new Set<string>();
+    const addDirectory = (directoryRoot: string): void => {
+      if (!this.fileSystem.isDirectory(directoryRoot)) {
+        return;
+      }
+      for (const entry of this.fileSystem.listDirectory(directoryRoot)) {
+        const atIndex = entry.indexOf('@');
+        const packageName = atIndex > 0 ? entry.substring(0, atIndex) : entry;
+        if (!this.isRelevantPackage(packageName) || seen.has(packageName.toLowerCase())) {
+          continue;
+        }
+        if (!packageName.toLowerCase().startsWith(partial)) {
+          continue;
+        }
+        const packageDirectory = path.join(directoryRoot, entry);
+        if (!this.fileSystem.isDirectory(packageDirectory)) {
+          continue;
+        }
+        seen.add(packageName.toLowerCase());
+        candidates.set(`Packages/${packageName}/`, { includePath: `Packages/${packageName}/` });
+      }
+    };
+
+    addDirectory(path.resolve(root, 'Packages'));
+    addDirectory(path.resolve(root, 'Library', 'PackageCache'));
+  }
+
+  private collectRelevantPackageFileCandidates(
+    partial: string,
+    candidates: Map<string, IncludeCompletionCandidate>,
+  ): void {
+    const root = this.projectRoot.getPath();
+    if (!root) {
+      return;
+    }
+
+    const visited = new Set<string>();
+    const searchDirectory = (directoryPath: string, packageName: string): void => {
+      const normalizedDirectory = path.normalize(directoryPath);
+      if (visited.has(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
+        return;
+      }
+      visited.add(normalizedDirectory);
+
+      for (const entry of this.fileSystem.listDirectory(normalizedDirectory)) {
+        const entryPath = path.join(normalizedDirectory, entry);
+        if (this.fileSystem.isDirectory(entryPath)) {
+          if (this.projectRoot.isInsideProject(entryPath)) {
+            searchDirectory(entryPath, packageName);
+          }
+          continue;
+        }
+        if (!this.isIncludeFile(entryPath) || !entry.toLowerCase().startsWith(partial)) {
+          continue;
+        }
+        const relative = path.relative(
+          path.join(this.getPackageDirectory(packageName, root) ?? path.resolve(root, 'Packages', packageName)),
+          entryPath,
+        ).replace(/\\/g, '/');
+        candidates.set(`Packages/${packageName}/${relative}`, {
+          includePath: `Packages/${packageName}/${relative}`,
+        });
+      }
+    };
+
+    for (const packageName of this.relevantPackageNames) {
+      const packageDirectory = this.getPackageDirectory(packageName, root);
+      if (packageDirectory) {
+        searchDirectory(packageDirectory, packageName);
       }
     }
   }
@@ -475,89 +561,12 @@ export class IncludeResolver {
     }
   }
 
-  private startPackageCacheWarmup(root: string): void {
-    if (this.packageCacheInitialized || this.packageCacheWarmupStarted) {
-      return;
-    }
-
-    this.packageCacheWarmupStarted = true;
-    const generation = this.packageCacheGeneration;
-    void this.buildPackageCacheInBackground(root, generation);
+  private startPackageCacheWarmup(_root: string): void {
+    // 後方互換用の空実装。PackageCacheは必要時だけ遅延索引する。
   }
 
-  private async buildPackageCacheInBackground(root: string, generation: number): Promise<void> {
-    if (generation !== this.packageCacheGeneration) {
-      return;
-    }
-    this.packageIncludeFiles.clear();
-    this.packageIncludePathToFile.clear();
-    this.packageDirectories.clear();
-    this.packageCompletionIndex.clear();
-
-    const packagesRoot = path.resolve(root, 'Packages');
-    await this.collectPackageFilesAsync(packagesRoot, 'Packages/', generation);
-
-    const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
-    if (this.fileSystem.isDirectory(cacheRoot)) {
-      for (const directoryName of this.fileSystem.listDirectory(cacheRoot)) {
-        const packageDirectory = path.join(cacheRoot, directoryName);
-        if (!this.fileSystem.isDirectory(packageDirectory)) {
-          continue;
-        }
-        const atIndex = directoryName.indexOf('@');
-        if (atIndex <= 0) {
-          continue;
-        }
-        const packageName = directoryName.substring(0, atIndex);
-        if (!this.packageDirectories.has(packageName)) {
-          this.packageDirectories.set(packageName, packageDirectory);
-        }
-        await this.collectPackageFilesAsync(packageDirectory, `Packages/${packageName}/`, generation);
-      }
-    }
-
-    if (generation !== this.packageCacheGeneration) {
-      return;
-    }
-    this.packageCacheInitialized = true;
-    this.packageCacheWarmupStarted = false;
-  }
-
-  private async collectPackageFilesAsync(
-    directoryPath: string,
-    includeBasePath: string,
-    generation: number,
-  ): Promise<void> {
-    if (generation !== this.packageCacheGeneration) {
-      return;
-    }
-    if (!this.projectRoot.isInsideProject(directoryPath) || !this.fileSystem.isDirectory(directoryPath)) {
-      return;
-    }
-
-    let processed = 0;
-    const walk = async (currentDirectory: string, currentBase: string): Promise<void> => {
-      for (const entry of this.fileSystem.listDirectory(currentDirectory)) {
-        if (generation !== this.packageCacheGeneration) {
-          return;
-        }
-
-        const entryPath = path.join(currentDirectory, entry);
-        if (this.fileSystem.isDirectory(entryPath)) {
-          await walk(entryPath, `${currentBase}${entry}/`);
-        } else if (this.isIncludeFile(entryPath)) {
-          const includePath = `${currentBase}${entry}`.replace(/\\/g, '/');
-          this.addPackageIncludeFile(path.normalize(entryPath), includePath);
-        }
-
-        processed += 1;
-        if (processed % 64 === 0) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        }
-      }
-    };
-
-    await walk(directoryPath, includeBasePath);
+  private isRelevantPackage(packageName: string): boolean {
+    return this.relevantPackageNames.has(packageName.toLowerCase());
   }
 
   private getPackageDirectory(packageName: string, root: string): string | undefined {
@@ -630,6 +639,10 @@ export class IncludeResolver {
     if (!root) {
       return;
     }
+    if (!this.isRelevantPackage(packageName)) {
+      return;
+    }
+
     const packageDirectory = this.getPackageDirectory(packageName, root);
     if (!packageDirectory) {
       return;
@@ -738,11 +751,12 @@ export class IncludeResolver {
   }
 
   private updatePackageCacheFile(filePath: string, type: number): void {
-    if (!this.packageCacheInitialized) {
+    const root = this.projectRoot.getPath();
+    if (!root) {
       return;
     }
 
-    const cacheRoot = path.resolve(this.projectRoot.getPath() ?? '', 'Library', 'PackageCache');
+    const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
     const relative = path.relative(cacheRoot, filePath);
     if (relative === '' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
       return;
@@ -754,81 +768,56 @@ export class IncludeResolver {
       return;
     }
 
-    const packageDirectory = path.join(cacheRoot, packageDirectoryName);
     const atIndex = packageDirectoryName.indexOf('@');
     if (atIndex <= 0) {
       return;
     }
     const packageName = packageDirectoryName.substring(0, atIndex);
-    if (parts.length === 0) {
-      if (type === 3) {
-        this.removePackageEntriesUnderPath(packageDirectory);
-        if (this.packageDirectories.get(packageName) === packageDirectory) {
-          this.packageDirectories.delete(packageName);
-          this.selectPackageDirectory(packageName, cacheRoot);
-        }
-      } else if (type === 1 || type === 2) {
-        this.packageDirectories.set(packageName, packageDirectory);
-        void this.collectPackageFilesAsync(packageDirectory, `Packages/${packageName}/`, this.packageCacheGeneration);
-      }
+    if (!this.isRelevantPackage(packageName)) {
+      // URP ShaderLabに不要なパッケージは監視イベントでも索引を作らない。
       return;
     }
 
-    const includePath = `Packages/${packageName}/${parts.join('/')}`.replace(/\\/g, '/');
-
-    if (type === 3 || !this.isIncludeFile(filePath)) {
-      this.removePackageIncludeFile(filePath);
-    } else if (type === 1 || type === 2) {
-      this.addPackageIncludeFile(filePath, includePath);
-    }
-
-    if (type === 3 && parts.length === 1) {
-      const current = this.packageDirectories.get(packageName);
-      if (current && path.normalize(current) === path.normalize(packageDirectory)) {
+    const packageDirectory = path.join(cacheRoot, packageDirectoryName);
+    if (type === 3 && parts.length === 0) {
+      if (this.packageDirectories.get(packageName) === packageDirectory) {
         this.packageDirectories.delete(packageName);
-        this.selectPackageDirectory(packageName, cacheRoot);
       }
-    } else if (type !== 3 && !this.packageDirectories.has(packageName)) {
+      this.packageIncludeFiles.clear();
+      this.packageIncludePathToFile.clear();
+      this.packageCompletionIndex.clear();
+      return;
+    }
+
+    if ((type === 1 || type === 2) && parts.length === 0) {
       this.packageDirectories.set(packageName, packageDirectory);
+      this.packageCompletionIndex.clear();
     }
   }
 
-  private removePackageEntriesUnderPath(directoryPath: string): void {
-    const normalizedDirectory = path.normalize(directoryPath) + path.sep;
-    for (const filePath of Array.from(this.packageIncludeFiles.keys())) {
-      if (filePath.startsWith(normalizedDirectory)) {
-        this.removePackageIncludeFile(filePath);
-      }
-    }
-  }
 
-  private selectPackageDirectory(packageName: string, cacheRoot: string): void {
-    for (const entry of this.fileSystem.listDirectory(cacheRoot)) {
-      if (!entry.startsWith(`${packageName}@`)) {
-        continue;
-      }
-      const candidate = path.join(cacheRoot, entry);
-      if (this.fileSystem.isDirectory(candidate)) {
-        this.packageDirectories.set(packageName, candidate);
-        return;
-      }
-    }
-  }
 
   private updateProjectPackageFile(filePath: string, type: number): void {
-    if (!this.packageCacheInitialized) {
-      return;
-    }
-    if (type === 3 || !this.isIncludeFile(filePath)) {
-      this.removePackageIncludeFile(filePath);
-      return;
-    }
     const root = this.projectRoot.getPath();
     if (!root) {
       return;
     }
+
     const relative = path.relative(root, filePath).replace(/\\/g, '/');
-    this.addPackageIncludeFile(filePath, relative);
+    const parts = relative.split('/');
+    const packageName = parts[1];
+    if (!packageName || !this.isRelevantPackage(packageName)) {
+      // URP ShaderLabに不要なパッケージは補完索引を更新しない。
+      return;
+    }
+
+    // Packages側も全走査はせず、既に作成済みの補完索引だけを無効化する。
+    this.packageCompletionIndex.clear();
+    if (type === 3 || !this.isIncludeFile(filePath)) {
+      this.packageIncludeFiles.delete(path.normalize(filePath));
+      this.packageIncludePathToFile.delete(relative);
+      return;
+    }
   }
 
   private updateProjectIncludeFile(filePath: string, type: number): void {

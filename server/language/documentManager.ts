@@ -45,6 +45,11 @@ export class DocumentManager {
    */
   private readonly includeDependents = new Map<string, Set<string>>();
   private readonly externalSources = new Map<string, string>();
+  /**
+   * 同一versionの再解析を防ぐための世代管理。
+   * getParsed()は最初の要求だけがupdate()を実行し、後続要求は同じASTを再利用する。
+   */
+  private readonly parsingVersions = new Map<string, number>();
   public initializeProject(params: Parameters<ProjectService['initialize']>[0]): void {
     this.projectService.initialize(params);
   }
@@ -58,6 +63,7 @@ export class DocumentManager {
       this.documents.delete(document.uri);
       this.parsedDocuments.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
+      this.parsingVersions.delete(document.uri);
       this.workspaceIndex.remove(document.uri);
       return undefined;
     }
@@ -75,6 +81,7 @@ export class DocumentManager {
       this.documents.delete(document.uri);
       this.parsedDocuments.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
+      this.parsingVersions.delete(document.uri);
       this.workspaceIndex.remove(document.uri);
       return;
     }
@@ -87,6 +94,7 @@ export class DocumentManager {
       this.documents.delete(document.uri);
       this.parsedDocuments.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
+      this.parsingVersions.delete(document.uri);
       this.workspaceIndex.remove(document.uri);
       throw new Error('Document is outside the initialized project');
     }
@@ -95,6 +103,10 @@ export class DocumentManager {
     const contentHash = this.hashSource(source);
     const previousHash = this.documentContentHashes.get(document.uri);
     const previousParsed = this.parsedDocuments.get(document.uri);
+    const parsingVersion = this.parsingVersions.get(document.uri);
+    if (previousParsed && parsingVersion === document.version) {
+      return previousParsed;
+    }
     // versionだけが進んで内容が同じ場合はAST / Symbol Index / include graphを再構築しない。
     // undo/redoや同一内容のchange通知で無駄なParseを発生させない。
     if (previousParsed && previousHash === contentHash) {
@@ -104,6 +116,7 @@ export class DocumentManager {
       };
       this.documents.set(document.uri, document);
       this.parsedDocuments.set(document.uri, versionedParsed);
+      this.parsingVersions.set(document.uri, document.version);
       return versionedParsed;
     }
 
@@ -117,6 +130,7 @@ export class DocumentManager {
     this.documents.delete(document.uri);
     this.parsedDocuments.delete(document.uri);
     this.documentContentHashes.delete(document.uri);
+    this.parsingVersions.delete(document.uri);
     this.workspaceIndex.remove(document.uri);
     // この root document が保持していた external include の参照を解放する。
     this.releaseIncludeDependencies(document.uri);
@@ -211,6 +225,7 @@ export class DocumentManager {
     this.documents.clear();
     this.parsedDocuments.clear();
     this.documentContentHashes.clear();
+    this.parsingVersions.clear();
     this.externalDocuments.clear();
     this.externalSources.clear();
     this.includeDependencies.clear();
@@ -526,6 +541,7 @@ export class DocumentManager {
     const parsed = this.parserService.parse(document);
     this.parsedDocuments.set(document.uri, parsed);
     this.documentContentHashes.set(document.uri, knownContentHash ?? this.hashSource(document.getText()));
+    this.parsingVersions.set(document.uri, document.version);
     this.workspaceIndex.update(parsed);
     return parsed;
   }

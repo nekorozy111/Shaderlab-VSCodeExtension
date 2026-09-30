@@ -40,7 +40,8 @@
           "High Level Shader Language"
         ],
         "extensions": [
-          ".hlsl"
+          ".hlsl",
+          ".cginc"
         ],
         "configuration": "./language-configuration/hlsl.json"
       },
@@ -51,6 +52,16 @@
         ],
         "extensions": [
           ".hlsli"
+        ],
+        "configuration": "./language-configuration/hlsl.json"
+      },
+      {
+        "id": "compute",
+        "aliases": [
+          "Unity Compute Shader"
+        ],
+        "extensions": [
+          ".compute"
         ],
         "configuration": "./language-configuration/hlsl.json"
       }
