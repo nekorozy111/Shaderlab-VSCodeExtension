@@ -68,3 +68,11 @@ export async function stopLanguageClient(): Promise<void> {
   client = undefined;
   await currentClient.stop();
 }
+
+export async function requestMemoryStats(): Promise<Record<string, unknown> | undefined> {
+  if (client === undefined) {
+    return undefined;
+  }
+
+  return client.sendRequest<Record<string, unknown>>('urpShaderLab/memoryStats');
+}

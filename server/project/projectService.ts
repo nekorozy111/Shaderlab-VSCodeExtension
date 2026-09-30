@@ -44,4 +44,8 @@ export class ProjectService {
     }
     return this.fileSystem.exists(filePath);
   }
+
+  public getFileSystemCacheStats(): { statEntries: number; directoryEntries: number } {
+    return this.fileSystem.getCacheStats();
+  }
 }

@@ -89,6 +89,7 @@ export class IncludeResolver {
 
       const normalizedPath = path.normalize(filePath);
       const type = change.type;
+      this.fileSystem.invalidate(normalizedPath);
 
       if (this.isPackageCachePath(normalizedPath)) {
         this.updatePackageCacheFile(normalizedPath, type);
@@ -103,6 +104,7 @@ export class IncludeResolver {
   }
 
   public invalidateProjectIncludeCache(): void {
+    this.fileSystem.clearCache();
     this.packageIncludeFiles.clear();
     this.packageIncludePathToFile.clear();
     this.packageDirectories.clear();
@@ -421,10 +423,12 @@ export class IncludeResolver {
         if (!this.isIncludeFile(entryPath) || !entry.toLowerCase().startsWith(partial)) {
           continue;
         }
-        const relative = path.relative(
-          path.join(this.getPackageDirectory(packageName, root) ?? path.resolve(root, 'Packages', packageName)),
-          entryPath,
-        ).replace(/\\/g, '/');
+        const relative = path
+          .relative(
+            path.join(this.getPackageDirectory(packageName, root) ?? path.resolve(root, 'Packages', packageName)),
+            entryPath,
+          )
+          .replace(/\\/g, '/');
         candidates.set(`Packages/${packageName}/${relative}`, {
           includePath: `Packages/${packageName}/${relative}`,
         });
@@ -794,8 +798,6 @@ export class IncludeResolver {
       this.packageCompletionIndex.clear();
     }
   }
-
-
 
   private updateProjectPackageFile(filePath: string, type: number): void {
     const root = this.projectRoot.getPath();

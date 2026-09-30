@@ -66,6 +66,12 @@
         "configuration": "./language-configuration/hlsl.json"
       }
     ],
+    "commands": [
+      {
+        "command": "urpShaderLab.showMemoryStats",
+        "title": "URP ShaderLab Tools: Show Memory Stats"
+      }
+    ],
     "configuration": {
       "title": "URP ShaderLab Tools",
       "properties": {

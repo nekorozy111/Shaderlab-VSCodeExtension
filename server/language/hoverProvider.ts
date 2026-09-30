@@ -16,8 +16,7 @@ export class HoverProvider {
       return null;
     }
 
-    // Hover要求時点で最新AST/WorkspaceIndexを同期する。
-    this.documentManager.getParsed(uri);
+    // 編集直後はdebounce済みの直前ASTを利用し、requestごとの同期Parseを避ける。
     const offset = document.offsetAt(position);
     const text = document.getText();
     /*

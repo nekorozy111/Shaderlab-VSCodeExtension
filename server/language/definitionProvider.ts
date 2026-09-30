@@ -13,8 +13,7 @@ export class DefinitionProvider {
       return null;
     }
 
-    // 定義要求時点で最新AST/ワークスペースIndexを同期する。
-    this.documentManager.getParsed(uri);
+    // 編集直後はdebounce済みの直前ASTを利用し、requestごとの同期Parseを避ける。
     const text = document.getText();
     const offset = document.offsetAt(position);
     /*
@@ -288,8 +287,7 @@ export class DefinitionProvider {
       return null;
     }
 
-    // Hoverから直接呼ばれる場合も最新ASTを保証する。
-    this.documentManager.getParsed(uri);
+    // Hoverから呼ばれる場合も、debounce済みのASTを共有する。
     const text = document.getText();
     const offset = document.offsetAt(position);
     const word = this.getWordAtPosition(text, offset);

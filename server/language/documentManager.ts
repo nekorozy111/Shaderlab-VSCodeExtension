@@ -47,7 +47,7 @@ export class DocumentManager {
   private readonly externalSources = new Map<string, string>();
   /**
    * 同一versionの再解析を防ぐための世代管理。
-   * getParsed()は最初の要求だけがupdate()を実行し、後続要求は同じASTを再利用する。
+   * Parseは編集イベントのdebounce後に行い、LSP requestからは同期再Parseしない。
    */
   private readonly parsingVersions = new Map<string, number>();
   public initializeProject(params: Parameters<ProjectService['initialize']>[0]): void {
@@ -141,19 +141,61 @@ export class DocumentManager {
   }
 
   public getParsed(uri: string): ParsedDocument | undefined {
+    // LSP requestから同期Parseすると、入力中のCompletion/Hover/F12ごとに
+    // 重いParser/Index更新が走ってイベントループをブロックする。
+    // 編集イベント側のdebounceで更新されたASTを返し、更新中は直前のASTを再利用する。
+    return this.parsedDocuments.get(uri);
+  }
+
+  /**
+   * 必要な場合だけ明示的に最新ASTへ更新する。
+   * 通常のLSP requestでは呼ばず、open/debounce更新など管理側から使用する。
+   */
+  public ensureParsed(uri: string): ParsedDocument | undefined {
     const document = this.documents.get(uri);
     const parsed = this.parsedDocuments.get(uri);
-    // debounce中でもF12/hover等から要求された場合は、
-    // 古いASTを返さず最新Documentを同期的に再解析する。
     if (document && (!parsed || parsed.version !== document.version)) {
       return this.update(document);
     }
-
     return parsed;
   }
 
   public getWorkspaceIndex(): WorkspaceIndex {
     return this.workspaceIndex;
+  }
+
+  /**
+   * Language Server内部の保持量とNodeプロセスのメモリ使用量を取得する。
+   * デバッグ用のLSP requestから呼び出して、編集・include解決前後を比較できる。
+   */
+  public getMemoryStats(): {
+    process: NodeJS.MemoryUsage;
+    documents: number;
+    parsedDocuments: number;
+    externalDocuments: number;
+    externalSources: number;
+    includeDependencies: number;
+    relatedIncludeCaches: number;
+    externalReferenceCounts: number;
+    includeDependents: number;
+    workspaceSymbols: number;
+    fileSystemStatCache: number;
+    fileSystemDirectoryCache: number;
+  } {
+    return {
+      process: process.memoryUsage(),
+      documents: this.documents.size,
+      parsedDocuments: this.parsedDocuments.size,
+      externalDocuments: this.externalDocuments.size,
+      externalSources: this.externalSources.size,
+      includeDependencies: this.includeDependencies.size,
+      relatedIncludeCaches: this.relatedIncludeUrisCache.size,
+      externalReferenceCounts: this.externalReferenceCounts.size,
+      includeDependents: this.includeDependents.size,
+      workspaceSymbols: this.workspaceIndex.getSymbolCount(),
+      fileSystemStatCache: this.projectService.getFileSystemCacheStats().statEntries,
+      fileSystemDirectoryCache: this.projectService.getFileSystemCacheStats().directoryEntries,
+    };
   }
 
   /**
@@ -388,6 +430,7 @@ export class DocumentManager {
       // open document は externalDocuments に入らないため、ここでは触らない。
       if (!this.documents.has(uri)) {
         this.externalDocuments.delete(uri);
+        this.externalSources.delete(uri);
         this.workspaceIndex.remove(uri);
       }
     }

@@ -18,7 +18,7 @@ const definitionProvider = new DefinitionProvider(documentManager);
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
 // 連続入力中のParseをまとめる。
-// F12/hover等で最新ASTが必要になった場合はDocumentManager.getParsed()がversion差分を検出して即時更新するため、定義ジャンプの正確性は維持される。
+// LSP requestでは直前のASTを再利用し、ここでだけ最新DocumentをParse/Indexする。
 const UPDATE_DEBOUNCE_MS = 150;
 const REQUEST_CACHE_TTL_MS = 100;
 const REQUEST_CACHE_MAX_ENTRIES = 32;
@@ -193,6 +193,8 @@ documents.onDidClose((event) => {
 
   documentManager.close(event.document);
 });
+connection.onRequest('urpShaderLab/memoryStats', () => documentManager.getMemoryStats());
+
 connection.onShutdown(() => {
   for (const timer of pendingDocumentUpdates.values()) {
     clearTimeout(timer);

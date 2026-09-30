@@ -4,7 +4,19 @@ import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
 import { IncludeResolver } from '../project/includeResolver';
 
+type OffsetRange = { start: number; end: number };
+type LexicalCache = {
+  uri: string;
+  version: number;
+  sourceLength: number;
+  maskedText: string;
+  commentRanges: OffsetRange[];
+  stringRanges: OffsetRange[];
+  hlslRanges: OffsetRange[];
+};
+
 export class CompletionProvider {
+  private lexicalCache?: LexicalCache;
   private readonly completionSource = 'ShaderLab IntelliSense';
   public constructor(
     private readonly documentManager: DocumentManager,
@@ -16,12 +28,12 @@ export class CompletionProvider {
       return [];
     }
 
-    // Completion要求時点で最新AST/WorkspaceIndexを必ず同期する。
-    // debounce中に編集された generic resource declaration も即時反映する。
-    this.documentManager.getParsed(uri);
+    // 編集直後はdebounce済みの直前ASTを利用する。
+    // Completion要求ごとの同期Parseを避け、入力イベントの遅延を抑える。
     const text = document.getText();
     const offset = document.offsetAt(position);
-    if (this.isInsideComment(text, offset)) {
+    const lexical = this.getLexicalCache(uri, document.version, text);
+    if (this.isInsideComment(text, offset, lexical)) {
       return [];
     }
 
@@ -41,7 +53,7 @@ export class CompletionProvider {
     /*
      * 通常の string 内では Completion を出さない。
      */
-    if (this.isInsideString(text, offset)) {
+    if (this.isInsideString(text, offset, lexical)) {
       return [];
     }
 
@@ -400,8 +412,9 @@ export class CompletionProvider {
     }
 
     const text = document.getText();
-    const sourceBeforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
-    const maskedSource = this.maskComments(sourceBeforeCursor);
+    const lexical = this.getLexicalCache(uri, document.version, text);
+    const safeOffset = Math.max(0, Math.min(offset, text.length));
+    const maskedSource = lexical.maskedText.slice(0, safeOffset);
     const result: CompletionItem[] = [];
     const pattern = /\b((?:[A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
     let match: RegExpExecArray | null;
@@ -450,16 +463,12 @@ export class CompletionProvider {
 
     const source = document.getText();
     const safeOffset = Math.max(0, Math.min(offset, source.length));
+    const lexical = this.getLexicalCache(uri, document.version, source);
     /*
-     * カーソルより前だけを検索する。
+     * コメント除去済みの全文キャッシュからカーソル位置までを切り出す。
+     * 毎回ソース先頭からコメントを再走査しない。
      */
-    const beforeCursor = source.substring(0, safeOffset);
-    /*
-     * コメントを除去する。
-     *
-     * 改行・文字数は維持する。
-     */
-    const cleanSource = this.maskComments(beforeCursor);
+    const cleanSource = lexical.maskedText.slice(0, safeOffset);
     const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     /*
      * 例:
@@ -580,83 +589,137 @@ export class CompletionProvider {
     return result;
   }
 
-  private isInsideComment(text: string, offset: number): boolean {
-    const safeOffset = Math.max(0, Math.min(offset, text.length));
-    let inBlockComment = false;
-    for (let i = 0; i < safeOffset; i++) {
-      const current = text[i];
-      const next = i + 1 < safeOffset ? text[i + 1] : '';
-      /*
-       * ブロックコメント:
-       *
-       * /*
-       *    ...
-       * *\/
-       */
-      if (!inBlockComment && current === '/' && next === '*') {
-        inBlockComment = true;
-        i++;
-        continue;
-      }
-
-      if (inBlockComment && current === '*' && next === '/') {
-        inBlockComment = false;
-        i++;
-        continue;
-      }
-
-      /*
-       * 行コメント:
-       *
-       * // ...
-       *
-       * 改行までコメント。
-       */
-      if (!inBlockComment && current === '/' && next === '/') {
-        const lineEnd = text.indexOf('\n', i + 2);
-        if (lineEnd === -1 || safeOffset <= lineEnd) {
-          return true;
-        }
-
-        i = lineEnd - 1;
-      }
-    }
-
-    return inBlockComment;
+  private isInsideComment(_text: string, offset: number, cache: LexicalCache): boolean {
+    return this.containsOffset(cache.commentRanges, offset);
   }
 
-  private isInsideString(text: string, offset: number): boolean {
-    let inString = false;
-    let quote = '';
-    let escaped = false;
-    for (let index = 0; index < offset; index++) {
-      const char = text[index];
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
+  private isInsideString(_text: string, offset: number, cache: LexicalCache): boolean {
+    return this.containsOffset(cache.stringRanges, offset);
+  }
 
-      if (char === '\\') {
-        escaped = true;
-        continue;
-      }
-
-      if (!inString) {
-        if (char === '"' || char === "'") {
-          inString = true;
-          quote = char;
-        }
-
-        continue;
-      }
-
-      if (char === quote) {
-        inString = false;
-        quote = '';
+  private containsOffset(ranges: OffsetRange[], offset: number): boolean {
+    let low = 0;
+    let high = ranges.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      const range = ranges[middle];
+      if (offset < range.start) {
+        high = middle - 1;
+      } else if (offset > range.end) {
+        low = middle + 1;
+      } else {
+        return true;
       }
     }
+    return false;
+  }
 
-    return inString;
+  private getLexicalCache(uri: string, version: number, text: string): LexicalCache {
+    const cached = this.lexicalCache;
+    if (cached && cached.uri === uri && cached.version === version && cached.sourceLength === text.length) {
+      return cached;
+    }
+
+    const commentRanges: OffsetRange[] = [];
+    const stringRanges: OffsetRange[] = [];
+    let masked = '';
+    let index = 0;
+    while (index < text.length) {
+      const char = text[index];
+      const next = text[index + 1] ?? '';
+
+      if (char === '/' && next === '/') {
+        const start = index;
+        index += 2;
+        masked += '  ';
+        while (index < text.length && text[index] !== '\n') {
+          masked += ' ';
+          index++;
+        }
+        commentRanges.push({ start, end: index });
+        continue;
+      }
+
+      if (char === '/' && next === '*') {
+        const start = index;
+        index += 2;
+        masked += '  ';
+        while (index < text.length) {
+          if (text[index] === '*' && text[index + 1] === '/') {
+            masked += '  ';
+            index += 2;
+            break;
+          }
+          const value = text[index];
+          masked += value === '\n' ? '\n' : ' ';
+          index++;
+        }
+        commentRanges.push({ start, end: index });
+        continue;
+      }
+
+      if (char === '"' || char === "'") {
+        const start = index;
+        const quote = char;
+        masked += ' ';
+        index++;
+        let escaped = false;
+        while (index < text.length) {
+          const value = text[index];
+          masked += value === '\n' ? '\n' : ' ';
+          index++;
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (value === '\\') {
+            escaped = true;
+            continue;
+          }
+          if (value === quote) {
+            break;
+          }
+        }
+        stringRanges.push({ start, end: index });
+        continue;
+      }
+
+      masked += char;
+      index++;
+    }
+
+    const hlslRanges: OffsetRange[] = [];
+    const directivePattern = /\b(HLSLPROGRAM|CGPROGRAM|HLSLINCLUDE|ENDHLSL|ENDCG)\b/g;
+    let activeStart: number | undefined;
+    let match: RegExpExecArray | null;
+    while ((match = directivePattern.exec(masked)) !== null) {
+      const directive = match[1];
+      if (directive === 'HLSLPROGRAM' || directive === 'CGPROGRAM' || directive === 'HLSLINCLUDE') {
+        if (activeStart === undefined) {
+          activeStart = match.index;
+        }
+        continue;
+      }
+      if (activeStart !== undefined) {
+        hlslRanges.push({ start: activeStart, end: match.index + directive.length });
+        activeStart = undefined;
+      }
+    }
+    if (activeStart !== undefined) {
+      hlslRanges.push({ start: activeStart, end: text.length });
+    }
+
+    const result: LexicalCache = {
+      uri,
+      version,
+      sourceLength: text.length,
+      maskedText: masked,
+      commentRanges,
+      stringRanges,
+      hlslRanges,
+    };
+    this.lexicalCache = result;
+    return result;
   }
 
   private getMemberAccessAtPosition(
@@ -666,7 +729,9 @@ export class CompletionProvider {
     objectName: string;
     prefix: string;
   } | null {
-    const beforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
+    const safeOffset = Math.max(0, Math.min(offset, text.length));
+    const lineStart = text.lastIndexOf('\n', Math.max(0, safeOffset - 1)) + 1;
+    const linePrefix = text.substring(lineStart, safeOffset);
     /*
      * ---------------------------------------------------------
      * 関数呼び出し:
@@ -679,27 +744,43 @@ export class CompletionProvider {
      *
      * ---------------------------------------------------------
      */
-    const functionMemberMatch = beforeCursor.match(/\.([A-Za-z0-9_]*)$/);
+    const functionMemberMatch = linePrefix.match(/\.([A-Za-z0-9_]*)$/);
     if (functionMemberMatch) {
       const prefix = functionMemberMatch[1];
-      const dotIndex = beforeCursor.length - prefix.length - 1;
+      const dotIndex = linePrefix.length - prefix.length - 1;
       let closeParenIndex = dotIndex - 1;
-      while (closeParenIndex >= 0 && /\s/.test(beforeCursor[closeParenIndex])) {
+      while (closeParenIndex >= 0 && /\s/.test(linePrefix[closeParenIndex])) {
         closeParenIndex--;
       }
 
-      if (closeParenIndex >= 0 && beforeCursor[closeParenIndex] === ')') {
-        const openParenIndex = this.findMatchingOpenParen(beforeCursor, closeParenIndex);
+      let functionPrefix = linePrefix;
+      if (closeParenIndex >= 0 && linePrefix[closeParenIndex] === ')') {
+        const openParenIndex = this.findMatchingOpenParen(linePrefix, closeParenIndex);
         if (openParenIndex >= 0) {
-          const functionPrefix = beforeCursor.substring(0, openParenIndex);
-          const functionMatch = functionPrefix.match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
-          if (functionMatch) {
-            return {
-              objectName: functionMatch[1],
-              prefix,
-            };
+          functionPrefix = linePrefix.substring(0, openParenIndex);
+        }
+      } else {
+        // 引数が複数行にまたがる関数呼び出しだけ、必要時に限定して前方を調べる。
+        const fullPrefix = text.substring(0, safeOffset);
+        const fullDotIndex = fullPrefix.length - prefix.length - 1;
+        let fullCloseParenIndex = fullDotIndex - 1;
+        while (fullCloseParenIndex >= 0 && /\s/.test(fullPrefix[fullCloseParenIndex])) {
+          fullCloseParenIndex--;
+        }
+        if (fullCloseParenIndex >= 0 && fullPrefix[fullCloseParenIndex] === ')') {
+          const openParenIndex = this.findMatchingOpenParen(fullPrefix, fullCloseParenIndex);
+          if (openParenIndex >= 0) {
+            functionPrefix = fullPrefix.substring(0, openParenIndex);
           }
         }
+      }
+
+      const functionMatch = functionPrefix.match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+      if (functionMatch) {
+        return {
+          objectName: functionMatch[1],
+          prefix,
+        };
       }
     }
 
@@ -714,9 +795,7 @@ export class CompletionProvider {
      *
      * ---------------------------------------------------------
      */
-    const variableMatch = beforeCursor.match(
-      /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/,
-    );
+    const variableMatch = linePrefix.match(/([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[\s*[^\]]+\s*\])*\s*\.\s*([A-Za-z0-9_]*)$/);
     if (!variableMatch) {
       return null;
     }
@@ -894,26 +973,17 @@ export class CompletionProvider {
   }
 
   private isInsideHlslContext(uri: string, text: string, offset: number): boolean {
-    /*
-     * 独立した .hlsl / .hlsli はファイル全体がHLSLなので、
-     * ShaderLabのブロック境界チェックを行わない。
-     */
     const document = this.documentManager.get(uri);
     if (document && isHlslDocument(document.uri, document.languageId)) {
       return true;
     }
 
-    const beforeCursor = text.substring(0, Math.max(0, Math.min(offset, text.length)));
-    const hlslStart = beforeCursor.lastIndexOf('HLSLPROGRAM');
-    const hlslEnd = beforeCursor.lastIndexOf('ENDHLSL');
-    const cgStart = beforeCursor.lastIndexOf('CGPROGRAM');
-    const cgEnd = beforeCursor.lastIndexOf('ENDCG');
-    const hlslIncludeStart = beforeCursor.lastIndexOf('HLSLINCLUDE');
-    const hlslIncludeEnd = beforeCursor.lastIndexOf('ENDHLSL');
-    const insideHlslProgram = hlslStart > hlslEnd;
-    const insideCgProgram = cgStart > cgEnd;
-    const insideHlslInclude = hlslIncludeStart > hlslIncludeEnd;
-    return insideHlslProgram || insideCgProgram || insideHlslInclude;
+    if (!document) {
+      return false;
+    }
+
+    const lexical = this.getLexicalCache(uri, document.version, text);
+    return lexical.hlslRanges.some((range) => offset >= range.start && offset <= range.end);
   }
 
   private getBuiltinTypes(): string[] {
