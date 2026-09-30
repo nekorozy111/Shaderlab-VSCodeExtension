@@ -20,11 +20,6 @@ Unity URP向けのShaderLab / HLSL用VS Code拡張です。
 - `.shader` / `.hlsl` / `.hlsli` / `.compute` / `.cginc` の解析
 - 編集中の再解析を抑えるdebounceとリクエストキャッシュ
 
-## Requirements
-
-- VS Code 1.90.0以上
-- Unityプロジェクト
-
 ## Usage
 
 UnityプロジェクトをVS Codeで開くだけで使用できます。
@@ -47,19 +42,6 @@ UnityプロジェクトをVS Codeで開くだけで使用できます。
 ```
 
 `urpShaderLab.trace.server` は `off` / `messages` / `verbose` に対応します。
-
-## Build
-
-```bash
-npm install
-npm run compile
-```
-
-VSIXを作成する場合：
-
-```bash
-npm run package
-```
 
 ## License
 
