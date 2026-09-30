@@ -332,14 +332,14 @@ export class IncludeResolver {
       return;
     }
 
-    // 基本include：現在のディレクトリ内のみ検索
     if (!normalizedPrefix.includes('/')) {
+      const normalizedFromDirectory = path.normalize(fromDirectory);
       for (const filePath of files) {
-        if (!filePath.startsWith(fromDirectory)) {
+        const relative = path.relative(normalizedFromDirectory, path.normalize(filePath)).replace(/\\/g, '/');
+        if (!relative || relative.includes('/') || relative === '..' || relative.startsWith('../')) {
           continue;
         }
-        const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
-        if (relative.includes('/') || !relative.toLowerCase().startsWith(normalizedPrefix)) {
+        if (!relative.toLowerCase().startsWith(normalizedPrefix)) {
           continue;
         }
         candidates.set(relative, { includePath: relative });
