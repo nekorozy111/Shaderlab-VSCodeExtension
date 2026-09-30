@@ -40,8 +40,7 @@ export class HoverProvider {
     const textBeforeCursor = line.substring(0, cursorInLine);
     const includeMatch = /^\s*#\s*include\s*(?:"[^"]*|<[^>]*)$/.test(textBeforeCursor);
     if (includeMatch) {
-      console.log(`[HoverProvider] Skip Hover inside include path: "${line}"`);
-      return null;
+            return null;
     }
 
     const word = this.getWordAtPosition(text, offset);
@@ -58,8 +57,7 @@ export class HoverProvider {
       return null;
     }
 
-    console.log(`[HoverProvider] Request "${word}" in ${uri}`);
-    /*
+        /*
      * ---------------------------------------------------------
      * 1. 関数ローカル変数
      *
@@ -112,9 +110,8 @@ export class HoverProvider {
      * ---------------------------------------------------------
      */
     if (symbol) {
-      console.log(`[HoverProvider] Symbol found: ` + `${symbol.name} (${symbol.kind})`);
-      return {
-        contents: this.createHoverContents(symbol),
+            return {
+        contents: this.createHoverContents(symbol, uri),
       };
     }
 
@@ -153,8 +150,7 @@ export class HoverProvider {
      * Symbol も Semantic も見つからない
      * ---------------------------------------------------------
      */
-    console.log(`[HoverProvider] Symbol not found: "${word}"`);
-    return null;
+        return null;
   }
 
   private findLocalVariableSymbol(uri: string, name: string, offset: number): ShaderSymbol | null {
@@ -279,10 +275,24 @@ export class HoverProvider {
     return text.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, ' '));
   }
 
-  private createHoverContents(symbol: ShaderSymbol): MarkupContent {
+  private createHoverContents(symbol: ShaderSymbol, uri: string): MarkupContent {
     const lines: string[] = [];
     lines.push(`**${symbol.kind}**`);
-    lines.push(`\`${symbol.name}\``);
+
+    if (symbol.kind === 'function') {
+      const overloads = this.getFunctionOverloads(uri, symbol);
+      for (const overload of overloads.slice(0, 3)) {
+        lines.push(`\`${this.formatFunctionSignature(overload)}\``);
+      }
+
+      const remaining = overloads.length - 3;
+      if (remaining > 0) {
+        lines.push(`... and ${remaining} more overrides`);
+      }
+    } else {
+      lines.push(`\`${symbol.name}\``);
+    }
+
     if (symbol.typeName) {
       lines.push(`Type: \`${symbol.typeName}\``);
     }
@@ -303,6 +313,44 @@ export class HoverProvider {
       kind: 'markdown',
       value: lines.join('\n\n'),
     };
+  }
+
+  private getFunctionOverloads(uri: string, symbol: ShaderSymbol): ShaderSymbol[] {
+    const matches = this.documentManager
+      .findExactInRelated(uri, symbol.name)
+      .filter((match) => match.symbol.kind === 'function')
+      .map((match) => match.symbol);
+
+    const ordered: ShaderSymbol[] = [symbol];
+    const seen = new Set<string>([this.getFunctionSignatureKey(symbol)]);
+
+    for (const candidate of matches) {
+      const key = this.getFunctionSignatureKey(candidate);
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      ordered.push(candidate);
+    }
+
+    return ordered;
+  }
+
+  private getFunctionSignatureKey(symbol: ShaderSymbol): string {
+    return `${symbol.name}(${symbol.children
+      .filter((child) => child.kind === 'parameter')
+      .map((child) => `${child.typeName ?? ''}:${child.name}`)
+      .join(',')})`;
+  }
+
+  private formatFunctionSignature(symbol: ShaderSymbol): string {
+    const parameters = symbol.children
+      .filter((child) => child.kind === 'parameter')
+      .map((parameter) => `${parameter.typeName ?? 'unknown'}: ${parameter.name}`)
+      .join(', ');
+
+    return `${symbol.name}(${parameters})`;
   }
 
   private getWordAtPosition(text: string, offset: number): string | null {
