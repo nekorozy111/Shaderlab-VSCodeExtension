@@ -147,7 +147,15 @@ export class IncludeResolver {
     }
 
     const fromDirectory = path.dirname(fromPath);
+    const isRelativeInclude =
+      normalizedInclude === '.' ||
+      normalizedInclude === '..' ||
+      normalizedInclude.startsWith('./') ||
+      normalizedInclude.startsWith('../');
     const relativePath = path.resolve(fromDirectory, normalizedInclude);
+    if (isRelativeInclude && !this.isInsideAssets(relativePath)) {
+      return undefined;
+    }
     const relativeResult = this.tryResolve(relativePath, 'relative', normalizedInclude);
     if (relativeResult) {
       return relativeResult;
@@ -350,7 +358,8 @@ export class IncludeResolver {
     includePath: string,
     candidates: Map<string, IncludeCompletionCandidate>,
   ): void {
-    if (!this.projectRoot.isInsideProject(fromDirectory)) {
+    // プロジェクト側の相対include補完はAssets配下だけを検索対象にする。
+    if (!this.isInsideAssets(fromDirectory)) {
       return;
     }
 
@@ -381,7 +390,8 @@ export class IncludeResolver {
     const directoryPart = normalizedPrefix.substring(0, slashIndex + 1);
     const partial = normalizedPrefix.substring(slashIndex + 1);
     const targetDirectory = path.resolve(fromDirectory, directoryPart);
-    if (!this.projectRoot.isInsideProject(targetDirectory)) {
+    // ../ を繰り返してもAssetsの外へ出ないようにする。
+    if (!this.isInsideAssets(targetDirectory)) {
       return;
     }
 
@@ -409,7 +419,8 @@ export class IncludeResolver {
     candidates: Map<string, IncludeCompletionCandidate>,
     includePrefix = '',
   ): void {
-    if (!this.projectRoot.isInsideProject(directoryPath) || !this.fileSystem.isDirectory(directoryPath)) {
+    // ディレクトリ候補もAssets配下だけに限定する。
+    if (!this.isInsideAssets(directoryPath) || !this.fileSystem.isDirectory(directoryPath)) {
       return;
     }
 
@@ -434,7 +445,8 @@ export class IncludeResolver {
     if (this.indexedProjectDirectories.has(normalizedDirectory)) {
       return;
     }
-    if (!this.projectRoot.isInsideProject(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
+    // プロジェクト側キャッシュの最大到達地点をAssetsに固定する。
+    if (!this.isInsideAssets(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
       return;
     }
 
@@ -821,6 +833,9 @@ export class IncludeResolver {
 
   private updateProjectIncludeFile(filePath: string, type: number): void {
     const normalized = path.normalize(filePath);
+    if (!this.isInsideAssets(normalized)) {
+      return;
+    }
     const directory = path.normalize(path.dirname(normalized));
     const indexed = this.indexedProjectDirectories.has(directory);
 
@@ -856,16 +871,27 @@ export class IncludeResolver {
   }
 
   private isProjectIncludeFile(filePath: string): boolean {
+    if (!this.isInsideAssets(filePath) || !this.isIncludeFile(filePath)) {
+      return false;
+    }
+    return true;
+  }
+
+  private isInsideAssets(filePath: string): boolean {
     const root = this.projectRoot.getPath();
-    if (!root || !this.isIncludeFile(filePath)) {
+    if (!root) {
       return false;
     }
-    const relative = path.relative(root, filePath);
-    if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+
+    const assetsRoot = path.resolve(root, 'Assets');
+    const normalizedPath = path.resolve(filePath);
+    const relative = path.relative(assetsRoot, normalizedPath);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
       return false;
     }
-    const first = relative.split(path.sep)[0];
-    return first !== 'Library' && first !== 'Packages' && first !== 'ProjectSettings';
+
+    // Assets内のsymlinkから外へ出る経路も許可しない。
+    return this.projectRoot.isInsideProject(normalizedPath);
   }
 
   private isIncludeFile(filePath: string): boolean {
