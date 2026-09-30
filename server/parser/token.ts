@@ -1,5 +1,4 @@
 export type TokenKind = 'identifier' | 'number' | 'string' | 'symbol' | 'operator' | 'preprocessor' | 'unknown' | 'eof';
-
 export interface SourcePosition {
   offset: number;
   line: number;

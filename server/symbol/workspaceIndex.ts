@@ -4,60 +4,46 @@ import { SymbolExtractor } from './symbolExtractor';
 
 export interface SymbolMatch {
   symbol: ShaderSymbol;
-
   uri: string;
 }
 
 export class WorkspaceIndex {
   private readonly documents = new Map<string, ParsedDocument>();
-
   private readonly symbols = new Map<string, ShaderSymbol[]>();
   private readonly symbolCounts = new Map<string, number>();
   private totalSymbolCount = 0;
-
   /**
    * 正規化したシンボル名 -> 定義一覧。
    * F12 の完全一致検索で全ドキュメント/全ASTを走査しないための index。
    */
   private readonly symbolsByName = new Map<string, SymbolMatch[]>();
-
   private readonly prefixCache = new Map<string, SymbolMatch[]>();
   private readonly maxPrefixCacheEntries = 256;
   private sortedSymbolNames: string[] = [];
   private symbolNamesDirty = true;
-
   private readonly symbolExtractor = new SymbolExtractor();
-
   public update(document: ParsedDocument): void {
     // 同じ URI の古い symbol を先に除去する。
     this.remove(document.uri);
-
     this.documents.set(document.uri, document);
-
     const extracted = this.symbolExtractor.extract(document);
-
     this.symbols.set(document.uri, extracted);
-
     // Symbol数は更新時に一度だけ計算して保持する。
     // findPrefixInUris() の検索対象判定で毎回ASTを再帰走査しない。
     const symbolCount = this.countSymbols(extracted);
     this.symbolCounts.set(document.uri, symbolCount);
     this.totalSymbolCount += symbolCount;
-
     this.addToNameIndex(document.uri, extracted);
   }
 
   public remove(uri: string): void {
     this.documents.delete(uri);
-
     const existingSymbols = this.symbols.get(uri);
-
     if (existingSymbols) {
       this.removeFromNameIndex(uri, existingSymbols);
     }
 
     this.symbols.delete(uri);
-
     const symbolCount = this.symbolCounts.get(uri);
     if (symbolCount !== undefined) {
       this.totalSymbolCount -= symbolCount;
@@ -93,7 +79,6 @@ export class WorkspaceIndex {
    */
   public getDocumentSymbolCount(uris: Set<string>): number {
     let count = 0;
-
     for (const uri of uris) {
       count += this.symbolCounts.get(uri) ?? 0;
     }
@@ -111,9 +96,7 @@ export class WorkspaceIndex {
       return [];
     }
 
-    return matches
-      .filter((match) => uris.has(match.uri))
-      .slice();
+    return matches.filter((match) => uris.has(match.uri)).slice();
   }
 
   /**
@@ -123,7 +106,6 @@ export class WorkspaceIndex {
   public findPrefixInUris(prefix: string, uris: Set<string>): SymbolMatch[] {
     const normalized = prefix.toLowerCase();
     const results: SymbolMatch[] = [];
-
     for (const uri of uris) {
       const symbols = this.symbols.get(uri);
       if (symbols) {
@@ -136,7 +118,6 @@ export class WorkspaceIndex {
 
   public findExact(name: string): SymbolMatch[] {
     const normalized = name.toLowerCase();
-
     return [...(this.symbolsByName.get(normalized) ?? [])];
   }
 
@@ -146,7 +127,6 @@ export class WorkspaceIndex {
 
   public getAllSymbols(): SymbolMatch[] {
     const results: SymbolMatch[] = [];
-
     for (const [uri, symbols] of this.symbols) {
       this.collectAllSymbols(uri, symbols, results);
     }
@@ -176,7 +156,6 @@ export class WorkspaceIndex {
     const results: SymbolMatch[] = [];
     const names = this.getSortedSymbolNames();
     const start = this.lowerBound(names, normalized);
-
     // 名前をソートした配列から二分探索し、prefixに該当する範囲だけを見る。
     for (let i = start; i < names.length; i++) {
       const name = names[i];
@@ -215,7 +194,6 @@ export class WorkspaceIndex {
   private lowerBound(values: string[], target: string): number {
     let low = 0;
     let high = values.length;
-
     while (low < high) {
       const mid = low + Math.floor((high - low) / 2);
       if (values[mid] < target) {
@@ -232,10 +210,8 @@ export class WorkspaceIndex {
     for (const symbol of symbols) {
       const normalized = symbol.name.toLowerCase();
       const matches = this.symbolsByName.get(normalized) ?? [];
-
       matches.push({ symbol, uri });
       this.symbolsByName.set(normalized, matches);
-
       if (symbol.children.length > 0) {
         this.addToNameIndex(uri, symbol.children);
       }
@@ -246,10 +222,8 @@ export class WorkspaceIndex {
     for (const symbol of symbols) {
       const normalized = symbol.name.toLowerCase();
       const matches = this.symbolsByName.get(normalized);
-
       if (matches) {
         const remaining = matches.filter((match) => match.uri !== uri || match.symbol !== symbol);
-
         if (remaining.length === 0) {
           this.symbolsByName.delete(normalized);
         } else {
@@ -284,7 +258,6 @@ export class WorkspaceIndex {
         symbol,
         uri,
       });
-
       if (symbol.children.length > 0) {
         this.collectAllSymbols(uri, symbol.children, results);
       }
@@ -293,10 +266,8 @@ export class WorkspaceIndex {
 
   private countSymbols(symbols: ShaderSymbol[]): number {
     let count = 0;
-
     for (const symbol of symbols) {
       count++;
-
       count += this.countSymbols(symbol.children);
     }
 

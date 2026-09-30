@@ -1,34 +1,33 @@
 import * as path from 'path';
 
 /**
- * Language IDs used by the editor and the language server.
+ * エディターと言語サーバーで使用する言語ID。
  *
- * Unity's editor integration commonly assigns `UnityShader` to .shader,
- * .hlsl and .compute alike. Therefore languageId alone cannot tell us
- * whether a document is ShaderLab or standalone HLSL.
+ * Unityのエディター連携では、.shader に `UnityShader` を割り当てることがある。
+ * さらに .hlsl と .compute にも同じIDが割り当てられるため、languageId だけでは
+ * ドキュメントがShaderLabか単独HLSLかを判定できない。
  */
 export function isUnityShaderLanguage(languageId: string | undefined): boolean {
   return languageId === 'shaderlab' || languageId === 'UnityShader';
 }
 
 /**
- * Returns the source language that should be used by the parser/providers.
+ * パーサーとProviderで使用するソース言語を返す。
  *
- * For UnityShader documents the URI extension is authoritative:
+ * UnityShaderドキュメントではURIの拡張子を優先して判定する。
  *   .shader  -> ShaderLab
  *   .hlsl    -> HLSL
  *   .hlsli   -> HLSL
  *   .compute -> HLSL/Compute source
  *
- * Explicit language IDs remain supported for documents opened by this
- * extension or by the language server itself.
+ * 明示的な言語IDも、拡張機能または言語サーバー自身によって開かれた
+ * ドキュメントでは引き続き使用できる。
  */
 export function getSourceLanguage(
   uri: string | undefined,
   languageId: string | undefined,
 ): 'shaderlab' | 'hlsl' | undefined {
   const extension = getUriExtension(uri);
-
   if (extension === '.shader') {
     return 'shaderlab';
   }
@@ -48,17 +47,11 @@ export function getSourceLanguage(
   return undefined;
 }
 
-export function isShaderLabDocument(
-  uri: string | undefined,
-  languageId: string | undefined,
-): boolean {
+export function isShaderLabDocument(uri: string | undefined, languageId: string | undefined): boolean {
   return getSourceLanguage(uri, languageId) === 'shaderlab';
 }
 
-export function isHlslDocument(
-  uri: string | undefined,
-  languageId: string | undefined,
-): boolean {
+export function isHlslDocument(uri: string | undefined, languageId: string | undefined): boolean {
   return getSourceLanguage(uri, languageId) === 'hlsl';
 }
 

@@ -6,25 +6,20 @@ import { HlslStructNode, ShaderHlslBlockNode } from '../parser/ast';
 import { SourceRange } from '../parser/token';
 
 export class HoverProvider {
-  constructor(
+  public constructor(
     private readonly documentManager: DocumentManager,
     private readonly definitionProvider: DefinitionProvider,
   ) {}
-
   public provideHover(uri: string, position: Position): Hover | null {
     const document = this.documentManager.get(uri);
-
     if (!document) {
       return null;
     }
 
     // Hover要求時点で最新AST/WorkspaceIndexを同期する。
     this.documentManager.getParsed(uri);
-
     const offset = document.offsetAt(position);
-
     const text = document.getText();
-
     /*
      * ---------------------------------------------------------
      * #include のパス内では Hover を表示しない
@@ -38,30 +33,22 @@ export class HoverProvider {
      * ---------------------------------------------------------
      */
     const lineStart = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
-
     const lineEndIndex = text.indexOf('\n', offset);
-
     const lineEnd = lineEndIndex >= 0 ? lineEndIndex : text.length;
-
     const line = text.substring(lineStart, lineEnd);
-
     const cursorInLine = offset - lineStart;
-
     const textBeforeCursor = line.substring(0, cursorInLine);
-
     const includeMatch = /^\s*#\s*include\s*(?:"[^"]*|<[^>]*)$/.test(textBeforeCursor);
-
     if (includeMatch) {
       console.log(`[HoverProvider] Skip Hover inside include path: "${line}"`);
-
       return null;
     }
 
     const word = this.getWordAtPosition(text, offset);
-
     if (!word) {
       return null;
     }
+
     /*
      * ---------------------------------------------------------
      * コメント内では Hover を表示しない
@@ -70,13 +57,13 @@ export class HoverProvider {
     if (this.isInsideComment(text, offset)) {
       return null;
     }
-    console.log(`[HoverProvider] Request "${word}" in ${uri}`);
 
+    console.log(`[HoverProvider] Request "${word}" in ${uri}`);
     /*
      * ---------------------------------------------------------
-     * 1. Function-local variable
+     * 1. 関数ローカル変数
      *
-     * Local variable は、同名の struct field / cbuffer field
+     * ローカル変数は、同名のstruct field / cbuffer field
      * より優先する。
      *
      * 例:
@@ -94,44 +81,38 @@ export class HoverProvider {
      * を優先する。
      * ---------------------------------------------------------
      */
-
     let symbol = this.findFieldDeclarationAtPosition(uri, offset, word);
-
     if (!symbol) {
       symbol = this.findLocalVariableSymbol(uri, word, offset);
     }
 
     /*
      * ---------------------------------------------------------
-     * 2. DefinitionProvider の通常の Symbol
+     * 2. DefinitionProviderの通常のSymbol
      * ---------------------------------------------------------
      */
-
     if (!symbol) {
       symbol = this.definitionProvider.resolveSymbolAtPosition(uri, position);
     }
 
     /*
      * ---------------------------------------------------------
-     * 3. Include scope 内の Symbol
+     * 3. includeスコープ内のSymbol
      * ---------------------------------------------------------
      */
-
     if (!symbol) {
       symbol = this.findIncludedSymbol(uri, word);
     }
 
     /*
      * ---------------------------------------------------------
-     * Symbol が見つかった場合
+     * Symbolが見つかった場合
      *
      * Semantic より Symbol を優先する。
      * ---------------------------------------------------------
      */
-
     if (symbol) {
       console.log(`[HoverProvider] Symbol found: ` + `${symbol.name} (${symbol.kind})`);
-
       return {
         contents: this.createHoverContents(symbol),
       };
@@ -139,19 +120,16 @@ export class HoverProvider {
 
     /*
      * ---------------------------------------------------------
-     * 4. Semantic fallback
+     * 4. Semanticへのフォールバック
      *
      * Symbol が見つからなかった場合だけ、
      * POSITION / NORMAL / COLOR / TEXCOORD などを
      * Semantic として扱う。
      * ---------------------------------------------------------
      */
-
     const semanticDescription = this.getSemanticDescription(word);
-
     if (semanticDescription) {
       const field = this.findFieldBySemantic(uri, offset, word);
-
       if (field) {
         return {
           contents: {
@@ -175,22 +153,18 @@ export class HoverProvider {
      * Symbol も Semantic も見つからない
      * ---------------------------------------------------------
      */
-
     console.log(`[HoverProvider] Symbol not found: "${word}"`);
-
     return null;
   }
 
   private findLocalVariableSymbol(uri: string, name: string, offset: number): ShaderSymbol | null {
     const document = this.documentManager.get(uri);
-
     if (!document) {
       return null;
     }
 
     const text = document.getText();
     const maskedText = this.maskComments(text);
-
     // ------------------------------------------------------------
     // ローカル変数の宣言を検索
     //
@@ -200,25 +174,18 @@ export class HoverProvider {
     //
     // カーソルが color の途中にあっても検出する。
     // ------------------------------------------------------------
-
     const declarationPattern =
       /\b(?:(?:const|static|uniform|volatile|inline)\s+)*([A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
-
     let match: RegExpExecArray | null;
     let bestMatch: RegExpExecArray | null = null;
-
     while ((match = declarationPattern.exec(maskedText)) !== null) {
-      const typeName = match[1];
       const variableName = match[2];
-
       if (variableName !== name) {
         continue;
       }
 
       const variableNameOffset = match.index + match[0].lastIndexOf(variableName);
-
       const variableEnd = variableNameOffset + variableName.length;
-
       // カーソルが変数名そのものにある
       if (offset >= variableNameOffset && offset <= variableEnd) {
         bestMatch = match;
@@ -237,7 +204,6 @@ export class HoverProvider {
 
     const typeName = bestMatch[1];
     const variableName = bestMatch[2];
-
     if (variableName !== name) {
       return null;
     }
@@ -252,15 +218,10 @@ export class HoverProvider {
     // の color 宣言を DefinitionProvider より優先して
     // local variable として取得すること。
     // ------------------------------------------------------------
-
     const variableNameOffset = bestMatch.index + bestMatch[0].lastIndexOf(variableName);
-
     const variableEnd = variableNameOffset + variableName.length;
-
     const startPosition = document.positionAt(variableNameOffset);
-
     const endPosition = document.positionAt(variableEnd);
-
     const range: SourceRange = {
       start: {
         line: startPosition.line,
@@ -273,17 +234,13 @@ export class HoverProvider {
         offset: variableEnd,
       },
     };
-
     // ------------------------------------------------------------
     // 型の解決
     //
     // include の探索は既存の findIncludedSymbol() に任せる。
     // ------------------------------------------------------------
-
     let typeSymbol: ShaderSymbol | null = null;
-
     const exactMatches = this.documentManager.findExactInRelated(uri, typeName);
-
     for (const match of exactMatches) {
       if (match.symbol.kind === 'struct' || match.symbol.kind === 'cbuffer') {
         typeSymbol = match.symbol;
@@ -294,10 +251,8 @@ export class HoverProvider {
     // ------------------------------------------------------------
     // include 側にある型も探す
     // ------------------------------------------------------------
-
     if (!typeSymbol) {
       const includedSymbol = this.findIncludedSymbol(uri, typeName);
-
       if (includedSymbol) {
         typeSymbol = includedSymbol;
       }
@@ -306,7 +261,6 @@ export class HoverProvider {
     // ------------------------------------------------------------
     // ローカル変数 Symbol
     // ------------------------------------------------------------
-
     return {
       name: variableName,
       kind: 'variable',
@@ -325,35 +279,10 @@ export class HoverProvider {
     return text.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\r\n]/g, ' '));
   }
 
-  private positionFromOffset(text: string, offset: number) {
-    let line = 0;
-    let character = 0;
-
-    const limit = Math.min(Math.max(0, offset), text.length);
-
-    for (let index = 0; index < limit; index++) {
-      if (text[index] === '\n') {
-        line++;
-        character = 0;
-      } else {
-        character++;
-      }
-    }
-
-    return {
-      offset,
-      line,
-      character,
-    };
-  }
-
   private createHoverContents(symbol: ShaderSymbol): MarkupContent {
     const lines: string[] = [];
-
     lines.push(`**${symbol.kind}**`);
-
     lines.push(`\`${symbol.name}\``);
-
     if (symbol.typeName) {
       lines.push(`Type: \`${symbol.typeName}\``);
     }
@@ -384,15 +313,12 @@ export class HoverProvider {
     const isIdentifierCharacter = (char: string): boolean => {
       return /[A-Za-z0-9_]/.test(char);
     };
-
     let start = offset;
-
     while (start > 0 && isIdentifierCharacter(text[start - 1])) {
       start--;
     }
 
     let end = offset;
-
     while (end < text.length && isIdentifierCharacter(text[end])) {
       end++;
     }
@@ -403,65 +329,38 @@ export class HoverProvider {
 
     return text.substring(start, end);
   }
+
   private getSemanticDescription(semantic: string): string | undefined {
     const descriptions: Record<string, string> = {
       POSITION: 'Vertex position input/output.',
-
       NORMAL: 'Vertex normal input/output.',
-
       TANGENT: 'Vertex tangent input/output.',
-
       COLOR: 'Vertex color input/output.',
-
       TEXCOORD0: 'Texture coordinate 0.',
-
       TEXCOORD1: 'Texture coordinate 1.',
-
       TEXCOORD2: 'Texture coordinate 2.',
-
       TEXCOORD3: 'Texture coordinate 3.',
-
       TEXCOORD4: 'Texture coordinate 4.',
-
       TEXCOORD5: 'Texture coordinate 5.',
-
       TEXCOORD6: 'Texture coordinate 6.',
-
       TEXCOORD7: 'Texture coordinate 7.',
-
       SV_POSITION: 'System-value semantic for vertex position.',
-
       SV_TARGET: 'System-value semantic for render-target output.',
-
       SV_TARGET0: 'System-value semantic for render-target 0.',
-
       SV_TARGET1: 'System-value semantic for render-target 1.',
-
       SV_TARGET2: 'System-value semantic for render-target 2.',
-
       SV_TARGET3: 'System-value semantic for render-target 3.',
-
       SV_TARGET4: 'System-value semantic for render-target 4.',
-
       SV_TARGET5: 'System-value semantic for render-target 5.',
-
       SV_TARGET6: 'System-value semantic for render-target 6.',
-
       SV_TARGET7: 'System-value semantic for render-target 7.',
-
       SV_DEPTH: 'System-value semantic for depth output.',
-
       SV_VERTEXID: 'System-value semantic containing the vertex ID.',
-
       SV_INSTANCEID: 'System-value semantic containing the instance ID.',
-
       SV_PRIMITIVEID: 'System-value semantic containing the primitive ID.',
-
       SV_ISFRONTFACE: 'System-value semantic indicating whether the primitive is front-facing.',
-
       SV_SAMPLEINDEX: 'System-value semantic containing the sample index.',
     };
-
     return descriptions[semantic.toUpperCase()];
   }
 
@@ -477,19 +376,16 @@ export class HoverProvider {
       }
     | undefined {
     const parsed = this.documentManager.getParsed(uri);
-
     if (!parsed) {
       return undefined;
     }
 
     const ast = parsed.ast;
-
     if (ast.kind !== 'ShaderDocument') {
       return undefined;
     }
 
     const target = semantic.toUpperCase();
-
     const isInsideRange = (range: {
       start: {
         offset: number;
@@ -500,7 +396,6 @@ export class HoverProvider {
     }): boolean => {
       return offset >= range.start.offset && offset <= range.end.offset;
     };
-
     const searchStruct = (structNode: HlslStructNode) => {
       for (const field of structNode.fields) {
         if (!field.semantic) {
@@ -524,7 +419,6 @@ export class HoverProvider {
 
       return undefined;
     };
-
     const searchHlslBlock = (hlslBlock: ShaderHlslBlockNode) => {
       for (const declaration of hlslBlock.hlsl.declarations) {
         if (declaration.kind !== 'HlslStruct') {
@@ -536,7 +430,6 @@ export class HoverProvider {
         }
 
         const field = searchStruct(declaration);
-
         if (field) {
           return field;
         }
@@ -544,11 +437,9 @@ export class HoverProvider {
 
       return undefined;
     };
-
     // ShaderDocument直下のHLSL
     for (const hlslBlock of ast.hlslBlocks) {
       const field = searchHlslBlock(hlslBlock);
-
       if (field) {
         return field;
       }
@@ -558,7 +449,6 @@ export class HoverProvider {
     for (const subShader of ast.subShaders) {
       for (const hlslBlock of subShader.hlslBlocks) {
         const field = searchHlslBlock(hlslBlock);
-
         if (field) {
           return field;
         }
@@ -567,7 +457,6 @@ export class HoverProvider {
       for (const pass of subShader.passes) {
         for (const hlslBlock of pass.hlslBlocks) {
           const field = searchHlslBlock(hlslBlock);
-
           if (field) {
             return field;
           }
@@ -580,14 +469,13 @@ export class HoverProvider {
 
   private findIncludedSymbol(uri: string, name: string): ShaderSymbol | null {
     const matches = this.documentManager.findExactInRelated(uri, name);
-
     if (matches.length === 0) {
       return null;
     }
 
     /*
-     * Prefer the most specific symbol kinds
-     * that normally represent HLSL declarations.
+     * 最も具体的なSymbol種別を優先する。
+     * 通常はHLSL宣言を表すもの。
      */
     const preferred = matches.find(
       (match) =>
@@ -596,15 +484,13 @@ export class HoverProvider {
         match.symbol.kind === 'cbuffer' ||
         match.symbol.kind === 'macro',
     );
-
     return preferred?.symbol ?? matches[0].symbol;
   }
+
   private findFieldDeclarationAtPosition(uri: string, offset: number, name: string): ShaderSymbol | null {
     const matches = this.documentManager.getWorkspaceIndex().findExact(name);
-
     for (const match of matches) {
       const symbol = match.symbol;
-
       if (symbol.location.uri !== uri) {
         continue;
       }
@@ -614,7 +500,6 @@ export class HoverProvider {
       }
 
       const range = symbol.location.range;
-
       if (offset >= range.start.offset && offset <= range.end.offset) {
         return symbol;
       }
@@ -622,14 +507,13 @@ export class HoverProvider {
 
     return null;
   }
+
   private isInsideComment(text: string, offset: number): boolean {
     let inLineComment = false;
     let inBlockComment = false;
-
     for (let i = 0; i < offset; i++) {
       const current = text[i];
       const next = text[i + 1];
-
       if (inLineComment) {
         if (current === '\n') {
           inLineComment = false;

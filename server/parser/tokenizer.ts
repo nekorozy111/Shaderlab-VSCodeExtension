@@ -22,41 +22,32 @@ const TWO_CHARACTER_OPERATORS = new Set<string>([
   '|=',
   '^=',
 ]);
-
 const ONE_CHARACTER_OPERATORS = new Set<string>(['+', '-', '*', '/', '%', '=', '<', '>', '!', '&', '|', '^', '~', '?']);
-
 const SYMBOLS = new Set<string>(['{', '}', '(', ')', '[', ']', ';', ',', ':', '.']);
-
 export class Tokenizer {
   private readonly source: string;
-
   private offset = 0;
   private line = 0;
   private character = 0;
-
   public constructor(source: string) {
     this.source = source;
   }
 
   public tokenize(): Token[] {
     const tokens: Token[] = [];
-
     while (!this.isAtEnd()) {
       this.skipWhitespaceAndComments();
-
       if (this.isAtEnd()) {
         break;
       }
 
       const token = this.readToken();
-
       if (token !== undefined) {
         tokens.push(token);
       }
     }
 
     const eofPosition = this.currentPosition();
-
     tokens.push({
       kind: 'eof',
       value: '',
@@ -65,13 +56,11 @@ export class Tokenizer {
         end: eofPosition,
       },
     });
-
     return tokens;
   }
 
   private readToken(): Token | undefined {
     const char = this.peek();
-
     if (char === undefined) {
       return undefined;
     }
@@ -93,7 +82,6 @@ export class Tokenizer {
     }
 
     const twoCharacters = `${char}${this.peek(1) ?? ''}`;
-
     if (TWO_CHARACTER_OPERATORS.has(twoCharacters)) {
       return this.readFixedLengthToken('operator', 2);
     }
@@ -111,12 +99,9 @@ export class Tokenizer {
 
   private readIdentifier(): Token {
     const start = this.currentPosition();
-
     let value = '';
-
     while (!this.isAtEnd()) {
       const char = this.peek();
-
       if (char === undefined || !this.isIdentifierPart(char)) {
         break;
       }
@@ -137,14 +122,10 @@ export class Tokenizer {
 
   private readNumber(): Token {
     const start = this.currentPosition();
-
     let value = '';
-
     let hasDot = false;
-
     while (!this.isAtEnd()) {
       const char = this.peek();
-
       if (char === undefined) {
         break;
       }
@@ -183,11 +164,8 @@ export class Tokenizer {
 
   private readString(): Token {
     const start = this.currentPosition();
-
     const quote = this.peek();
-
     let value = '';
-
     if (quote === undefined) {
       return {
         kind: 'string',
@@ -200,10 +178,8 @@ export class Tokenizer {
     }
 
     this.advance();
-
     while (!this.isAtEnd()) {
       const char = this.peek();
-
       if (char === undefined) {
         break;
       }
@@ -211,9 +187,7 @@ export class Tokenizer {
       if (char === '\\') {
         value += char;
         this.advance();
-
         const escaped = this.peek();
-
         if (escaped !== undefined) {
           value += escaped;
           this.advance();
@@ -243,9 +217,7 @@ export class Tokenizer {
 
   private readPreprocessorMarker(): Token {
     const start = this.currentPosition();
-
     this.advance();
-
     return {
       kind: 'preprocessor',
       value: '#',
@@ -258,12 +230,9 @@ export class Tokenizer {
 
   private readFixedLengthToken(kind: TokenKind, length: number): Token {
     const start = this.currentPosition();
-
     let value = '';
-
     for (let index = 0; index < length; index++) {
       const char = this.peek();
-
       if (char === undefined) {
         break;
       }
@@ -285,7 +254,6 @@ export class Tokenizer {
   private skipWhitespaceAndComments(): void {
     while (!this.isAtEnd()) {
       const char = this.peek();
-
       if (char === undefined) {
         return;
       }
@@ -312,10 +280,8 @@ export class Tokenizer {
   private skipLineComment(): void {
     this.advance();
     this.advance();
-
     while (!this.isAtEnd()) {
       const char = this.peek();
-
       if (char === undefined || char === '\n') {
         return;
       }
@@ -327,7 +293,6 @@ export class Tokenizer {
   private skipBlockComment(): void {
     this.advance();
     this.advance();
-
     while (!this.isAtEnd()) {
       if (this.peek() === '*' && this.peek(1) === '/') {
         this.advance();
@@ -357,9 +322,7 @@ export class Tokenizer {
     }
 
     const char = this.source[this.offset];
-
     this.offset++;
-
     if (char === '\n') {
       this.line++;
       this.character = 0;

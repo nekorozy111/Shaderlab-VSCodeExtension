@@ -14,7 +14,6 @@ import {
   ShaderPropertyNode,
   ShaderSubShaderNode,
 } from '../parser/ast';
-
 import { ShaderSymbol, SymbolKind } from './symbol';
 import { getSourceLanguage } from '../language/languageId';
 
@@ -29,34 +28,32 @@ export class SymbolExtractor {
 
   private extractShaderDocument(document: ParsedDocument): ShaderSymbol[] {
     const ast = document.ast as ShaderDocumentNode;
-
     const result: ShaderSymbol[] = [];
-
     /*
-     * Shader
+     * シェーダー
      */
     if (ast.shaderName) {
       result.push(this.createSymbol(ast.shaderName, 'shader', ast.shaderName, document.uri));
     }
 
     /*
-     * Properties
+     * プロパティ群
      */
     for (const property of ast.properties) {
       result.push(this.extractProperty(property, document.uri));
     }
 
     /*
-     * SubShaders
+     * Subシェーダー群
      */
     for (const subShader of ast.subShaders) {
       result.push(this.extractSubShader(subShader, document.uri));
     }
 
     /*
-     * Shader-level HLSL blocks
+     * シェーダーレベルのHLSLブロック
      *
-     * ShaderDocumentNode.hlslBlocks
+     * シェーダーDocumentNode.hlslBlocks
      */
     for (const block of ast.hlslBlocks) {
       result.push(...this.extractHlslBlock(block, document.uri));
@@ -80,9 +77,8 @@ export class SymbolExtractor {
 
   private extractSubShader(subShader: ShaderSubShaderNode, uri: string): ShaderSymbol {
     const children: ShaderSymbol[] = [];
-
     /*
-     * SubShader 内の HLSL
+     * Subシェーダー 内の HLSL
      */
     for (const block of subShader.hlslBlocks) {
       children.push(...this.extractHlslBlock(block, uri));
@@ -109,9 +105,8 @@ export class SymbolExtractor {
 
   private extractPass(pass: ShaderPassNode, uri: string): ShaderSymbol {
     const children: ShaderSymbol[] = [];
-
     /*
-     * Pass 内の HLSLPROGRAM / HLSLINCLUDE
+     * Pass内のHLSLPROGRAM / HLSLINCLUDE
      */
     for (const block of pass.hlslBlocks) {
       children.push(...this.extractHlslBlock(block, uri));
@@ -144,12 +139,9 @@ export class SymbolExtractor {
 
   private extractHlslDocument(document: ParsedDocument): ShaderSymbol[] {
     const ast = document.ast as HlslDocumentNode;
-
     const result: ShaderSymbol[] = [];
-
     for (const declaration of ast.declarations) {
       const symbol = this.extractHlslDeclaration(declaration, document.uri);
-
       if (symbol) {
         result.push(symbol);
       }
@@ -162,22 +154,16 @@ export class SymbolExtractor {
     switch (declaration.kind) {
       case 'HlslStruct':
         return this.extractStruct(declaration, uri);
-
       case 'HlslFunction':
         return this.extractFunction(declaration, uri);
-
       case 'HlslVariable':
         return this.extractVariable(declaration, uri);
-
       case 'HlslCBuffer':
         return this.extractCBuffer(declaration, uri);
-
       case 'HlslMacro':
         return this.extractMacro(declaration, uri);
-
       case 'HlslInclude':
         return this.extractInclude(declaration, uri);
-
       default:
         return undefined;
     }
@@ -185,7 +171,6 @@ export class SymbolExtractor {
 
   private extractStruct(node: HlslStructNode, uri: string): ShaderSymbol {
     const children: ShaderSymbol[] = [];
-
     for (const field of node.fields) {
       children.push({
         name: field.name,
@@ -216,7 +201,6 @@ export class SymbolExtractor {
 
   private extractFunction(node: HlslFunctionNode, uri: string): ShaderSymbol {
     const children: ShaderSymbol[] = [];
-
     for (const parameter of node.parameters) {
       children.push({
         name: parameter.name,
@@ -263,7 +247,6 @@ export class SymbolExtractor {
 
   private extractCBuffer(node: HlslCBufferNode, uri: string): ShaderSymbol {
     const children: ShaderSymbol[] = [];
-
     for (const field of node.fields) {
       children.push({
         name: field.name,

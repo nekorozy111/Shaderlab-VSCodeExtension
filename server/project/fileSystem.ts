@@ -48,14 +48,12 @@ export class FileSystem {
     }
 
     const entries = this.listDirectory(parentDirectory);
-
     for (const entry of entries) {
       if (!entry.startsWith(prefix)) {
         continue;
       }
 
       const candidate = path.join(parentDirectory, entry);
-
       if (this.isDirectory(candidate)) {
         return candidate;
       }
@@ -66,7 +64,6 @@ export class FileSystem {
 
   public findFile(parentDirectory: string, fileName: string): string | undefined {
     const candidate = path.join(parentDirectory, fileName);
-
     if (this.isFile(candidate)) {
       return candidate;
     }

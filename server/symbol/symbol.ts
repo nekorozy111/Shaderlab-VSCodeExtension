@@ -13,29 +13,19 @@ export type SymbolKind =
   | 'cbuffer'
   | 'macro'
   | 'include';
-
 export interface SymbolLocation {
   uri: string;
-
   range: SourceRange;
-
   selectionRange: SourceRange;
 }
 
 export interface ShaderSymbol {
   name: string;
-
   kind: SymbolKind;
-
   location: SymbolLocation;
-
   typeName?: string;
-
   returnType?: string;
-
   semantic?: string;
-
   parentName?: string;
-
   children: ShaderSymbol[];
 }

@@ -1,23 +1,19 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
-
 export async function startLanguageClient(context: vscode.ExtensionContext): Promise<void> {
   if (client !== undefined) {
     return;
   }
 
   const serverModule = context.asAbsolutePath(path.join('out', 'server', 'server.js'));
-
   const serverOptions: ServerOptions = {
     run: {
       module: serverModule,
       transport: TransportKind.ipc,
     },
-
     debug: {
       module: serverModule,
       transport: TransportKind.ipc,
@@ -26,7 +22,6 @@ export async function startLanguageClient(context: vscode.ExtensionContext): Pro
       },
     },
   };
-
   const clientOptions: LanguageClientOptions = {
     documentSelector: [
       {
@@ -50,21 +45,17 @@ export async function startLanguageClient(context: vscode.ExtensionContext): Pro
         language: 'compute',
       },
     ],
-
     synchronize: {
       configurationSection: 'urpShaderLab',
     },
-
     outputChannelName: 'URP ShaderLab Tools',
   };
-
   client = new LanguageClient(
     'urpShaderLabLanguageServer',
     'URP ShaderLab Language Server',
     serverOptions,
     clientOptions,
   );
-
   await client.start();
 }
 
@@ -74,8 +65,6 @@ export async function stopLanguageClient(): Promise<void> {
   }
 
   const currentClient = client;
-
   client = undefined;
-
   await currentClient.stop();
 }

@@ -1,95 +1,95 @@
 {
-    "name": "urp-shaderlab-tools",
-    "displayName": "URP ShaderLab Tools",
-    "description": "IntelliSense, navigation and language features for Unity URP ShaderLab and HLSL.",
-    "version": "0.1.0",
-    "publisher": "urp-shaderlab-tools",
-    "repository": "https://github.com/nekorozy111/Shaderlab-VSCodeExtension",
-    "license": "MIT",
-    "engines": {
-        "vscode": "^1.90.0"
-    },
-    "categories": [
-        "Programming Languages"
-    ],
-    "activationEvents": [
-        "onLanguage:shaderlab",
-        "onLanguage:UnityShader",
-        "onLanguage:hlsl",
-        "onLanguage:hlsli",
-        "onLanguage:compute"
-    ],
-    "main": "./out/src/extension.js",
-    "contributes": {
-        "languages": [
-            {
-                "id": "shaderlab",
-                "aliases": [
-                    "ShaderLab",
-                    "Unity Shader"
-                ],
-                "extensions": [
-                    ".shader"
-                ],
-                "configuration": "./language-configuration/shaderlab.json"
-            },
-            {
-                "id": "hlsl",
-                "aliases": [
-                    "HLSL",
-                    "High Level Shader Language"
-                ],
-                "extensions": [
-                    ".hlsl"
-                ],
-                "configuration": "./language-configuration/hlsl.json"
-            },
-            {
-                "id": "hlsli",
-                "aliases": [
-                    "HLSLI"
-                ],
-                "extensions": [
-                    ".hlsli"
-                ],
-                "configuration": "./language-configuration/hlsl.json"
-            }
+  "name": "urp-shaderlab-tools",
+  "displayName": "URP ShaderLab Tools",
+  "description": "IntelliSense, navigation and language features for Unity URP ShaderLab and HLSL.",
+  "version": "0.1.0",
+  "publisher": "urp-shaderlab-tools",
+  "repository": "https://github.com/nekorozy111/Shaderlab-VSCodeExtension",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:shaderlab",
+    "onLanguage:UnityShader",
+    "onLanguage:hlsl",
+    "onLanguage:hlsli",
+    "onLanguage:compute"
+  ],
+  "main": "./out/src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "shaderlab",
+        "aliases": [
+          "ShaderLab",
+          "Unity Shader"
         ],
-        "configuration": {
-            "title": "URP ShaderLab Tools",
-            "properties": {
-                "urpShaderLab.enable": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Enable URP ShaderLab Tools."
-                },
-                "urpShaderLab.trace.server": {
-                    "type": "string",
-                    "enum": [
-                        "off",
-                        "messages",
-                        "verbose"
-                    ],
-                    "default": "off",
-                    "description": "Trace Language Server communication."
-                }
-            }
+        "extensions": [
+          ".shader"
+        ],
+        "configuration": "./language-configuration/shaderlab.json"
+      },
+      {
+        "id": "hlsl",
+        "aliases": [
+          "HLSL",
+          "High Level Shader Language"
+        ],
+        "extensions": [
+          ".hlsl"
+        ],
+        "configuration": "./language-configuration/hlsl.json"
+      },
+      {
+        "id": "hlsli",
+        "aliases": [
+          "HLSLI"
+        ],
+        "extensions": [
+          ".hlsli"
+        ],
+        "configuration": "./language-configuration/hlsl.json"
+      }
+    ],
+    "configuration": {
+      "title": "URP ShaderLab Tools",
+      "properties": {
+        "urpShaderLab.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable URP ShaderLab Tools."
+        },
+        "urpShaderLab.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace Language Server communication."
         }
-    },
-    "scripts": {
-        "compile": "tsc -p ./",
-        "watch": "tsc -watch -p ./",
-        "package": "vsce package"
-    },
-    "dependencies": {
-        "vscode-languageclient": "^9.0.1",
-        "vscode-languageserver": "^9.0.1",
-        "vscode-languageserver-textdocument": "^1.0.11"
-    },
-    "devDependencies": {
-        "@types/node": "^20.0.0",
-        "@types/vscode": "^1.90.0",
-        "@vscode/vsce": "^3.0.0",
-        "typescript": "^5.0.0"
+      }
     }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.0.0"
+  }
 }

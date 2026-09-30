@@ -1,14 +1,11 @@
 import { IncludeResolution, IncludeResolver } from './includeResolver';
-
 import { FileSystem } from './fileSystem';
 import { ProjectRoot } from './projectRoot';
 
 export class ProjectService {
   private readonly projectRoot = new ProjectRoot();
   private readonly fileSystem = new FileSystem();
-
   public readonly includeResolver = new IncludeResolver(this.projectRoot, this.fileSystem);
-
   public initialize(params: Parameters<ProjectRoot['initialize']>[0]): void {
     this.projectRoot.initialize(params);
   }

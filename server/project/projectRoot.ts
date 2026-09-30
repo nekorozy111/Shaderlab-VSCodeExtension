@@ -4,10 +4,8 @@ import { InitializeParams } from 'vscode-languageserver/node';
 
 export class ProjectRoot {
   private rootPath: string | undefined;
-
   public initialize(params: InitializeParams): void {
     const workspaceFolders = params.workspaceFolders;
-
     if (workspaceFolders && workspaceFolders.length > 0) {
       this.rootPath = this.uriToPath(workspaceFolders[0].uri);
       return;
@@ -44,9 +42,7 @@ export class ProjectRoot {
 
     const root = path.resolve(this.rootPath);
     const target = path.resolve(filePath);
-
     const relative = path.relative(root, target);
-
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   }
 
