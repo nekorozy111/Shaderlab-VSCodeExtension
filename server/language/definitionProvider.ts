@@ -10,7 +10,6 @@ export class DefinitionProvider {
   public provideDefinition(uri: string, position: Position): Location | null {
     const document = this.documentManager.get(uri);
     if (!document) {
-      console.log(`[DefinitionProvider] Document not found: ${uri}`);
       return null;
     }
 
@@ -38,13 +37,11 @@ export class DefinitionProvider {
     const textBeforeCursor = line.substring(0, cursorInLine);
     const includeMatch = /^\s*#\s*include\s*(?:"[^"]*|<[^>]*)$/.test(textBeforeCursor);
     if (includeMatch) {
-      console.log(`[DefinitionProvider] Skip Definition inside include path: "${line}"`);
       return null;
     }
 
     const word = this.getWordAtPosition(text, offset);
     if (!word) {
-      console.log(`[DefinitionProvider] No word at position`);
       return null;
     }
 
@@ -54,12 +51,10 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
     if (this.isInsideComment(text, offset)) {
-      console.log(`[DefinitionProvider] Position is inside comment`);
       return null;
     }
 
     if (!word) {
-      console.log(`[DefinitionProvider] No word at position`);
       return null;
     }
 
@@ -79,19 +74,14 @@ export class DefinitionProvider {
         continue;
       }
 
-      console.log(`[DefinitionProvider] Declaration self -> ` + `${match.symbol.kind} ` + `${match.symbol.name}`);
       return this.toLocation(match.symbol);
     }
 
-    console.log(`[DefinitionProvider] Request "${word}" in ${uri}`);
     /*
      * ---------------------------------------------------------
      * 1. 組み込み型 / セマンティクス
      * ---------------------------------------------------------
      */
-    console.log(
-      `[DefinitionProvider] builtin=${this.isBuiltinHlslType(word)} semantic=${this.isHlslSemantic(word)} word="${word}"`,
-    );
     if (this.isBuiltinHlslType(word) || this.isHlslSemantic(word)) {
       return null;
     }
@@ -107,12 +97,10 @@ export class DefinitionProvider {
      */
     const memberAccess = this.getMemberAccessAtPosition(text, offset);
     if (memberAccess) {
-      console.log(`[DefinitionProvider] Member access: ` + `${memberAccess.objectName}.${memberAccess.memberName}`);
       /*
        * Swizzleなら定義検索しない。
        */
       if (this.isHlslSwizzle(memberAccess.memberName)) {
-        console.log(`[DefinitionProvider] Swizzle ignored: ` + `${memberAccess.memberName}`);
         return null;
       }
 
@@ -124,10 +112,8 @@ export class DefinitionProvider {
        */
       const localObject = this.findVariableDeclarationInSource(document, memberAccess.objectName, offset);
       if (localObject) {
-        console.log(`[DefinitionProvider] Local source variable: ` + `${localObject.name} : ${localObject.typeName}`);
         const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
         if (member) {
-          console.log(`[DefinitionProvider] Local member -> ` + `${member.location.uri} ` + `${member.name}`);
           return this.toLocation(member);
         }
       }
@@ -148,15 +134,9 @@ export class DefinitionProvider {
           objectMatches.map((match) => match.symbol),
         );
         if (objectSymbol) {
-          console.log(
-            `[DefinitionProvider] Indexed object: ` +
-              `${objectSymbol.name} : ` +
-              `${objectSymbol.typeName ?? '<unknown>'}`,
-          );
           if (objectSymbol.typeName) {
             const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
             if (member) {
-              console.log(`[DefinitionProvider] Indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
               return this.toLocation(member);
             }
           }
@@ -178,26 +158,6 @@ export class DefinitionProvider {
         const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
         if (member) {
           return this.toLocation(member);
-        }
-      }
-
-      /*
-       * ワークスペースIndexのobjectを再検索
-       */
-      const externalObjectMatches = this.documentManager
-        .findExactInRelated(uri, memberAccess.objectName)
-        .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
-      if (externalObjectMatches.length > 0) {
-        const objectSymbol = this.selectBestObjectSymbol(
-          uri,
-          offset,
-          externalObjectMatches.map((match) => match.symbol),
-        );
-        if (objectSymbol && objectSymbol.typeName) {
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
-          if (member) {
-            return this.toLocation(member);
-          }
         }
       }
 
@@ -225,15 +185,8 @@ export class DefinitionProvider {
      */
     const currentProperty = this.findPropertyByName(document, word);
     if (currentProperty) {
-      console.log(`[DefinitionProvider] ` + `Current Shader Property -> ` + `${currentProperty.name}`);
       const cbufferField = this.findCBufferFieldForProperty(uri, currentProperty);
       if (cbufferField) {
-        console.log(
-          `[DefinitionProvider] ` +
-            `Property -> related CBuffer field: ` +
-            `${cbufferField.name} ` +
-            `parent=${cbufferField.parentName}`,
-        );
         return this.toLocation(cbufferField);
       }
 
@@ -241,7 +194,6 @@ export class DefinitionProvider {
        * 現在のShaderから到達可能なCBufferがない場合、
        * Property自身へ移動する。
        */
-      console.log(`[DefinitionProvider] ` + `Property -> declaration: ` + `${currentProperty.name}`);
       return this.toLocation(currentProperty);
     }
 
@@ -256,9 +208,6 @@ export class DefinitionProvider {
      */
     const localVariable = this.findVariableDeclarationInSource(document, word, offset);
     if (localVariable) {
-      console.log(
-        `[DefinitionProvider] Source variable -> ` + `${localVariable.name} : ` + `${localVariable.typeName}`,
-      );
       return {
         uri: localVariable.uri,
         range: localVariable.range,
@@ -274,12 +223,10 @@ export class DefinitionProvider {
       .getWorkspaceIndex()
       .findExact(word)
       .filter((match) => match.uri === uri && match.symbol.kind !== 'parameter');
-    console.log(`[DefinitionProvider] Local matches: ` + `${localMatches.length}`);
     if (localMatches.length > 0) {
       const localSymbols = localMatches.map((match) => match.symbol);
       const selected = this.selectBestDefinition(uri, localSymbols);
       if (selected) {
-        console.log(`[DefinitionProvider] Local -> ` + `${selected.kind} ${selected.name}`);
         /*
          * -----------------------------------------------------
          * Property
@@ -291,16 +238,9 @@ export class DefinitionProvider {
         if (selected.kind === 'property') {
           const cbufferField = this.findCBufferFieldForProperty(uri, selected);
           if (cbufferField) {
-            console.log(
-              `[DefinitionProvider] ` +
-                `Property -> related CBuffer field: ` +
-                `${cbufferField.name} ` +
-                `parent=${cbufferField.parentName}`,
-            );
             return this.toLocation(cbufferField);
           }
 
-          console.log(`[DefinitionProvider] ` + `Property has no same-file CBuffer field: ` + `${selected.name}`);
           /*
            * 同じファイルにCBUFFERがない場合も、
            * 他ファイルには絶対にフォールバックしない。
@@ -317,9 +257,7 @@ export class DefinitionProvider {
      * 5. includeを再帰的にロード
      * ---------------------------------------------------------
      */
-    console.log(`[DefinitionProvider] Loading includes from ${uri}`);
     // findExactInRelated() が必要時にincludeグラフを構築する。
-    console.log(`[DefinitionProvider] Includes will be resolved by related search`);
     /*
      * ---------------------------------------------------------
      * 6. ワークスペース全体
@@ -328,15 +266,7 @@ export class DefinitionProvider {
     const matches = this.documentManager
       .findExactInRelated(uri, word)
       .filter((match) => match.symbol.kind !== 'parameter');
-    console.log(
-      `[DefinitionProvider] Related search "${word}" -> ` +
-        `${matches.length} ` +
-        `(matchedUris=${new Set(matches.map((match) => match.uri)).size})`,
-    );
     for (const match of matches) {
-      console.log(
-        `[DefinitionProvider] Match: ` + `${match.symbol.kind} ` + `${match.symbol.name} @ ` + `${match.uri}`,
-      );
     }
 
     if (matches.length === 0) {
@@ -349,7 +279,6 @@ export class DefinitionProvider {
       return null;
     }
 
-    console.log(`[DefinitionProvider] Related -> ` + `${selected.kind} ${selected.name} @ ${selected.location.uri}`);
     return this.toLocation(selected);
   }
 
@@ -368,7 +297,6 @@ export class DefinitionProvider {
       return null;
     }
 
-    console.log(`[DefinitionProvider] Resolve symbol "${word}"`);
     /*
      * ---------------------------------------------------------
      * 1. メンバーアクセス
@@ -380,7 +308,6 @@ export class DefinitionProvider {
      */
     const memberAccess = this.getMemberAccessAtPosition(text, offset);
     if (memberAccess) {
-      console.log(`[DefinitionProvider] Resolve member: ` + `${memberAccess.objectName}.${memberAccess.memberName}`);
       /*
        * HLSL スウィズル は symbol ではない。
        */
@@ -395,10 +322,8 @@ export class DefinitionProvider {
        */
       const localObject = this.findVariableDeclarationInSource(document, memberAccess.objectName, offset);
       if (localObject) {
-        console.log(`[DefinitionProvider] Hover local object: ` + `${localObject.name} : ${localObject.typeName}`);
         const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
         if (member) {
-          console.log(`[DefinitionProvider] Hover local member -> ` + `${member.location.uri} ` + `${member.name}`);
           return member;
         }
       }
@@ -418,40 +343,8 @@ export class DefinitionProvider {
           objectMatches.map((match) => match.symbol),
         );
         if (objectSymbol && objectSymbol.typeName) {
-          console.log(
-            `[DefinitionProvider] Hover indexed object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
-          );
           const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
           if (member) {
-            console.log(`[DefinitionProvider] Hover indexed member -> ` + `${member.location.uri} ` + `${member.name}`);
-            return member;
-          }
-        }
-      }
-
-      /*
-       * -----------------------------------------------------
-       * 1-3. includeグラフを考慮してワークスペースIndexを検索
-       * -----------------------------------------------------
-       */
-      const externalObjectMatches = this.documentManager
-        .findExactInRelated(uri, memberAccess.objectName)
-        .filter((match) => match.symbol.kind === 'variable' || match.symbol.kind === 'parameter');
-      if (externalObjectMatches.length > 0) {
-        const objectSymbol = this.selectBestObjectSymbol(
-          uri,
-          offset,
-          externalObjectMatches.map((match) => match.symbol),
-        );
-        if (objectSymbol && objectSymbol.typeName) {
-          console.log(
-            `[DefinitionProvider] Hover external object: ` + `${objectSymbol.name} : ` + `${objectSymbol.typeName}`,
-          );
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
-          if (member) {
-            console.log(
-              `[DefinitionProvider] Hover external member -> ` + `${member.location.uri} ` + `${member.name}`,
-            );
             return member;
           }
         }
@@ -486,9 +379,6 @@ export class DefinitionProvider {
      */
     const localVariable = this.findVariableDeclarationInSource(document, word, offset);
     if (localVariable) {
-      console.log(
-        `[DefinitionProvider] Resolve local source variable: ` + `${localVariable.name} : ${localVariable.typeName}`,
-      );
       const start = localVariable.range.start;
       const end = localVariable.range.end;
       return {
@@ -562,37 +452,28 @@ export class DefinitionProvider {
 
   private findPropertyByName(document: TextDocument, word: string): ShaderSymbol | null {
     const parsed = this.documentManager.getParsed(document.uri);
-    console.log(`[DefinitionProvider] findPropertyByName: ` + `uri=${document.uri} ` + `word="${word}"`);
     if (!parsed) {
-      console.log(`[DefinitionProvider] findPropertyByName: parsed=null`);
       return null;
     }
 
-    console.log(`[DefinitionProvider] findPropertyByName: ` + `languageId=${parsed.languageId}`);
     if (!isShaderLabDocument(parsed.uri, parsed.languageId)) {
-      console.log(`[DefinitionProvider] findPropertyByName: ` + `not shaderlab`);
       return null;
     }
 
     const ast = parsed.ast as ShaderDocumentNode;
     if (!ast) {
-      console.log(`[DefinitionProvider] findPropertyByName: ast=null`);
       return null;
     }
 
     if (!ast.properties) {
-      console.log(`[DefinitionProvider] findPropertyByName: ` + `properties=null`);
       return null;
     }
 
-    console.log(`[DefinitionProvider] findPropertyByName: ` + `properties=${ast.properties.length}`);
     for (const property of ast.properties) {
-      console.log(`[DefinitionProvider] Property candidate: ` + `"${property.name}"`);
       if (property.name !== word) {
         continue;
       }
 
-      console.log(`[DefinitionProvider] Current Shader Property found: ` + `${property.name}`);
       return {
         name: property.name,
         kind: 'property',
@@ -605,7 +486,6 @@ export class DefinitionProvider {
       };
     }
 
-    console.log(`[DefinitionProvider] Current Shader Property NOT found: ` + `"${word}"`);
     return null;
   }
 
@@ -632,16 +512,8 @@ export class DefinitionProvider {
     const matches = this.documentManager
       .findExactInRelated(uri, property.name)
       .filter((match) => match.symbol.kind === 'field' && !!match.symbol.parentName);
-    console.log(`[DefinitionProvider] ` + `Property CBuffer search "${property.name}" -> ` + `${matches.length}`);
     for (const match of matches) {
       const symbol = match.symbol;
-      console.log(
-        `[DefinitionProvider] ` +
-          `Property -> related CBuffer field: ` +
-          `${symbol.name} ` +
-          `@ ${symbol.location.uri} ` +
-          `parent=${symbol.parentName}`,
-      );
       return symbol;
     }
 
@@ -774,7 +646,6 @@ export class DefinitionProvider {
     }
 
     const objectName = text.substring(objectStart, objectEnd);
-    console.log(`[DefinitionProvider] getMemberAccessAtPosition -> ${objectName}.${memberName}`);
     return {
       objectName,
       memberName,
@@ -1043,12 +914,6 @@ export class DefinitionProvider {
      * ---------------------------------------------------------
      */
     const structMatches = this.documentManager.findByKindInRelated(rootUri, normalizedType, 'struct');
-    console.log(
-      `[DefinitionProvider] Struct lookup: ` +
-        `${normalizedType} -> ` +
-        `${structMatches.length} ` +
-        `(matchedUris=${new Set(structMatches.map((match) => match.uri)).size})`,
-    );
     /*
      * ---------------------------------------------------------
      * 現在のファイルに同名Structがある場合は、
@@ -1082,13 +947,9 @@ export class DefinitionProvider {
         continue;
       }
 
-      console.log(
-        `[DefinitionProvider] Field resolved: ` + `${normalizedType}.${memberName} @ ` + `${field.location.uri}`,
-      );
       return field;
     }
 
-    console.log(`[DefinitionProvider] Field not found: ` + `${normalizedType}.${memberName}`);
     return null;
   }
 

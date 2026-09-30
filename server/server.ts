@@ -92,11 +92,12 @@ connection.onInitialize((params) => {
       },
       hoverProvider: true,
       definitionProvider: true,
-      referencesProvider: true,
+      referencesProvider: false,
     },
   };
 });
 connection.onInitialized(async () => {
+  documentManager.getProjectService().includeResolver.warmUp();
   await connection.client.register(DidChangeWatchedFilesNotification.type, {
     watchers: [
       {
@@ -151,9 +152,7 @@ connection.onCompletion((params) => {
 documents.onDidOpen((event) => {
   // Open時点でDocumentManagerにも登録しておく。
   // 変更通知を待たずにF12/Hover/Completionを要求されても最新Documentを取得できる。
-  const parsed = documentManager.open(event.document);
-  // 初回Parse結果はDocumentManager/WorkspaceIndexへ登録済み。
-  void parsed;
+  documentManager.open(event.document);
 });
 documents.onDidChangeContent((event) => {
   const uri = event.document.uri;

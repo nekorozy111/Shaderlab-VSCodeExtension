@@ -53,7 +53,15 @@ export class DocumentManager {
     return this.projectService;
   }
 
-  public open(document: TextDocument): ParsedDocument {
+  public open(document: TextDocument): ParsedDocument | undefined {
+    if (!this.isProjectDocument(document.uri)) {
+      this.documents.delete(document.uri);
+      this.parsedDocuments.delete(document.uri);
+      this.documentContentHashes.delete(document.uri);
+      this.workspaceIndex.remove(document.uri);
+      return undefined;
+    }
+
     this.documents.set(document.uri, document);
     return this.parseDocument(document);
   }
@@ -63,10 +71,26 @@ export class DocumentManager {
    * Parseは呼び出し側のdebounce後に行う。
    */
   public set(document: TextDocument): void {
+    if (!this.isProjectDocument(document.uri)) {
+      this.documents.delete(document.uri);
+      this.parsedDocuments.delete(document.uri);
+      this.documentContentHashes.delete(document.uri);
+      this.workspaceIndex.remove(document.uri);
+      return;
+    }
+
     this.documents.set(document.uri, document);
   }
 
   public update(document: TextDocument): ParsedDocument {
+    if (!this.isProjectDocument(document.uri)) {
+      this.documents.delete(document.uri);
+      this.parsedDocuments.delete(document.uri);
+      this.documentContentHashes.delete(document.uri);
+      this.workspaceIndex.remove(document.uri);
+      throw new Error('Document is outside the initialized project');
+    }
+
     const source = document.getText();
     const contentHash = this.hashSource(source);
     const previousHash = this.documentContentHashes.get(document.uri);
@@ -530,6 +554,15 @@ export class DocumentManager {
       default:
         return undefined;
     }
+  }
+
+  private isProjectDocument(uri: string): boolean {
+    const filePath = this.uriToPath(uri);
+    if (!filePath) {
+      return false;
+    }
+    const root = this.projectService.getRootPath();
+    return !!root && this.projectService.isInsideProject(filePath);
   }
 
   private uriToPath(uri: string): string | undefined {

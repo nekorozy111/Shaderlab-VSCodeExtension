@@ -19,8 +19,6 @@ export class IncludeResolver {
   private readonly projectRoot: ProjectRoot;
   private readonly fileSystem: FileSystem;
 
-  // Project include cache
-  private readonly projectIncludeFiles = new Map<string, string>();
   // Package/PackageCache include cache
   private readonly packageIncludeFiles = new Map<string, string>();
   private readonly packageIncludePathToFile = new Map<string, string>();
@@ -31,15 +29,25 @@ export class IncludeResolver {
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
   // Project directory -> file
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
+  private readonly indexedProjectDirectories = new Set<string>();
 
   private packageCacheInitialized = false;
-  private projectIncludeCacheInitialized = false;
+  private packageCacheWarmupStarted = false;
+  private packageCacheGeneration = 0;
   private readonly resolutionCache = new Map<string, IncludeResolution | null>();
   private readonly maxResolutionCacheEntries = 4096;
 
   public constructor(projectRoot: ProjectRoot, fileSystem: FileSystem) {
     this.projectRoot = projectRoot;
     this.fileSystem = fileSystem;
+  }
+
+  public warmUp(): void {
+    const root = this.projectRoot.getPath();
+    if (!root) {
+      return;
+    }
+    this.startPackageCacheWarmup(root);
   }
 
   public resolve(includePath: string, fromUri: string): IncludeResolution | undefined {
@@ -91,14 +99,15 @@ export class IncludeResolver {
   }
 
   public invalidateProjectIncludeCache(): void {
-    this.projectIncludeFiles.clear();
     this.packageIncludeFiles.clear();
     this.packageIncludePathToFile.clear();
     this.packageDirectories.clear();
     this.packageCompletionIndex.clear();
     this.projectDirectoryIndex.clear();
+    this.indexedProjectDirectories.clear();
     this.packageCacheInitialized = false;
-    this.projectIncludeCacheInitialized = false;
+    this.packageCacheWarmupStarted = false;
+    this.packageCacheGeneration += 1;
     this.resolutionCache.clear();
   }
 
@@ -110,8 +119,7 @@ export class IncludeResolver {
       return [];
     }
 
-    this.ensurePackageCacheInitialized(root);
-    this.ensureProjectIncludeCacheInitialized(root);
+    this.startPackageCacheWarmup(root);
 
     const candidates = new Map<string, IncludeCompletionCandidate>();
 
@@ -238,13 +246,29 @@ export class IncludeResolver {
       return undefined;
     }
 
-    this.ensurePackageCacheInitialized(root);
-    const filePath = this.packageIncludePathToFile.get(includePath);
-    if (!filePath) {
+    const cachedFilePath = this.packageIncludePathToFile.get(includePath);
+    if (cachedFilePath) {
+      return this.tryResolve(cachedFilePath, 'packageCache', includePath);
+    }
+
+    const relative = includePath.substring('Packages/'.length);
+    const separator = relative.indexOf('/');
+    const packageName = separator >= 0 ? relative.substring(0, separator) : relative;
+    if (!packageName) {
       return undefined;
     }
 
-    return this.tryResolve(filePath, 'packageCache', includePath);
+    const packageDirectory = this.getPackageCacheDirectory(packageName, root);
+    if (!packageDirectory) {
+      return undefined;
+    }
+
+    const packageRelative = separator >= 0 ? relative.substring(separator + 1) : '';
+    if (!packageRelative) {
+      return undefined;
+    }
+
+    return this.tryResolve(path.resolve(packageDirectory, packageRelative), 'packageCache', includePath);
   }
 
   private tryResolve(filePath: string, source: IncludeSource, includePath: string): IncludeResolution | undefined {
@@ -299,7 +323,11 @@ export class IncludeResolver {
       return;
     }
 
-    const units = this.packageCompletionIndex.get(parent.toLowerCase());
+    let units = this.packageCompletionIndex.get(parent.toLowerCase());
+    if (!units) {
+      this.ensurePackageCompletionDirectory(parent);
+      units = this.packageCompletionIndex.get(parent.toLowerCase());
+    }
     if (!units) {
       return;
     }
@@ -326,28 +354,26 @@ export class IncludeResolver {
       return;
     }
 
-    const normalizedPrefix = includePath.toLowerCase();
-    const files = this.projectDirectoryIndex.get(path.normalize(fromDirectory));
-    if (!files) {
-      return;
-    }
-
+    const normalizedPrefix = includePath.replace(/\\/g, '/').toLowerCase();
     if (!normalizedPrefix.includes('/')) {
-      const normalizedFromDirectory = path.normalize(fromDirectory);
+      this.ensureProjectDirectoryIndexed(fromDirectory);
+      const files = this.projectDirectoryIndex.get(path.normalize(fromDirectory));
+      if (!files) {
+        return;
+      }
+
       for (const filePath of files) {
-        const relative = path.relative(normalizedFromDirectory, path.normalize(filePath)).replace(/\\/g, '/');
-        if (!relative || relative.includes('/') || relative === '..' || relative.startsWith('../')) {
+        const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
+        if (!relative || relative.includes('/')) {
           continue;
         }
-        if (!relative.toLowerCase().startsWith(normalizedPrefix)) {
-          continue;
+        if (relative.toLowerCase().startsWith(normalizedPrefix)) {
+          candidates.set(relative, { includePath: relative });
         }
-        candidates.set(relative, { includePath: relative });
       }
       return;
     }
 
-    // パス補完：ディレクトリ解決後、子ディレクトリのみを検索
     const slashIndex = normalizedPrefix.lastIndexOf('/');
     const directoryPart = normalizedPrefix.substring(0, slashIndex + 1);
     const partial = normalizedPrefix.substring(slashIndex + 1);
@@ -356,107 +382,78 @@ export class IncludeResolver {
       return;
     }
 
-    const descendants = this.projectDirectoryIndex.get(path.normalize(targetDirectory));
-    if (!descendants) {
+    this.ensureProjectDirectoryIndexed(targetDirectory);
+    const files = this.projectDirectoryIndex.get(path.normalize(targetDirectory));
+    if (!files) {
       return;
     }
 
-    for (const filePath of descendants) {
+    for (const filePath of files) {
       const relative = path.relative(fromDirectory, filePath).replace(/\\/g, '/');
       if (!relative.toLowerCase().startsWith(normalizedPrefix)) {
         continue;
       }
-      const candidate = relative;
-      if (path.posix.basename(candidate).toLowerCase().startsWith(partial)) {
-        candidates.set(candidate, { includePath: candidate });
+      if (path.posix.basename(relative).toLowerCase().startsWith(partial)) {
+        candidates.set(relative, { includePath: relative });
       }
     }
   }
 
-  private ensureProjectIncludeCacheInitialized(root: string): void {
-    if (this.projectIncludeCacheInitialized) {
+  private ensureProjectDirectoryIndexed(directoryPath: string): void {
+    const normalizedDirectory = path.normalize(directoryPath);
+    if (this.indexedProjectDirectories.has(normalizedDirectory)) {
+      return;
+    }
+    if (!this.projectRoot.isInsideProject(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
       return;
     }
 
-    this.projectIncludeFiles.clear();
-    this.projectDirectoryIndex.clear();
-
-    const collect = (directoryPath: string): void => {
-      if (!this.projectRoot.isInsideProject(directoryPath)) {
-        return;
+    const files = new Set<string>();
+    for (const entry of this.fileSystem.listDirectory(normalizedDirectory)) {
+      const entryPath = path.join(normalizedDirectory, entry);
+      if (!this.isIncludeFile(entryPath)) {
+        continue;
       }
-
-      for (const entry of this.fileSystem.listDirectory(directoryPath)) {
-        const entryPath = path.join(directoryPath, entry);
-        if (this.fileSystem.isDirectory(entryPath)) {
-          if (
-            path.normalize(directoryPath) === path.normalize(root) &&
-            (entry === 'Library' || entry === 'Packages' || entry === 'ProjectSettings')
-          ) {
-            continue;
-          }
-          collect(entryPath);
-          continue;
-        }
-
-        if (!this.isIncludeFile(entryPath)) {
-          continue;
-        }
-
-        const normalized = path.normalize(entryPath);
-        this.projectIncludeFiles.set(normalized, normalized);
-        this.addProjectFileToDirectoryIndex(normalized, root);
-      }
-    };
-
-    collect(root);
-    this.projectIncludeCacheInitialized = true;
-  }
-
-  private addProjectFileToDirectoryIndex(filePath: string, root: string): void {
-    let directory = path.dirname(filePath);
-    while (this.projectRoot.isInsideProject(directory)) {
-      let files = this.projectDirectoryIndex.get(path.normalize(directory));
-      if (!files) {
-        files = new Set<string>();
-        this.projectDirectoryIndex.set(path.normalize(directory), files);
-      }
-      files.add(filePath);
-
-      if (path.normalize(directory) === path.normalize(root)) {
-        break;
-      }
-      const parent = path.dirname(directory);
-      if (parent === directory) {
-        break;
-      }
-      directory = parent;
+      files.add(path.normalize(entryPath));
     }
+
+    this.projectDirectoryIndex.set(normalizedDirectory, files);
+    this.indexedProjectDirectories.add(normalizedDirectory);
   }
 
   private removeProjectFileFromDirectoryIndex(filePath: string): void {
-    for (const [directory, files] of this.projectDirectoryIndex) {
-      if (!files.delete(filePath)) {
-        continue;
-      }
-      if (files.size === 0) {
-        this.projectDirectoryIndex.delete(directory);
-      }
+    const directory = path.normalize(path.dirname(filePath));
+    const files = this.projectDirectoryIndex.get(directory);
+    if (!files) {
+      return;
+    }
+    files.delete(path.normalize(filePath));
+    if (files.size === 0) {
+      this.projectDirectoryIndex.delete(directory);
     }
   }
 
-  private ensurePackageCacheInitialized(root: string): void {
-    if (this.packageCacheInitialized) {
+  private startPackageCacheWarmup(root: string): void {
+    if (this.packageCacheInitialized || this.packageCacheWarmupStarted) {
       return;
     }
 
+    this.packageCacheWarmupStarted = true;
+    const generation = this.packageCacheGeneration;
+    void this.buildPackageCacheInBackground(root, generation);
+  }
+
+  private async buildPackageCacheInBackground(root: string, generation: number): Promise<void> {
+    if (generation !== this.packageCacheGeneration) {
+      return;
+    }
     this.packageIncludeFiles.clear();
     this.packageIncludePathToFile.clear();
     this.packageDirectories.clear();
     this.packageCompletionIndex.clear();
 
     const packagesRoot = path.resolve(root, 'Packages');
-    this.collectPackageFiles(packagesRoot, 'Packages/');
+    await this.collectPackageFilesAsync(packagesRoot, 'Packages/', generation);
 
     const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
     if (this.fileSystem.isDirectory(cacheRoot)) {
@@ -473,31 +470,85 @@ export class IncludeResolver {
         if (!this.packageDirectories.has(packageName)) {
           this.packageDirectories.set(packageName, packageDirectory);
         }
-        this.collectPackageFiles(packageDirectory, `Packages/${packageName}/`);
+        await this.collectPackageFilesAsync(packageDirectory, `Packages/${packageName}/`, generation);
       }
     }
 
+    if (generation !== this.packageCacheGeneration) {
+      return;
+    }
     this.packageCacheInitialized = true;
+    this.packageCacheWarmupStarted = false;
   }
 
-  private collectPackageFiles(directoryPath: string, includeBasePath: string): void {
+  private async collectPackageFilesAsync(
+    directoryPath: string,
+    includeBasePath: string,
+    generation: number,
+  ): Promise<void> {
+    if (generation !== this.packageCacheGeneration) {
+      return;
+    }
     if (!this.projectRoot.isInsideProject(directoryPath) || !this.fileSystem.isDirectory(directoryPath)) {
       return;
     }
 
-    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
-      const entryPath = path.join(directoryPath, entry);
-      if (this.fileSystem.isDirectory(entryPath)) {
-        this.collectPackageFiles(entryPath, `${includeBasePath}${entry}/`);
-        continue;
-      }
-      if (!this.isIncludeFile(entryPath)) {
-        continue;
-      }
+    let processed = 0;
+    const walk = async (currentDirectory: string, currentBase: string): Promise<void> => {
+      for (const entry of this.fileSystem.listDirectory(currentDirectory)) {
+        if (generation !== this.packageCacheGeneration) {
+          return;
+        }
 
-      const includePath = `${includeBasePath}${entry}`.replace(/\\/g, '/');
-      this.addPackageIncludeFile(path.normalize(entryPath), includePath);
+        const entryPath = path.join(currentDirectory, entry);
+        if (this.fileSystem.isDirectory(entryPath)) {
+          await walk(entryPath, `${currentBase}${entry}/`);
+        } else if (this.isIncludeFile(entryPath)) {
+          const includePath = `${currentBase}${entry}`.replace(/\\/g, '/');
+          this.addPackageIncludeFile(path.normalize(entryPath), includePath);
+        }
+
+        processed += 1;
+        if (processed % 64 === 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    };
+
+    await walk(directoryPath, includeBasePath);
+  }
+
+  private getPackageDirectory(packageName: string, root: string): string | undefined {
+    const cached = this.packageDirectories.get(packageName);
+    if (cached && this.fileSystem.isDirectory(cached)) {
+      return cached;
     }
+
+    const projectPackage = path.resolve(root, 'Packages', packageName);
+    if (this.fileSystem.isDirectory(projectPackage)) {
+      return projectPackage;
+    }
+
+    const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
+    const found = this.fileSystem.findDirectory(cacheRoot, `${packageName}@`);
+    if (found) {
+      this.packageDirectories.set(packageName, found);
+    }
+    return found;
+  }
+
+  private getPackageCacheDirectory(packageName: string, root: string): string | undefined {
+    const cached = this.packageDirectories.get(packageName);
+    if (cached && this.fileSystem.isDirectory(cached)) {
+      return cached;
+    }
+
+    const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
+    const found = this.fileSystem.findDirectory(cacheRoot, `${packageName}@`);
+    if (found) {
+      this.packageDirectories.set(packageName, found);
+    }
+    return found;
   }
 
   private addPackageIncludeFile(filePath: string, includePath: string): void {
@@ -521,6 +572,47 @@ export class IncludeResolver {
     this.packageIncludeFiles.delete(normalized);
     this.packageIncludePathToFile.delete(includePath);
     this.removeCompletionIndex(includePath);
+  }
+
+  private ensurePackageCompletionDirectory(includeDirectory: string): void {
+    const normalized = includeDirectory.replace(/\\/g, '/');
+    if (!normalized.startsWith('Packages/')) {
+      return;
+    }
+
+    const relative = normalized.substring('Packages/'.length);
+    const slashIndex = relative.indexOf('/');
+    const packageName = slashIndex >= 0 ? relative.substring(0, slashIndex) : relative;
+    const subPath = slashIndex >= 0 ? relative.substring(slashIndex + 1) : '';
+    const root = this.projectRoot.getPath();
+    if (!root) {
+      return;
+    }
+    const packageDirectory = this.getPackageDirectory(packageName, root);
+    if (!packageDirectory) {
+      return;
+    }
+
+    const actualDirectory = subPath ? path.resolve(packageDirectory, subPath) : packageDirectory;
+    if (!this.fileSystem.isDirectory(actualDirectory)) {
+      return;
+    }
+
+    const key = normalized.toLowerCase().replace(/\\/g, '/');
+    if (this.packageCompletionIndex.has(key)) {
+      return;
+    }
+
+    const units = new Set<string>();
+    for (const entry of this.fileSystem.listDirectory(actualDirectory)) {
+      const entryPath = path.join(actualDirectory, entry);
+      if (this.fileSystem.isDirectory(entryPath)) {
+        units.add(`${entry}/`);
+      } else if (this.isIncludeFile(entryPath)) {
+        units.add(entry);
+      }
+    }
+    this.packageCompletionIndex.set(key, units);
   }
 
   private addCompletionIndex(includePath: string): void {
@@ -635,7 +727,7 @@ export class IncludeResolver {
         }
       } else if (type === 1 || type === 2) {
         this.packageDirectories.set(packageName, packageDirectory);
-        this.collectPackageFiles(packageDirectory, `Packages/${packageName}/`);
+        void this.collectPackageFilesAsync(packageDirectory, `Packages/${packageName}/`, this.packageCacheGeneration);
       }
       return;
     }
@@ -698,20 +790,25 @@ export class IncludeResolver {
   }
 
   private updateProjectIncludeFile(filePath: string, type: number): void {
-    if (!this.projectIncludeCacheInitialized) {
-      return;
-    }
     const normalized = path.normalize(filePath);
+    const directory = path.normalize(path.dirname(normalized));
+    const indexed = this.indexedProjectDirectories.has(directory);
+
     if (type === 3 || !this.isIncludeFile(filePath)) {
-      if (this.projectIncludeFiles.delete(normalized)) {
+      if (indexed) {
         this.removeProjectFileFromDirectoryIndex(normalized);
       }
       return;
     }
 
-    this.projectIncludeFiles.set(normalized, normalized);
-    this.removeProjectFileFromDirectoryIndex(normalized);
-    this.addProjectFileToDirectoryIndex(normalized, this.projectRoot.getPath() ?? path.dirname(normalized));
+    if (indexed) {
+      let files = this.projectDirectoryIndex.get(directory);
+      if (!files) {
+        files = new Set<string>();
+        this.projectDirectoryIndex.set(directory, files);
+      }
+      files.add(normalized);
+    }
   }
 
   private isPackageCachePath(filePath: string): boolean {

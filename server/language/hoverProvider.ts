@@ -40,7 +40,7 @@ export class HoverProvider {
     const textBeforeCursor = line.substring(0, cursorInLine);
     const includeMatch = /^\s*#\s*include\s*(?:"[^"]*|<[^>]*)$/.test(textBeforeCursor);
     if (includeMatch) {
-            return null;
+      return null;
     }
 
     const word = this.getWordAtPosition(text, offset);
@@ -57,7 +57,7 @@ export class HoverProvider {
       return null;
     }
 
-        /*
+    /*
      * ---------------------------------------------------------
      * 1. 関数ローカル変数
      *
@@ -110,7 +110,7 @@ export class HoverProvider {
      * ---------------------------------------------------------
      */
     if (symbol) {
-            return {
+      return {
         contents: this.createHoverContents(symbol, uri),
       };
     }
@@ -150,7 +150,7 @@ export class HoverProvider {
      * Symbol も Semantic も見つからない
      * ---------------------------------------------------------
      */
-        return null;
+    return null;
   }
 
   private findLocalVariableSymbol(uri: string, name: string, offset: number): ShaderSymbol | null {

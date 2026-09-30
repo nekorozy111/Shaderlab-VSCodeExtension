@@ -7,7 +7,9 @@ export class ProjectRoot {
   private rootPath: string | undefined;
   private realRootPath: string | undefined;
   private readonly realPathCache = new Map<string, string | undefined>();
+  private readonly insideProjectCache = new Map<string, boolean>();
   private readonly maxRealPathCacheEntries = 2048;
+  private readonly maxInsideProjectCacheEntries = 4096;
 
   public initialize(params: InitializeParams): void {
     const workspaceFolders = params.workspaceFolders;
@@ -24,6 +26,7 @@ export class ProjectRoot {
     this.rootPath = undefined;
     this.realRootPath = undefined;
     this.realPathCache.clear();
+    this.insideProjectCache.clear();
   }
 
   public getPath(): string | undefined {
@@ -46,23 +49,42 @@ export class ProjectRoot {
       return false;
     }
 
+    const normalizedFilePath = path.resolve(filePath);
+    const cached = this.insideProjectCache.get(normalizedFilePath);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const root = path.resolve(this.realRootPath ?? this.rootPath);
     const lexicalRoot = path.resolve(this.rootPath);
-    const normalizedFilePath = path.resolve(filePath);
     const lexicalRelative = path.relative(lexicalRoot, normalizedFilePath);
     if (lexicalRelative.startsWith('..' + path.sep) || lexicalRelative === '..' || path.isAbsolute(lexicalRelative)) {
+      this.setInsideProjectCache(normalizedFilePath, false);
       return false;
     }
 
     const target = this.realPathForCheck(normalizedFilePath);
     if (!target) {
+      this.setInsideProjectCache(normalizedFilePath, false);
       return false;
     }
 
     const relative = path.relative(root, target);
-    return (
-      relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))
-    );
+    const result =
+      relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+    this.setInsideProjectCache(normalizedFilePath, result);
+    return result;
+  }
+
+  private setInsideProjectCache(filePath: string, value: boolean): void {
+    this.insideProjectCache.set(filePath, value);
+    while (this.insideProjectCache.size > this.maxInsideProjectCacheEntries) {
+      const oldest = this.insideProjectCache.keys().next().value as string | undefined;
+      if (oldest === undefined) {
+        break;
+      }
+      this.insideProjectCache.delete(oldest);
+    }
   }
 
   public toRelativePath(filePath: string): string | undefined {
@@ -74,6 +96,7 @@ export class ProjectRoot {
 
   private setRoot(rootPath: string): void {
     this.realPathCache.clear();
+    this.insideProjectCache.clear();
     this.rootPath = path.resolve(rootPath);
     try {
       this.realRootPath = fs.realpathSync(this.rootPath);

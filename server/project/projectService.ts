@@ -15,6 +15,10 @@ export class ProjectService {
     return this.projectRoot.getPath();
   }
 
+  public isInsideProject(filePath: string): boolean {
+    return this.projectRoot.isInsideProject(filePath);
+  }
+
   public resolveInclude(includePath: string, fromUri: string): IncludeResolution | undefined {
     return this.includeResolver.resolve(includePath, fromUri);
   }
