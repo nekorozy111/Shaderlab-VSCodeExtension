@@ -18,8 +18,7 @@ const definitionProvider = new DefinitionProvider(documentManager);
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
 // 連続入力中のParseをまとめる。
-// F12/hover等で最新ASTが必要になった場合はDocumentManager.getParsed()が
-// version差分を検出して即時更新するため、定義ジャンプの正確性は維持される。
+// F12/hover等で最新ASTが必要になった場合はDocumentManager.getParsed()がversion差分を検出して即時更新するため、定義ジャンプの正確性は維持される。
 const UPDATE_DEBOUNCE_MS = 150;
 const REQUEST_CACHE_TTL_MS = 100;
 const REQUEST_CACHE_MAX_ENTRIES = 32;
@@ -178,7 +177,9 @@ documents.onDidChangeContent((event) => {
   pendingDocumentUpdates.set(uri, timer);
 });
 connection.onDidChangeWatchedFiles((event) => {
-  documentManager.getProjectService().invalidateIncludeCache();
+  documentManager
+    .getProjectService()
+    .updateChangedIncludeFiles(event.changes.map((change) => ({ uri: change.uri, type: change.type })));
   // 変更されたファイルを参照している root だけを include graph から無効化する。
   // PackageCache 全体を毎回捨てる必要はない。
   documentManager.invalidateChangedExternalIncludes(event.changes.map((change) => change.uri));

@@ -1,22 +1,29 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { InitializeParams } from 'vscode-languageserver/node';
 
 export class ProjectRoot {
   private rootPath: string | undefined;
+  private realRootPath: string | undefined;
+  private readonly realPathCache = new Map<string, string | undefined>();
+  private readonly maxRealPathCacheEntries = 2048;
+
   public initialize(params: InitializeParams): void {
     const workspaceFolders = params.workspaceFolders;
     if (workspaceFolders && workspaceFolders.length > 0) {
-      this.rootPath = this.uriToPath(workspaceFolders[0].uri);
+      this.setRoot(this.uriToPath(workspaceFolders[0].uri));
       return;
     }
 
     if (params.rootUri) {
-      this.rootPath = this.uriToPath(params.rootUri);
+      this.setRoot(this.uriToPath(params.rootUri));
       return;
     }
 
     this.rootPath = undefined;
+    this.realRootPath = undefined;
+    this.realPathCache.clear();
   }
 
   public getPath(): string | undefined {
@@ -31,7 +38,6 @@ export class ProjectRoot {
     if (!this.rootPath) {
       return undefined;
     }
-
     return path.resolve(this.rootPath, ...segments);
   }
 
@@ -40,25 +46,79 @@ export class ProjectRoot {
       return false;
     }
 
-    const root = path.resolve(this.rootPath);
-    const target = path.resolve(filePath);
+    const root = path.resolve(this.realRootPath ?? this.rootPath);
+    const lexicalRoot = path.resolve(this.rootPath);
+    const normalizedFilePath = path.resolve(filePath);
+    const lexicalRelative = path.relative(lexicalRoot, normalizedFilePath);
+    if (lexicalRelative.startsWith('..' + path.sep) || lexicalRelative === '..' || path.isAbsolute(lexicalRelative)) {
+      return false;
+    }
+
+    const target = this.realPathForCheck(normalizedFilePath);
+    if (!target) {
+      return false;
+    }
+
     const relative = path.relative(root, target);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    return (
+      relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))
+    );
   }
 
   public toRelativePath(filePath: string): string | undefined {
     if (!this.rootPath) {
       return undefined;
     }
-
     return path.relative(this.rootPath, filePath);
+  }
+
+  private setRoot(rootPath: string): void {
+    this.realPathCache.clear();
+    this.rootPath = path.resolve(rootPath);
+    try {
+      this.realRootPath = fs.realpathSync(this.rootPath);
+    } catch {
+      this.realRootPath = this.rootPath;
+    }
+  }
+
+  private realPathForCheck(filePath: string): string | undefined {
+    const normalized = path.resolve(filePath);
+    if (this.realPathCache.has(normalized)) {
+      return this.realPathCache.get(normalized);
+    }
+
+    let result: string | undefined;
+    try {
+      result = fs.realpathSync(normalized);
+    } catch {
+      // まだ作成されていないファイルについては、最も近い既存の親ファイルを特定し、外部パスは使用しない
+      let current = normalized;
+      while (current !== path.dirname(current)) {
+        try {
+          const realParent = fs.realpathSync(current);
+          result = path.resolve(realParent, path.relative(current, normalized));
+          break;
+        } catch {
+          current = path.dirname(current);
+        }
+      }
+      // 最も近い既存の親ノードの結果を保持する
+    }
+
+    this.realPathCache.set(normalized, result);
+    while (this.realPathCache.size > this.maxRealPathCacheEntries) {
+      const oldest = this.realPathCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.realPathCache.delete(oldest);
+    }
+    return result;
   }
 
   private uriToPath(uri: string): string {
     if (uri.startsWith('file://')) {
       return fileURLToPath(uri);
     }
-
     return uri;
   }
 }
