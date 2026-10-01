@@ -386,7 +386,7 @@ export class ShaderLabParser {
         const endToken = this.current();
         const contentEnd = endToken.range.start.offset;
         const source = this.source.slice(contentStart, contentEnd);
-        const localAst = new HlslParser(source).parse();
+        const localAst = new HlslParser(source, this.createLocalHlslTokens(contentStart, contentEnd)).parse();
         const hlsl = this.shiftHlslDocument(localAst, contentStart);
         this.advance();
         return {
@@ -405,7 +405,7 @@ export class ShaderLabParser {
     }
 
     const source = this.source.slice(contentStart);
-    const localAst = new HlslParser(source).parse();
+    const localAst = new HlslParser(source, this.createLocalHlslTokens(contentStart, this.source.length)).parse();
     const hlsl = this.shiftHlslDocument(localAst, contentStart);
     return {
       kind: 'ShaderHlslBlock',
@@ -417,6 +417,35 @@ export class ShaderLabParser {
         end: this.positionFromOffset(this.source.length),
       },
     };
+  }
+
+  private createLocalHlslTokens(contentStart: number, contentEnd: number): Token[] {
+    const basePosition = this.positionFromOffset(contentStart);
+    const localTokens: Token[] = [];
+    for (const token of this.tokens) {
+      if (token.kind === 'eof') continue;
+      if (token.range.start.offset < contentStart || token.range.end.offset > contentEnd) continue;
+      const toLocal = (position: SourcePosition): SourcePosition => ({
+        offset: position.offset - contentStart,
+        line: position.line - basePosition.line,
+        character: position.line === basePosition.line
+          ? position.character - basePosition.character
+          : position.character,
+      });
+      localTokens.push({
+        kind: token.kind,
+        value: token.value,
+        range: { start: toLocal(token.range.start), end: toLocal(token.range.end) },
+      });
+    }
+    const end = this.positionFromOffset(contentEnd);
+    const localEnd: SourcePosition = {
+      offset: contentEnd - contentStart,
+      line: end.line - basePosition.line,
+      character: end.line === basePosition.line ? end.character - basePosition.character : end.character,
+    };
+    localTokens.push({ kind: 'eof', value: '', range: { start: localEnd, end: localEnd } });
+    return localTokens;
   }
 
   private shiftHlslDocument(

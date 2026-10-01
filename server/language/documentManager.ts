@@ -47,6 +47,8 @@ export class DocumentManager {
   private readonly externalSources = new Map<string, string>();
   /** 同一rootへの非同期include解析を一本化する。 */
   private readonly pendingIncludePreparations = new Map<string, Promise<void>>();
+  // 日本語コメント：同じ外部includeを同時に要求した場合は、Parse処理を1本にまとめる。
+  private readonly pendingExternalDocuments = new Map<string, Promise<ParsedDocument | undefined>>();
   private includePreparationGeneration = 0;
   /**
    * 同一versionの再解析を防ぐための世代管理。
@@ -72,6 +74,9 @@ export class DocumentManager {
       return undefined;
     }
 
+    // openしたファイルの内容を正として扱うため、以前このファイルを
+    // includeしていたrootの関連URI cacheを無効化する。
+    this.invalidateIncludeDependents([document.uri]);
     // include経由で保持していた同じURIの外部ASTを、open documentへ昇格させる。
     this.externalDocuments.delete(document.uri);
     this.externalSources.delete(document.uri);
@@ -94,6 +99,12 @@ export class DocumentManager {
       return;
     }
 
+    // 日本語コメント：編集時点でこのroot自身が保持する古いinclude graphも破棄する。
+    // ASTの更新はdebounce後でも、関連URIだけは次のrequestから再構築させる。
+    this.releaseIncludeDependencies(document.uri);
+    // include先を直接編集した場合、そのファイルを参照しているrootの
+    // 関連URI cacheも即時に無効化する。ASTの更新自体はdebounce後に行う。
+    this.invalidateIncludeDependents([document.uri]);
     // open documentを外部includeキャッシュと二重保持しない。
     this.externalDocuments.delete(document.uri);
     this.externalSources.delete(document.uri);
@@ -133,6 +144,10 @@ export class DocumentManager {
 
     // 内容が変わった場合だけ、古い include graph を破棄する。
     this.releaseIncludeDependencies(document.uri);
+    // このdocument自身をincludeしているrootも、変更後のASTを参照できるよう
+    // 関連URI cacheを無効化する。set()でも一度無効化しているが、debounce中に
+    // cacheが再構築された場合に備えて、実際のParse直前にも再度無効化する。
+    this.invalidateIncludeDependents([document.uri]);
     this.externalDocuments.delete(document.uri);
     this.externalSources.delete(document.uri);
     this.documents.set(document.uri, document);
@@ -336,26 +351,47 @@ export class DocumentManager {
       return;
     }
 
+    // ファイル監視経由では外部AST自体も古くなるため、依存rootの無効化に加えて
+    // 変更ファイルのexternal documentを破棄する。
+    this.invalidateIncludeDependents(changedUris);
+    for (const changedUri of changedUris) {
+      if (this.externalDocuments.has(changedUri)) {
+        this.externalDocuments.delete(changedUri);
+        this.externalSources.delete(changedUri);
+        this.workspaceIndex.remove(changedUri);
+      }
+    }
+  }
+
+  /**
+   * open documentとして編集中のinclude先が変更されたときに、
+   * そのファイルを参照するrootだけを関連URI cacheから無効化する。
+   *
+   * ここでは変更ファイル自身のASTを破棄しない。VS Codeの編集イベント直後は
+   * debounce前でparsedDocumentsがまだ旧版だからであり、update()が実際にParseする
+   * 直前に自身のinclude graphも破棄する。
+   */
+  private invalidateIncludeDependents(changedUris: string[]): void {
+    if (changedUris.length === 0) {
+      return;
+    }
+
     // 非同期include解析中に古い結果が再登録されないよう世代を進める。
     this.includePreparationGeneration++;
 
     const affectedRoots = new Set<string>();
     for (const changedUri of changedUris) {
       const dependents = this.includeDependents.get(changedUri);
-      if (dependents) {
-        for (const rootUri of dependents) {
-          affectedRoots.add(rootUri);
-        }
+      if (!dependents) {
+        continue;
       }
 
-      // 変更された external document 自体も古い AST を保持しない。
-      if (this.externalDocuments.has(changedUri)) {
-        this.externalDocuments.delete(changedUri);
-        this.externalSources.delete(changedUri);
-        this.workspaceIndex.remove(changedUri);
+      for (const rootUri of dependents) {
+        affectedRoots.add(rootUri);
       }
 
-      // 依存 root が存在しない場合でも、古い reverse edge を残さない。
+      // 変更されたURIに紐づくreverse edge自体も古くなるため、
+      // 依存rootを収集した後に削除する。
       this.includeDependents.delete(changedUri);
     }
 
@@ -365,23 +401,55 @@ export class DocumentManager {
   }
 
   public async ensureExternalDocument(uri: string): Promise<ParsedDocument | undefined> {
-    const openDocument = this.parsedDocuments.get(uri);
-    if (openDocument) {
-      return openDocument;
-    }
+    for (;;) {
+      const openDocument = this.parsedDocuments.get(uri);
+      if (openDocument) {
+        return openDocument;
+      }
 
-    const existing = this.externalDocuments.get(uri);
-    if (existing) {
-      return existing;
-    }
+      const existing = this.externalDocuments.get(uri);
+      if (existing) {
+        return existing;
+      }
 
+      const pending = this.pendingExternalDocuments.get(uri);
+      if (pending) {
+        const result = await pending;
+        // 日本語コメント：別rootの変更で古い世代の読み込みが破棄された場合は、現世代で再試行する。
+        if (result || this.externalDocuments.has(uri) || this.parsedDocuments.has(uri)) {
+          return result ?? this.parsedDocuments.get(uri) ?? this.externalDocuments.get(uri);
+        }
+        continue;
+      }
+
+      const preparationGeneration = this.includePreparationGeneration;
+      const preparation = this.loadExternalDocument(uri, preparationGeneration);
+      this.pendingExternalDocuments.set(uri, preparation);
+      try {
+        const result = await preparation;
+        if (result) {
+          return result;
+        }
+        if (preparationGeneration !== this.includePreparationGeneration) {
+          continue;
+        }
+        return undefined;
+      } finally {
+        if (this.pendingExternalDocuments.get(uri) === preparation) {
+          this.pendingExternalDocuments.delete(uri);
+        }
+      }
+    }
+  }
+
+  private async loadExternalDocument(uri: string, preparationGeneration: number): Promise<ParsedDocument | undefined> {
     const filePath = this.uriToPath(uri);
     if (!filePath) {
       return undefined;
     }
 
     const text = await this.projectService.readFileAsync(filePath);
-    if (text === undefined) {
+    if (text === undefined || preparationGeneration !== this.includePreparationGeneration) {
       return undefined;
     }
 
@@ -392,10 +460,17 @@ export class DocumentManager {
 
     const document = TextDocument.create(uri, languageId, 0, text);
     const parsed = this.parserService.parse(document);
-    this.externalDocuments.set(uri, parsed);
-    this.externalSources.set(uri, text);
-    this.workspaceIndex.update(parsed);
-    return parsed;
+    // 日本語コメント：読み込み中にinclude graphが変更された結果は登録しない。
+    if (preparationGeneration !== this.includePreparationGeneration) {
+      return undefined;
+    }
+    // 日本語コメント：非同期中に同じURIがopenされた場合は、open側を正として外部ASTを登録しない。
+    if (!this.parsedDocuments.has(uri)) {
+      this.externalDocuments.set(uri, parsed);
+      this.externalSources.set(uri, text);
+      this.workspaceIndex.update(parsed);
+    }
+    return this.parsedDocuments.get(uri) ?? parsed;
   }
 
   public async prepareRelatedIncludeUris(rootUri: string): Promise<void> {
@@ -465,6 +540,58 @@ export class DocumentManager {
       dependents.add(rootUri);
       this.includeDependents.set(uri, dependents);
     }
+  }
+
+  /**
+   * ASTから現在位置に有効なローカル変数/パラメータを取得する。
+   * ソース全文を正規表現で再走査せず、Parserが保持するscope/rangeを利用する。
+   */
+  public findLocalVariable(uri: string, name: string, offset: number): {
+    name: string;
+    typeName: string;
+    range: import('../parser/token').SourceRange;
+  } | undefined {
+    const parsed = this.parsedDocuments.get(uri);
+    if (!parsed) {
+      return undefined;
+    }
+
+    let best: { name: string; typeName: string; range: import('../parser/token').SourceRange; span: number } | undefined;
+    const contains = (range: import('../parser/token').SourceRange, point: number): boolean =>
+      range.start.offset <= point && point <= range.end.offset;
+
+    const visit = (node: any): void => {
+      if (!node || typeof node !== 'object') return;
+      if (node.kind === 'HlslFunction') {
+        const fn = node;
+        if (contains(fn.range, offset)) {
+          for (const parameter of fn.parameters ?? []) {
+            if (parameter.name !== name || !contains(fn.range, offset)) continue;
+            if (parameter.range.start.offset <= offset) {
+              best = { name: parameter.name, typeName: parameter.typeName, range: parameter.range, span: fn.range.end.offset - fn.range.start.offset };
+            }
+          }
+          for (const local of fn.locals ?? []) {
+            if (local.name !== name || local.range.start.offset > offset) continue;
+            if (local.scope && !contains(local.scope, offset)) continue;
+            const span = local.scope ? local.scope.end.offset - local.scope.start.offset : fn.range.end.offset - fn.range.start.offset;
+            if (!best || span <= best.span) {
+              best = { name: local.name, typeName: local.typeName, range: local.range, span };
+            }
+          }
+        }
+      }
+      for (const value of Object.values(node)) {
+        if (value && typeof value === 'object') {
+          if (Array.isArray(value)) value.forEach(visit);
+          else if ((value as any).kind) visit(value);
+        }
+      }
+    };
+
+    visit(parsed.ast);
+    if (!best) return undefined;
+    return { name: best.name, typeName: best.typeName, range: best.range };
   }
 
   public getRelatedIncludeUris(rootUri: string): Set<string> {
@@ -552,28 +679,18 @@ export class DocumentManager {
       includePaths = this.collectIncludes(parsed);
     }
 
-    for (const includePath of includePaths) {
+    await Promise.all(includePaths.map(async (includePath) => {
       const resolved = await this.projectService.resolveInclude(includePath, uri);
-      if (!resolved) {
-        continue;
-      }
+      if (!resolved) return;
 
       result.add(resolved.uri);
-      /*
-       * include 先を Parse / Index。
-       */
+      // 日本語コメント：独立したinclude branchは並列化し、同一URIのParseはin-flight cacheで共有する。
       const externalDocument = await this.ensureExternalDocument(resolved.uri);
-      if (!externalDocument) {
-        continue;
-      }
+      if (!externalDocument) return;
 
-      /*
-       * 再帰的な #include を調べるため、
-       * 外部ファイルの raw source を取得する。
-       */
       const externalSource = this.externalSources.get(resolved.uri);
       await this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
-    }
+    }));
   }
 
   private collectIncludes(parsed: ParsedDocument): string[] {

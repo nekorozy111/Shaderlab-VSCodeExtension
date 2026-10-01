@@ -37,6 +37,8 @@ export class IncludeResolver {
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
   // パッケージ全体を再帰走査した結果。unqualified include補完で再利用する。
   private readonly packageRecursiveCompletionCache = new Map<string, string[]>();
+  // 日本語コメント：同一パッケージの再帰走査を同時に開始しない。
+  private readonly pendingPackageRecursiveCompletionCache = new Map<string, Promise<string[]>>();
   // Project directory -> file
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
   private readonly indexedProjectDirectories = new Set<string>();
@@ -64,7 +66,7 @@ export class IncludeResolver {
     }
 
     const fromPath = this.uriToPath(fromUri);
-    if (!fromPath || !this.projectRoot.isInsideProject(fromPath)) {
+    if (!fromPath || !(await this.projectRoot.isInsideProjectAsync(fromPath))) {
       return undefined;
     }
 
@@ -114,6 +116,7 @@ export class IncludeResolver {
     this.packageDirectories.clear();
     this.packageCompletionIndex.clear();
     this.packageRecursiveCompletionCache.clear();
+    this.pendingPackageRecursiveCompletionCache.clear();
     this.projectDirectoryIndex.clear();
     this.indexedProjectDirectories.clear();
     this.resolutionCache.clear();
@@ -123,7 +126,7 @@ export class IncludeResolver {
     const normalizedInclude = this.normalizeIncludePath(includePath);
     const root = this.projectRoot.getPath();
     const fromPath = this.uriToPath(fromUri);
-    if (!root || !fromPath || !this.projectRoot.isInsideProject(fromPath)) {
+    if (!root || !fromPath || !(await this.projectRoot.isInsideProjectAsync(fromPath))) {
       return [];
     }
 
@@ -133,7 +136,7 @@ export class IncludeResolver {
     await this.collectPackageCompletionCandidates(normalizedInclude, candidates);
 
     const fromDirectory = path.dirname(fromPath);
-    this.collectProjectCompletionCandidates(fromDirectory, normalizedInclude, candidates);
+    await this.collectProjectCompletionCandidates(fromDirectory, normalizedInclude, candidates);
 
     return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
   }
@@ -340,7 +343,7 @@ export class IncludeResolver {
     // Packages/ の直下では、URP ShaderLabに必要なパッケージだけを候補にする。
     if (slashIndex < 0) {
       const partial = relative.toLowerCase();
-      this.collectRelevantPackageDirectories(partial, candidates);
+      await this.collectRelevantPackageDirectories(partial, candidates);
       if (partial.length > 0) {
         await this.collectRelevantPackageFileCandidates(partial, candidates);
       }
@@ -355,7 +358,7 @@ export class IncludeResolver {
 
     const parent = `Packages/${relative.substring(0, relative.lastIndexOf('/') + 1)}`;
     const partial = relative.substring(relative.lastIndexOf('/') + 1).toLowerCase();
-    this.ensurePackageCompletionDirectory(parent);
+    await this.ensurePackageCompletionDirectory(parent);
     const units = this.packageCompletionIndex.get(parent.toLowerCase());
     if (!units) {
       return;
@@ -368,40 +371,30 @@ export class IncludeResolver {
     }
   }
 
-  private collectRelevantPackageDirectories(
+  private async collectRelevantPackageDirectories(
     partial: string,
     candidates: Map<string, IncludeCompletionCandidate>,
-  ): void {
+  ): Promise<void> {
     const root = this.projectRoot.getPath();
-    if (!root) {
-      return;
-    }
+    if (!root) return;
 
     const seen = new Set<string>();
-    const addDirectory = (directoryRoot: string): void => {
-      if (!this.fileSystem.isDirectory(directoryRoot)) {
-        return;
-      }
-      for (const entry of this.fileSystem.listDirectory(directoryRoot)) {
-        const atIndex = entry.indexOf('@');
-        const packageName = atIndex > 0 ? entry.substring(0, atIndex) : entry;
-        if (!this.isRelevantPackage(packageName) || seen.has(packageName.toLowerCase())) {
-          continue;
-        }
-        if (!packageName.toLowerCase().startsWith(partial)) {
-          continue;
-        }
-        const packageDirectory = path.join(directoryRoot, entry);
-        if (!this.fileSystem.isDirectory(packageDirectory)) {
-          continue;
-        }
+    const addDirectory = async (directoryRoot: string): Promise<void> => {
+      if (!(await this.fileSystem.isDirectoryAsync(directoryRoot))) return;
+      for (const entry of await this.fileSystem.listDirectoryEntriesAsync(directoryRoot)) {
+        const atIndex = entry.name.indexOf('@');
+        const packageName = atIndex > 0 ? entry.name.substring(0, atIndex) : entry.name;
+        if (!this.isRelevantPackage(packageName) || seen.has(packageName.toLowerCase())) continue;
+        if (!packageName.toLowerCase().startsWith(partial)) continue;
+        const packageDirectory = path.join(directoryRoot, entry.name);
+        if (!entry.isDirectory() || !(await this.fileSystem.isDirectoryAsync(packageDirectory))) continue;
         seen.add(packageName.toLowerCase());
         candidates.set(`Packages/${packageName}/`, { includePath: `Packages/${packageName}/` });
       }
     };
 
-    addDirectory(path.resolve(root, 'Packages'));
-    addDirectory(path.resolve(root, 'Library', 'PackageCache'));
+    await addDirectory(path.resolve(root, 'Packages'));
+    await addDirectory(path.resolve(root, 'Library', 'PackageCache'));
   }
 
   private async collectRelevantPackageFileCandidates(
@@ -414,7 +407,7 @@ export class IncludeResolver {
     }
 
     for (const packageName of this.relevantPackageNames) {
-      const packageDirectory = this.getPackageDirectory(packageName, root);
+      const packageDirectory = await this.getPackageDirectory(packageName, root);
       if (!packageDirectory) {
         continue;
       }
@@ -422,8 +415,22 @@ export class IncludeResolver {
       const cacheKey = packageName.toLowerCase();
       let files = this.packageRecursiveCompletionCache.get(cacheKey);
       if (!files) {
-        files = await this.buildRecursivePackageCompletionCache(packageDirectory);
-        this.packageRecursiveCompletionCache.set(cacheKey, files);
+        let pending = this.pendingPackageRecursiveCompletionCache.get(cacheKey);
+        if (!pending) {
+          pending = this.buildRecursivePackageCompletionCache(packageDirectory);
+          this.pendingPackageRecursiveCompletionCache.set(cacheKey, pending);
+        }
+        try {
+          files = await pending;
+          // 日本語コメント：走査開始後にキャッシュ全体が無効化された場合は古い結果を残さない。
+          if (this.pendingPackageRecursiveCompletionCache.get(cacheKey) === pending) {
+            this.packageRecursiveCompletionCache.set(cacheKey, files);
+          }
+        } finally {
+          if (this.pendingPackageRecursiveCompletionCache.get(cacheKey) === pending) {
+            this.pendingPackageRecursiveCompletionCache.delete(cacheKey);
+          }
+        }
       }
 
       for (const relative of files) {
@@ -479,11 +486,11 @@ export class IncludeResolver {
     return result;
   }
 
-  private collectProjectCompletionCandidates(
+  private async collectProjectCompletionCandidates(
     fromDirectory: string,
     includePath: string,
     candidates: Map<string, IncludeCompletionCandidate>,
-  ): void {
+  ): Promise<void> {
     // プロジェクト側の相対include補完はAssets配下だけを検索対象にする。
     if (!this.isInsideAssets(fromDirectory)) {
       return;
@@ -493,7 +500,7 @@ export class IncludeResolver {
     const normalizedPrefix = includePath.replace(/\\/g, '/');
     const lowerPrefix = normalizedPrefix.toLowerCase();
     if (!normalizedPrefix.includes('/')) {
-      this.ensureProjectDirectoryIndexed(fromDirectory);
+      await this.ensureProjectDirectoryIndexed(fromDirectory);
       const files = this.projectDirectoryIndex.get(path.normalize(fromDirectory));
       if (files) {
         for (const filePath of files) {
@@ -508,7 +515,7 @@ export class IncludeResolver {
       }
 
       // 同階層のディレクトリも候補にする。次の階層を入力できるようにする。
-      this.addProjectDirectoryCandidates(fromDirectory, normalizedPrefix, candidates);
+      await this.addProjectDirectoryCandidates(fromDirectory, normalizedPrefix, candidates);
       return;
     }
 
@@ -521,7 +528,7 @@ export class IncludeResolver {
       return;
     }
 
-    this.ensureProjectDirectoryIndexed(targetDirectory);
+    await this.ensureProjectDirectoryIndexed(targetDirectory);
     const files = this.projectDirectoryIndex.get(path.normalize(targetDirectory));
     if (files) {
       for (const filePath of files) {
@@ -536,37 +543,37 @@ export class IncludeResolver {
     }
 
     // ../ や ./ の後にさらにディレクトリを選択できるよう、対象ディレクトリ直下も候補にする。
-    this.addProjectDirectoryCandidates(targetDirectory, partial, candidates, directoryPart);
+    await this.addProjectDirectoryCandidates(targetDirectory, partial, candidates, directoryPart);
   }
 
-  private addProjectDirectoryCandidates(
+  private async addProjectDirectoryCandidates(
     directoryPath: string,
     partial: string,
     candidates: Map<string, IncludeCompletionCandidate>,
     includePrefix = '',
-  ): void {
+  ): Promise<void> {
     // ディレクトリ候補もAssets配下だけに限定する。
-    if (!this.isInsideAssets(directoryPath) || !this.fileSystem.isDirectory(directoryPath)) {
+    if (!(await this.isInsideAssetsAsync(directoryPath)) || !(await this.fileSystem.isDirectoryAsync(directoryPath))) {
       return;
     }
 
     const lowerPartial = partial.toLowerCase();
-    for (const entry of this.fileSystem.listDirectory(directoryPath)) {
-      if (!entry.toLowerCase().startsWith(lowerPartial)) {
+    for (const entry of await this.fileSystem.listDirectoryEntriesAsync(directoryPath)) {
+      if (!entry.name.toLowerCase().startsWith(lowerPartial)) {
         continue;
       }
 
-      const entryPath = path.join(directoryPath, entry);
-      if (!this.fileSystem.isDirectory(entryPath) || !this.projectRoot.isInsideProject(entryPath)) {
+      const entryPath = path.join(directoryPath, entry.name);
+      if (!entry.isDirectory() || !(await this.fileSystem.isDirectoryAsync(entryPath)) || !(await this.projectRoot.isInsideProjectAsync(entryPath))) {
         continue;
       }
 
-      const candidate = `${includePrefix}${entry}/`.replace(/\\/g, '/');
+      const candidate = `${includePrefix}${entry.name}/`.replace(/\\/g, '/');
       candidates.set(candidate, { includePath: candidate });
     }
   }
 
-  private ensureProjectDirectoryIndexed(directoryPath: string): void {
+  private async ensureProjectDirectoryIndexed(directoryPath: string): Promise<void> {
     const normalizedDirectory = path.normalize(directoryPath);
     if (this.indexedProjectDirectories.has(normalizedDirectory)) {
       // LRU: 最近利用したディレクトリを末尾へ移動する。
@@ -578,14 +585,14 @@ export class IncludeResolver {
       return;
     }
     // プロジェクト側キャッシュの最大到達地点をAssetsに固定する。
-    if (!this.isInsideAssets(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
+    if (!(await this.isInsideAssetsAsync(normalizedDirectory)) || !(await this.fileSystem.isDirectoryAsync(normalizedDirectory))) {
       return;
     }
 
     const files = new Set<string>();
-    for (const entry of this.fileSystem.listDirectory(normalizedDirectory)) {
-      const entryPath = path.join(normalizedDirectory, entry);
-      if (!this.isIncludeFile(entryPath)) {
+    for (const entry of await this.fileSystem.listDirectoryEntriesAsync(normalizedDirectory)) {
+      const entryPath = path.join(normalizedDirectory, entry.name);
+      if (!entry.isFile() || !this.isIncludeFile(entryPath)) {
         continue;
       }
       files.add(path.normalize(entryPath));
@@ -625,19 +632,19 @@ export class IncludeResolver {
     return this.relevantPackageNames.has(packageName.toLowerCase());
   }
 
-  private getPackageDirectory(packageName: string, root: string): string | undefined {
+  private async getPackageDirectory(packageName: string, root: string): Promise<string | undefined> {
     const cached = this.packageDirectories.get(packageName);
-    if (cached && this.fileSystem.isDirectory(cached)) {
+    if (cached && (await this.fileSystem.isDirectoryAsync(cached))) {
       return cached;
     }
 
     const projectPackage = path.resolve(root, 'Packages', packageName);
-    if (this.fileSystem.isDirectory(projectPackage)) {
+    if (await this.fileSystem.isDirectoryAsync(projectPackage)) {
       return projectPackage;
     }
 
     const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
-    const found = this.fileSystem.findDirectory(cacheRoot, `${packageName}@`);
+    const found = await this.fileSystem.findDirectoryAsync(cacheRoot, `${packageName}@`);
     if (found) {
       this.packageDirectories.set(packageName, found);
     }
@@ -681,7 +688,7 @@ export class IncludeResolver {
     this.removeCompletionIndex(includePath);
   }
 
-  private ensurePackageCompletionDirectory(includeDirectory: string): void {
+  private async ensurePackageCompletionDirectory(includeDirectory: string): Promise<void> {
     const normalized = includeDirectory.replace(/\\/g, '/');
     if (!normalized.startsWith('Packages/')) {
       return;
@@ -699,13 +706,13 @@ export class IncludeResolver {
       return;
     }
 
-    const packageDirectory = this.getPackageDirectory(packageName, root);
+    const packageDirectory = await this.getPackageDirectory(packageName, root);
     if (!packageDirectory) {
       return;
     }
 
     const actualDirectory = subPath ? path.resolve(packageDirectory, subPath) : packageDirectory;
-    if (!this.fileSystem.isDirectory(actualDirectory)) {
+    if (!(await this.fileSystem.isDirectoryAsync(actualDirectory))) {
       return;
     }
 
@@ -715,12 +722,12 @@ export class IncludeResolver {
     }
 
     const units = new Set<string>();
-    for (const entry of this.fileSystem.listDirectory(actualDirectory)) {
-      const entryPath = path.join(actualDirectory, entry);
-      if (this.fileSystem.isDirectory(entryPath)) {
-        units.add(`${entry}/`);
-      } else if (this.isIncludeFile(entryPath)) {
-        units.add(entry);
+    for (const entry of await this.fileSystem.listDirectoryEntriesAsync(actualDirectory)) {
+      const entryPath = path.join(actualDirectory, entry.name);
+      if (entry.isDirectory()) {
+        units.add(`${entry.name}/`);
+      } else if (entry.isFile() && this.isIncludeFile(entryPath)) {
+        units.add(entry.name);
       }
     }
     this.packageCompletionIndex.set(key, units);
@@ -936,6 +943,16 @@ export class IncludeResolver {
       return false;
     }
     return true;
+  }
+
+  private async isInsideAssetsAsync(filePath: string): Promise<boolean> {
+    const root = this.projectRoot.getPath();
+    if (!root) return false;
+    const assetsRoot = path.resolve(root, 'Assets');
+    const normalizedPath = path.resolve(filePath);
+    const relative = path.relative(assetsRoot, normalizedPath);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return false;
+    return this.projectRoot.isInsideProjectAsync(normalizedPath);
   }
 
   private isInsideAssets(filePath: string): boolean {

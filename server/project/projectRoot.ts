@@ -44,6 +44,31 @@ export class ProjectRoot {
     return path.resolve(this.rootPath, ...segments);
   }
 
+  public async isInsideProjectAsync(filePath: string): Promise<boolean> {
+    if (!this.rootPath) return false;
+    const normalizedFilePath = path.resolve(filePath);
+    const cached = this.insideProjectCache.get(normalizedFilePath);
+    if (cached !== undefined) return cached;
+
+    const root = path.resolve(this.realRootPath ?? this.rootPath);
+    const lexicalRoot = path.resolve(this.rootPath);
+    const lexicalRelative = path.relative(lexicalRoot, normalizedFilePath);
+    if (lexicalRelative.startsWith('..' + path.sep) || lexicalRelative === '..' || path.isAbsolute(lexicalRelative)) {
+      this.setInsideProjectCache(normalizedFilePath, false);
+      return false;
+    }
+
+    const target = await this.realPathForCheckAsync(normalizedFilePath);
+    if (!target) {
+      this.setInsideProjectCache(normalizedFilePath, false);
+      return false;
+    }
+    const relative = path.relative(root, target);
+    const result = relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+    this.setInsideProjectCache(normalizedFilePath, result);
+    return result;
+  }
+
   public isInsideProject(filePath: string): boolean {
     if (!this.rootPath) {
       return false;
@@ -122,6 +147,34 @@ export class ProjectRoot {
     } catch {
       this.realRootPath = this.rootPath;
     }
+  }
+
+  private async realPathForCheckAsync(filePath: string): Promise<string | undefined> {
+    const normalized = path.resolve(filePath);
+    if (this.realPathCache.has(normalized)) return this.realPathCache.get(normalized);
+
+    let result: string | undefined;
+    try {
+      result = await fs.promises.realpath(normalized);
+    } catch {
+      let current = normalized;
+      while (current !== path.dirname(current)) {
+        try {
+          const realParent = await fs.promises.realpath(current);
+          result = path.resolve(realParent, path.relative(current, normalized));
+          break;
+        } catch {
+          current = path.dirname(current);
+        }
+      }
+    }
+    this.realPathCache.set(normalized, result);
+    while (this.realPathCache.size > this.maxRealPathCacheEntries) {
+      const oldest = this.realPathCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.realPathCache.delete(oldest);
+    }
+    return result;
   }
 
   private realPathForCheck(filePath: string): string | undefined {

@@ -441,84 +441,13 @@ export class CompletionProvider {
     name: string;
     typeName: string;
     range: {
-      start: {
-        line: number;
-        character: number;
-        offset: number;
-      };
-      end: {
-        line: number;
-        character: number;
-        offset: number;
-      };
+      start: { line: number; character: number; offset: number };
+      end: { line: number; character: number; offset: number };
     };
   } | null {
-    const document = this.documentManager.get(uri);
-    if (!document) {
-      return null;
-    }
-
-    const source = document.getText();
-    const safeOffset = Math.max(0, Math.min(offset, source.length));
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    if (!lexical) {
-      return null;
-    }
-    /*
-     * コメント除去済みの全文キャッシュからカーソル位置までを切り出す。
-     * 毎回ソース先頭からコメントを再走査しない。
-     */
-    const cleanSource = lexical.maskedText.slice(0, safeOffset);
-    const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    /*
-     * 例:
-     *
-     * A a;
-     * B b;
-     * Varyings output;
-     * Varyings output = ...;
-     * float3 position;
-     */
-    const pattern = new RegExp(
-      `\\b` +
-        `(?:(?:const|static|uniform|volatile|inline)\\s+)*` +
-        `((?:[A-Za-z_][A-Za-z0-9_]*)(?:\\s*<[^<>\\r\\n]+>)?)\\s+` +
-        `${escapedName}\\s*` +
-        `(?:;|=|\\[|,)`,
-      'g',
-    );
-    let lastMatch: RegExpExecArray | null = null;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(cleanSource)) !== null) {
-      lastMatch = match;
-    }
-
-    if (!lastMatch) {
-      return null;
-    }
-
-    const typeName = lastMatch[1];
-    const declarationStart = lastMatch.index;
-    const declarationEnd = declarationStart + lastMatch[0].length;
-    const startPosition = document.positionAt(declarationStart);
-    const endPosition = document.positionAt(declarationEnd);
-    const range = {
-      start: {
-        line: startPosition.line,
-        character: startPosition.character,
-        offset: declarationStart,
-      },
-      end: {
-        line: endPosition.line,
-        character: endPosition.character,
-        offset: declarationEnd,
-      },
-    };
-    return {
-      name: variableName,
-      typeName,
-      range,
-    };
+    const local = this.documentManager.findLocalVariable(uri, variableName, offset);
+    if (!local) return null;
+    return { name: local.name, typeName: local.typeName, range: local.range };
   }
 
   private maskComments(source: string): string {

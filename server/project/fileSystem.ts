@@ -94,6 +94,11 @@ export class FileSystem {
     }
   }
 
+  public async findFileAsync(parentDirectory: string, fileName: string): Promise<string | undefined> {
+    const candidate = path.join(parentDirectory, fileName);
+    return (await this.isFileAsync(candidate)) ? candidate : undefined;
+  }
+
   public async findDirectoryAsync(parentDirectory: string, prefix: string): Promise<string | undefined> {
     try {
       const entries = await fs.promises.readdir(path.normalize(parentDirectory), { withFileTypes: true });

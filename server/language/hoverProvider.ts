@@ -159,123 +159,17 @@ export class HoverProvider {
   }
 
   private findLocalVariableSymbol(uri: string, name: string, offset: number): ShaderSymbol | null {
-    const document = this.documentManager.get(uri);
-    if (!document) {
-      return null;
-    }
-
-    const text = document.getText();
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    if (!lexical) {
-      return null;
-    }
-    const maskedText = lexical.maskedText;
-    // ------------------------------------------------------------
-    // ローカル変数の宣言を検索
-    //
-    // 例:
-    //     float4 color = ...
-    //           ^^^^^
-    //
-    // カーソルが color の途中にあっても検出する。
-    // ------------------------------------------------------------
-    const declarationPattern =
-      /\b(?:(?:const|static|uniform|volatile|inline)\s+)*([A-Za-z_][A-Za-z0-9_]*(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
-    let match: RegExpExecArray | null;
-    let bestMatch: RegExpExecArray | null = null;
-    while ((match = declarationPattern.exec(maskedText)) !== null) {
-      const variableName = match[2];
-      if (variableName !== name) {
-        continue;
-      }
-
-      const variableNameOffset = match.index + match[0].lastIndexOf(variableName);
-      const variableEnd = variableNameOffset + variableName.length;
-      // カーソルが変数名そのものにある
-      if (offset >= variableNameOffset && offset <= variableEnd) {
-        bestMatch = match;
-        break;
-      }
-
-      // カーソルより前にある宣言を記録
-      if (variableNameOffset < offset) {
-        bestMatch = match;
-      }
-    }
-
-    if (!bestMatch) {
-      return null;
-    }
-
-    const typeName = bestMatch[1];
-    const variableName = bestMatch[2];
-    if (variableName !== name) {
-      return null;
-    }
-
-    // ------------------------------------------------------------
-    // ここでは「関数スコープ」の判定はまだ行わない。
-    //
-    // 今回の目的はまず
-    //
-    //     float4 color = ...
-    //
-    // の color 宣言を DefinitionProvider より優先して
-    // local variable として取得すること。
-    // ------------------------------------------------------------
-    const variableNameOffset = bestMatch.index + bestMatch[0].lastIndexOf(variableName);
-    const variableEnd = variableNameOffset + variableName.length;
-    const startPosition = document.positionAt(variableNameOffset);
-    const endPosition = document.positionAt(variableEnd);
-    const range: SourceRange = {
-      start: {
-        line: startPosition.line,
-        character: startPosition.character,
-        offset: variableNameOffset,
-      },
-      end: {
-        line: endPosition.line,
-        character: endPosition.character,
-        offset: variableEnd,
-      },
-    };
-    // ------------------------------------------------------------
-    // 型の解決
-    //
-    // include の探索は既存の findIncludedSymbol() に任せる。
-    // ------------------------------------------------------------
-    let typeSymbol: ShaderSymbol | null = null;
-    const exactMatches = this.documentManager.findExactInRelated(uri, typeName);
-    for (const match of exactMatches) {
-      if (match.symbol.kind === 'struct' || match.symbol.kind === 'cbuffer') {
-        typeSymbol = match.symbol;
-        break;
-      }
-    }
-
-    // ------------------------------------------------------------
-    // include 側にある型も探す
-    // ------------------------------------------------------------
-    if (!typeSymbol) {
-      const includedSymbol = this.findIncludedSymbol(uri, typeName);
-      if (includedSymbol) {
-        typeSymbol = includedSymbol;
-      }
-    }
-
-    // ------------------------------------------------------------
-    // ローカル変数 Symbol
-    // ------------------------------------------------------------
+    const local = this.documentManager.findLocalVariable(uri, name, offset);
+    if (!local) return null;
     return {
-      name: variableName,
+      name: local.name,
       kind: 'variable',
       location: {
         uri,
-        range,
-        selectionRange: range,
+        range: local.range,
+        selectionRange: local.range,
       },
-      typeName,
-      parentName: typeSymbol?.name,
+      typeName: local.typeName,
       children: [],
     };
   }

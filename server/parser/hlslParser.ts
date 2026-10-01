@@ -33,9 +33,9 @@ export class HlslParser {
     const declarations: HlslDeclarationNode[] = [];
     while (!this.isAtEnd()) {
       const wasPreprocessor = this.current().kind === 'preprocessor';
-      const declaration = this.parseDeclaration();
-      if (declaration) {
-        declarations.push(declaration);
+      const parsedDeclarations = this.parseDeclaration();
+      if (parsedDeclarations.length > 0) {
+        declarations.push(...parsedDeclarations);
       } else {
         /*
          * parsePreprocessor() は #endif / #else / #elif / #ifdef
@@ -67,20 +67,27 @@ export class HlslParser {
     };
   }
 
-  private parseDeclaration(): HlslDeclarationNode | undefined {
+  private parseDeclaration(): HlslDeclarationNode[] {
     if (this.current().kind === 'preprocessor') {
-      return this.parsePreprocessor();
+      const declaration = this.parsePreprocessor();
+      return declaration ? [declaration] : [];
     }
 
     if (this.checkIdentifier('struct')) {
-      return this.parseStruct();
+      const declaration = this.parseStruct();
+      return declaration ? [declaration] : [];
     }
 
-    if (this.checkIdentifier('CBUFFER_START')) {
-      return this.parseCBuffer();
+    if (this.checkIdentifier('CBUFFER_START') || this.checkIdentifier('cbuffer') || this.checkIdentifier('tbuffer')) {
+      const declaration = this.parseCBuffer();
+      return declaration ? [declaration] : [];
     }
 
-    return this.parseFunctionOrVariable();
+    const parsed = this.parseFunctionOrVariables();
+    if (parsed.function) {
+      return [parsed.function];
+    }
+    return parsed.variables;
   }
 
   private parsePreprocessor(): HlslDeclarationNode | undefined {
@@ -181,9 +188,9 @@ export class HlslParser {
     this.advance();
     const fields: HlslVariableNode[] = [];
     while (!this.isAtEnd() && !this.checkValue('}')) {
-      const field = this.parseVariableStatement();
-      if (field !== undefined) {
-        fields.push(field);
+      const parsedFields = this.parseVariableStatements();
+      if (parsedFields.length > 0) {
+        fields.push(...parsedFields);
         continue;
       }
 
@@ -214,78 +221,117 @@ export class HlslParser {
 
   private parseCBuffer(): HlslCBufferNode | undefined {
     const startToken = this.current();
+    const macroStyle = startToken.value === 'CBUFFER_START';
     this.advance();
-    if (!this.checkValue('(')) {
-      return undefined;
-    }
 
-    this.advance();
-    const nameToken = this.current();
-    if (nameToken.kind !== 'identifier') {
-      return undefined;
-    }
-
-    this.advance();
-    if (this.checkValue(')')) {
+    let nameToken: Token | undefined;
+    if (macroStyle) {
+      if (!this.checkValue('(')) {
+        return undefined;
+      }
       this.advance();
+      nameToken = this.current();
+      if (nameToken.kind !== 'identifier') {
+        return undefined;
+      }
+      this.advance();
+      if (this.checkValue(')')) {
+        this.advance();
+      }
+    } else {
+      nameToken = this.current();
+      if (nameToken.kind !== 'identifier') {
+        return undefined;
+      }
+      this.advance();
+      // cbuffer Name : register(b0) / tbuffer Name : register(b0)
+      if (this.checkValue(':')) {
+        this.skipBalancedDeclarationSuffix();
+      }
     }
 
     const fields: HlslVariableNode[] = [];
-    while (!this.isAtEnd()) {
-      if (this.checkIdentifier('CBUFFER_END')) {
-        const endToken = this.current();
+    let end = nameToken.range.end;
+
+    if (macroStyle) {
+      while (!this.isAtEnd()) {
+        if (this.checkIdentifier('CBUFFER_END')) {
+          const endToken = this.current();
+          this.advance();
+          end = endToken.range.end;
+          return { kind: 'HlslCBuffer', name: nameToken.value, fields, range: { start: startToken.range.start, end } };
+        }
+        const parsedFields = this.parseVariableStatements();
+        if (parsedFields.length > 0) {
+          fields.push(...parsedFields);
+          end = parsedFields[parsedFields.length - 1].range.end;
+          continue;
+        }
         this.advance();
-        return {
-          kind: 'HlslCBuffer',
-          name: nameToken.value,
-          fields,
-          range: {
-            start: startToken.range.start,
-            end: endToken.range.end,
-          },
-        };
       }
-
-      const variable = this.parseVariableStatement();
-      if (variable !== undefined) {
-        fields.push(variable);
-        continue;
+    } else {
+      if (!this.checkValue('{')) {
+        return undefined;
       }
-
       this.advance();
+      while (!this.isAtEnd() && !this.checkValue('}')) {
+        const parsedFields = this.parseVariableStatements();
+        if (parsedFields.length > 0) {
+          fields.push(...parsedFields);
+          end = parsedFields[parsedFields.length - 1].range.end;
+          continue;
+        }
+        this.advance();
+      }
+      if (this.checkValue('}')) {
+        end = this.current().range.end;
+        this.advance();
+      }
+      if (this.checkValue(';')) {
+        end = this.current().range.end;
+        this.advance();
+      }
     }
 
-    return {
-      kind: 'HlslCBuffer',
-      name: nameToken.value,
-      fields,
-      range: {
-        start: startToken.range.start,
-        end: nameToken.range.end,
-      },
-    };
+    return { kind: 'HlslCBuffer', name: nameToken.value, fields, range: { start: startToken.range.start, end } };
   }
 
-  private parseFunctionOrVariable(): HlslFunctionNode | HlslVariableNode | undefined {
+  private skipBalancedDeclarationSuffix(): void {
+    // register(...) など、宣言名の後ろにある属性/semanticを次の宣言まで読み飛ばす。
+    this.advance();
+    let depth = 0;
+    while (!this.isAtEnd()) {
+      if (this.checkValue('(')) depth++;
+      if (this.checkValue(')')) {
+        depth--;
+        this.advance();
+        if (depth <= 0) break;
+        continue;
+      }
+      this.advance();
+    }
+  }
+
+  private parseFunctionOrVariables(): { function?: HlslFunctionNode; variables: HlslVariableNode[] } {
     const startIndex = this.index;
     const typeToken = this.parseTypeName();
     if (typeToken === undefined) {
-      return undefined;
+      return { variables: [] };
     }
 
     const nameToken = this.current();
     if (nameToken.kind !== 'identifier') {
       this.index = startIndex;
-      return undefined;
+      return { variables: [] };
     }
 
     this.advance();
     if (this.checkValue('(')) {
-      return this.parseFunctionAfterName(typeToken, nameToken);
+      return { function: this.parseFunctionAfterName(typeToken, nameToken), variables: [] };
     }
 
     this.index = startIndex;
-    return this.parseVariableStatement();
+    return { variables: this.parseVariableStatements() };
   }
 
   private parseFunctionAfterName(typeToken: Token, nameToken: Token): HlslFunctionNode {
@@ -372,13 +418,15 @@ export class HlslParser {
           continue;
         }
 
-        const local = this.parseVariableStatement();
-        if (local) {
+        const parsedLocals = this.parseVariableStatements();
+        if (parsedLocals.length > 0) {
           const scope = scopeStack[scopeStack.length - 1];
-          if (scope) {
-            local.scope = scope.range;
+          for (const local of parsedLocals) {
+            if (scope) {
+              local.scope = scope.range;
+            }
+            locals.push(local);
           }
-          locals.push(local);
           continue;
         }
 
@@ -545,100 +593,121 @@ export class HlslParser {
     };
   }
 
-  private parseVariableStatement(): HlslVariableNode | undefined {
+  private parseVariableStatements(): HlslVariableNode[] {
     const startIndex = this.index;
-    while (
-      this.checkIdentifier('const') ||
-      this.checkIdentifier('static') ||
-      this.checkIdentifier('uniform') ||
-      this.checkIdentifier('volatile')
-    ) {
+    const qualifiers: string[] = [];
+    while (this.current().kind === 'identifier' && this.isDeclarationQualifier(this.current().value)) {
+      qualifiers.push(this.current().value);
       this.advance();
     }
 
     const typeToken = this.parseTypeName();
-    if (typeToken === undefined) {
+    if (typeToken === undefined || this.isVariableDeclarationKeyword(typeToken.value)) {
       this.index = startIndex;
-      return undefined;
+      return [];
     }
 
-    if (this.isVariableDeclarationKeyword(typeToken.value)) {
-      this.index = startIndex;
-      return undefined;
-    }
+    const variables: HlslVariableNode[] = [];
+    let first = true;
+    while (!this.isAtEnd()) {
+      const nameToken = this.current();
+      if (nameToken.kind !== 'identifier') {
+        this.index = startIndex;
+        return [];
+      }
+      this.advance();
+      if (first && this.checkValue('(')) {
+        this.index = startIndex;
+        return [];
+      }
 
-    const nameToken = this.current();
-    if (nameToken.kind !== 'identifier') {
-      this.index = startIndex;
-      return undefined;
-    }
+      let end = nameToken.range.end;
+      while (this.checkValue('[')) {
+        let depth = 0;
+        while (!this.isAtEnd()) {
+          const token = this.current();
+          if (token.value === '[') depth++;
+          if (token.value === ']') {
+            depth--;
+            end = token.range.end;
+            this.advance();
+            if (depth <= 0) break;
+            continue;
+          }
+          this.advance();
+        }
+      }
 
-    this.advance();
-    if (this.checkValue('(')) {
-      this.index = startIndex;
-      return undefined;
-    }
+      let semantic: string | undefined;
+      if (this.checkValue(':')) {
+        this.advance();
+        if (this.current().kind === 'identifier') {
+          semantic = this.current().value;
+          end = this.current().range.end;
+          this.advance();
+        }
+      }
 
-    let semantic: string | undefined;
-    let end = nameToken.range.end;
-    if (this.checkValue('[')) {
-      let depth = 0;
+      // 初期化子を含む宣言を、トップレベルのカンマ/セミコロンまで消費する。
+      let parenDepth = 0;
+      let bracketDepth = 0;
+      let braceDepth = 0;
       while (!this.isAtEnd()) {
         const token = this.current();
-        if (token.value === '[') {
-          depth++;
-        }
-
-        if (token.value === ']') {
-          depth--;
-          end = token.range.end;
-          this.advance();
-          if (depth <= 0) {
-            break;
+        if (token.value === '(') parenDepth++;
+        else if (token.value === ')') parenDepth--;
+        else if (token.value === '[') bracketDepth++;
+        else if (token.value === ']') bracketDepth--;
+        else if (token.value === '{') braceDepth++;
+        else if (token.value === '}') {
+          if (braceDepth === 0) {
+            this.index = startIndex;
+            return [];
           }
-
-          continue;
+          braceDepth--;
         }
 
+        if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0 && (token.value === ',' || token.value === ';')) {
+          break;
+        }
+        end = token.range.end;
         this.advance();
       }
-    }
 
-    if (this.checkValue(':')) {
-      this.advance();
-      if (this.current().kind === 'identifier') {
-        semantic = this.current().value;
+      variables.push({
+        kind: 'HlslVariable',
+        typeName: typeToken.value,
+        name: nameToken.value,
+        semantic,
+        range: { start: typeToken.range.start, end },
+      });
+
+      if (this.checkValue(',')) {
+        this.advance();
+        first = false;
+        continue;
+      }
+      if (this.checkValue(';')) {
         end = this.current().range.end;
+        variables[variables.length - 1].range.end = end;
         this.advance();
+        return variables;
       }
-    }
-
-    while (!this.isAtEnd() && !this.checkValue(';')) {
-      if (this.checkValue('{') || this.checkValue('}')) {
-        this.index = startIndex;
-        return undefined;
-      }
-
-      this.advance();
-    }
-
-    if (!this.checkValue(';')) {
       this.index = startIndex;
-      return undefined;
+      return [];
     }
 
-    end = this.current().range.end;
-    this.advance();
-    return {
-      kind: 'HlslVariable',
-      typeName: typeToken.value,
-      name: nameToken.value,
-      semantic,
-      range: {
-        start: typeToken.range.start,
-        end,
-      },
-    };
+    this.index = startIndex;
+    return [];
+  }
+
+  private isDeclarationQualifier(value: string): boolean {
+    return new Set([
+      'const', 'static', 'uniform', 'volatile', 'precise', 'row_major', 'column_major',
+      'nointerpolation', 'linear', 'centroid', 'noperspective', 'sample', 'in', 'out', 'inout',
+      'groupshared', 'globallycoherent', 'shared', 'extern', 'inline', 'min16float', 'min16int',
+      'min16uint',
+    ]).has(value);
   }
 
   private isVariableDeclarationKeyword(value: string): boolean {
