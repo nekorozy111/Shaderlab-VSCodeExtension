@@ -5,26 +5,17 @@ import { DefinitionProvider } from './definitionProvider';
 import { HlslStructNode, ShaderHlslBlockNode } from '../parser/ast';
 import { SourceRange } from '../parser/token';
 
-type HoverLexicalCache = {
-  version: number;
-  maskedText: string;
-  commentRanges: Array<{ start: number; end: number }>;
-};
+import { containsOffset } from '../parser/lexicalUtils';
 
 export class HoverProvider {
-  private readonly lexicalCache = new Map<string, HoverLexicalCache>();
   public constructor(
     private readonly documentManager: DocumentManager,
     private readonly definitionProvider: DefinitionProvider,
   ) {}
 
-  public invalidateDocument(uri: string): void {
-    this.lexicalCache.delete(uri);
-  }
+  public invalidateDocument(_uri: string): void {}
 
-  public clear(): void {
-    this.lexicalCache.clear();
-  }
+  public clear(): void {}
   public provideHover(uri: string, position: Position): Hover | null {
     const document = this.documentManager.get(uri);
     if (!document) {
@@ -67,7 +58,7 @@ export class HoverProvider {
      * コメント内では Hover を表示しない
      * ---------------------------------------------------------
      */
-    if (this.isInsideComment(text, offset, uri, document.version)) {
+    if (this.isInsideComment(uri, offset)) {
       return null;
     }
 
@@ -174,7 +165,11 @@ export class HoverProvider {
     }
 
     const text = document.getText();
-    const maskedText = this.getMaskedText(uri, document.version, text);
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    if (!lexical) {
+      return null;
+    }
+    const maskedText = lexical.maskedText;
     // ------------------------------------------------------------
     // ローカル変数の宣言を検索
     //
@@ -283,27 +278,6 @@ export class HoverProvider {
       parentName: typeSymbol?.name,
       children: [],
     };
-  }
-
-  private getMaskedText(uri: string, version: number, text: string): string {
-    const cached = this.lexicalCache.get(uri);
-    if (cached && cached.version === version) {
-      return cached.maskedText;
-    }
-
-    const commentRanges: Array<{ start: number; end: number }> = [];
-    const maskedText = text.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, (match, offset: number) => {
-      commentRanges.push({ start: offset, end: offset + match.length });
-      return match.replace(/[^\r\n]/g, ' ');
-    });
-    this.lexicalCache.set(uri, { version, maskedText, commentRanges });
-    if (this.lexicalCache.size > 128) {
-      const oldest = this.lexicalCache.keys().next().value as string | undefined;
-      if (oldest !== undefined) {
-        this.lexicalCache.delete(oldest);
-      }
-    }
-    return maskedText;
   }
 
   private createHoverContents(symbol: ShaderSymbol, uri: string): MarkupContent {
@@ -587,25 +561,8 @@ export class HoverProvider {
     return null;
   }
 
-  private isInsideComment(text: string, offset: number, uri: string, version: number): boolean {
-    const maskedText = this.getMaskedText(uri, version, text);
-    const cached = this.lexicalCache.get(uri);
-    if (!cached) {
-      return false;
-    }
-    let low = 0;
-    let high = cached.commentRanges.length - 1;
-    while (low <= high) {
-      const middle = (low + high) >> 1;
-      const range = cached.commentRanges[middle];
-      if (offset < range.start) {
-        high = middle - 1;
-      } else if (offset >= range.end) {
-        low = middle + 1;
-      } else {
-        return maskedText[offset] !== '\n' && maskedText[offset] !== '\r';
-      }
-    }
-    return false;
+  private isInsideComment(uri: string, offset: number): boolean {
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    return lexical ? containsOffset(lexical.commentRanges, offset) : false;
   }
 }

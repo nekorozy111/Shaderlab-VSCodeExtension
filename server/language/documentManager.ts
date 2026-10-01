@@ -64,6 +64,7 @@ export class DocumentManager {
   public open(document: TextDocument): ParsedDocument | undefined {
     if (!this.isProjectDocument(document.uri)) {
       this.documents.delete(document.uri);
+      this.parserService.invalidate(document.uri);
       this.parsedDocuments.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
       this.parsingVersions.delete(document.uri);
@@ -85,6 +86,7 @@ export class DocumentManager {
   public set(document: TextDocument): void {
     if (!this.isProjectDocument(document.uri)) {
       this.documents.delete(document.uri);
+      this.parserService.invalidate(document.uri);
       this.parsedDocuments.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
       this.parsingVersions.delete(document.uri);
@@ -139,6 +141,7 @@ export class DocumentManager {
 
   public close(document: TextDocument): void {
     this.documents.delete(document.uri);
+    this.parserService.invalidate(document.uri);
     this.parsedDocuments.delete(document.uri);
     this.documentContentHashes.delete(document.uri);
     this.parsingVersions.delete(document.uri);
@@ -169,6 +172,14 @@ export class DocumentManager {
       return this.update(document);
     }
     return parsed;
+  }
+
+  public getLexicalAnalysis(uri: string) {
+    const document = this.documents.get(uri);
+    if (!document) {
+      return undefined;
+    }
+    return this.parserService.getLexicalAnalysis(document);
   }
 
   public getWorkspaceIndex(): WorkspaceIndex {
@@ -280,6 +291,7 @@ export class DocumentManager {
     this.parsedDocuments.clear();
     this.documentContentHashes.clear();
     this.parsingVersions.clear();
+    this.parserService.clear();
     this.externalDocuments.clear();
     this.externalSources.clear();
     this.includeDependencies.clear();
@@ -323,6 +335,9 @@ export class DocumentManager {
     if (changedUris.length === 0) {
       return;
     }
+
+    // 非同期include解析中に古い結果が再登録されないよう世代を進める。
+    this.includePreparationGeneration++;
 
     const affectedRoots = new Set<string>();
     for (const changedUri of changedUris) {

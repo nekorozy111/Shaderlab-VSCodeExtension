@@ -4,6 +4,7 @@ import { ShaderSymbol } from '../symbol/symbol';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { HlslDocumentNode, ShaderDocumentNode, HlslFunctionNode, HlslVariableNode } from '../parser/ast';
 import { isShaderLabDocument } from './languageId';
+import { containsOffset } from '../parser/lexicalUtils';
 
 export class DefinitionProvider {
   public constructor(private readonly documentManager: DocumentManager) {}
@@ -49,7 +50,7 @@ export class DefinitionProvider {
      * コメント内では 定義 を提供しない
      * ---------------------------------------------------------
      */
-    if (this.isInsideComment(text, offset)) {
+    if (this.isInsideComment(uri, offset)) {
       return null;
     }
 
@@ -1101,42 +1102,8 @@ export class DefinitionProvider {
     return text.substring(start, end);
   }
 
-  private isInsideComment(text: string, offset: number): boolean {
-    let inLineComment = false;
-    let inBlockComment = false;
-    for (let i = 0; i < offset; i++) {
-      const current = text[i];
-      const next = text[i + 1];
-      if (inLineComment) {
-        if (current === '\n') {
-          inLineComment = false;
-        }
-
-        continue;
-      }
-
-      if (inBlockComment) {
-        if (current === '*' && next === '/') {
-          inBlockComment = false;
-          i++;
-        }
-
-        continue;
-      }
-
-      if (current === '/' && next === '/') {
-        inLineComment = true;
-        i++;
-        continue;
-      }
-
-      if (current === '/' && next === '*') {
-        inBlockComment = true;
-        i++;
-        continue;
-      }
-    }
-
-    return inLineComment || inBlockComment;
+  private isInsideComment(uri: string, offset: number): boolean {
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    return lexical ? containsOffset(lexical.commentRanges, offset) : false;
   }
 }

@@ -4,20 +4,10 @@ import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
 import { IncludeResolver } from '../project/includeResolver';
 
-type OffsetRange = { start: number; end: number };
-type LexicalCache = {
-  uri: string;
-  version: number;
-  sourceLength: number;
-  maskedText: string;
-  commentRanges: OffsetRange[];
-  stringRanges: OffsetRange[];
-  hlslRanges: OffsetRange[];
-};
+import { LexicalAnalysis } from '../parser/tokenizer';
+import { containsOffset } from '../parser/lexicalUtils';
 
 export class CompletionProvider {
-  private readonly lexicalCache = new Map<string, LexicalCache>();
-  private readonly maxLexicalCacheEntries = 16;
   private readonly completionSource = 'ShaderLab IntelliSense';
   public constructor(
     private readonly documentManager: DocumentManager,
@@ -33,7 +23,10 @@ export class CompletionProvider {
     // Completion要求ごとの同期Parseを避け、入力イベントの遅延を抑える。
     const text = document.getText();
     const offset = document.offsetAt(position);
-    const lexical = this.getLexicalCache(uri, document.version, text);
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    if (!lexical) {
+      return [];
+    }
     if (this.isInsideComment(text, offset, lexical)) {
       return [];
     }
@@ -413,7 +406,10 @@ export class CompletionProvider {
     }
 
     const text = document.getText();
-    const lexical = this.getLexicalCache(uri, document.version, text);
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    if (!lexical) {
+      return [];
+    }
     const safeOffset = Math.max(0, Math.min(offset, text.length));
     const maskedSource = lexical.maskedText.slice(0, safeOffset);
     const result: CompletionItem[] = [];
@@ -464,7 +460,10 @@ export class CompletionProvider {
 
     const source = document.getText();
     const safeOffset = Math.max(0, Math.min(offset, source.length));
-    const lexical = this.getLexicalCache(uri, document.version, source);
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    if (!lexical) {
+      return null;
+    }
     /*
      * コメント除去済みの全文キャッシュからカーソル位置までを切り出す。
      * 毎回ソース先頭からコメントを再走査しない。
@@ -590,153 +589,12 @@ export class CompletionProvider {
     return result;
   }
 
-  private isInsideComment(_text: string, offset: number, cache: LexicalCache): boolean {
-    return this.containsOffset(cache.commentRanges, offset);
+  private isInsideComment(_text: string, offset: number, cache: LexicalAnalysis): boolean {
+    return containsOffset(cache.commentRanges, offset);
   }
 
-  private isInsideString(_text: string, offset: number, cache: LexicalCache): boolean {
-    return this.containsOffset(cache.stringRanges, offset);
-  }
-
-  private containsOffset(ranges: OffsetRange[], offset: number): boolean {
-    let low = 0;
-    let high = ranges.length - 1;
-    while (low <= high) {
-      const middle = (low + high) >> 1;
-      const range = ranges[middle];
-      if (offset < range.start) {
-        high = middle - 1;
-      } else if (offset > range.end) {
-        low = middle + 1;
-      } else {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private getLexicalCache(uri: string, version: number, text: string): LexicalCache {
-    const cached = this.lexicalCache.get(uri);
-    if (cached && cached.version === version && cached.sourceLength === text.length) {
-      // LRU: 最近利用したエントリを末尾へ移動する。
-      this.lexicalCache.delete(uri);
-      this.lexicalCache.set(uri, cached);
-      return cached;
-    }
-
-    const lexical = this.buildLexicalCache(uri, version, text);
-    this.lexicalCache.delete(uri);
-    this.lexicalCache.set(uri, lexical);
-    while (this.lexicalCache.size > this.maxLexicalCacheEntries) {
-      const oldestUri = this.lexicalCache.keys().next().value as string | undefined;
-      if (oldestUri === undefined) {
-        break;
-      }
-      this.lexicalCache.delete(oldestUri);
-    }
-    return lexical;
-  }
-
-  private buildLexicalCache(uri: string, version: number, text: string): LexicalCache {
-    const commentRanges: OffsetRange[] = [];
-    const stringRanges: OffsetRange[] = [];
-    let masked = '';
-    let index = 0;
-    while (index < text.length) {
-      const char = text[index];
-      const next = text[index + 1] ?? '';
-
-      if (char === '/' && next === '/') {
-        const start = index;
-        index += 2;
-        masked += '  ';
-        while (index < text.length && text[index] !== '\n') {
-          masked += ' ';
-          index++;
-        }
-        commentRanges.push({ start, end: index });
-        continue;
-      }
-
-      if (char === '/' && next === '*') {
-        const start = index;
-        index += 2;
-        masked += '  ';
-        while (index < text.length) {
-          if (text[index] === '*' && text[index + 1] === '/') {
-            masked += '  ';
-            index += 2;
-            break;
-          }
-          const value = text[index];
-          masked += value === '\n' ? '\n' : ' ';
-          index++;
-        }
-        commentRanges.push({ start, end: index });
-        continue;
-      }
-
-      if (char === '"' || char === "'") {
-        const start = index;
-        const quote = char;
-        masked += ' ';
-        index++;
-        let escaped = false;
-        while (index < text.length) {
-          const value = text[index];
-          masked += value === '\n' ? '\n' : ' ';
-          index++;
-          if (escaped) {
-            escaped = false;
-            continue;
-          }
-          if (value === '\\') {
-            escaped = true;
-            continue;
-          }
-          if (value === quote) {
-            break;
-          }
-        }
-        stringRanges.push({ start, end: index });
-        continue;
-      }
-
-      masked += char;
-      index++;
-    }
-
-    const hlslRanges: OffsetRange[] = [];
-    const directivePattern = /\b(HLSLPROGRAM|CGPROGRAM|HLSLINCLUDE|ENDHLSL|ENDCG)\b/g;
-    let activeStart: number | undefined;
-    let match: RegExpExecArray | null;
-    while ((match = directivePattern.exec(masked)) !== null) {
-      const directive = match[1];
-      if (directive === 'HLSLPROGRAM' || directive === 'CGPROGRAM' || directive === 'HLSLINCLUDE') {
-        if (activeStart === undefined) {
-          activeStart = match.index;
-        }
-        continue;
-      }
-      if (activeStart !== undefined) {
-        hlslRanges.push({ start: activeStart, end: match.index + directive.length });
-        activeStart = undefined;
-      }
-    }
-    if (activeStart !== undefined) {
-      hlslRanges.push({ start: activeStart, end: text.length });
-    }
-
-    const result: LexicalCache = {
-      uri,
-      version,
-      sourceLength: text.length,
-      maskedText: masked,
-      commentRanges,
-      stringRanges,
-      hlslRanges,
-    };
-    return result;
+  private isInsideString(_text: string, offset: number, cache: LexicalAnalysis): boolean {
+    return containsOffset(cache.stringRanges, offset);
   }
 
   private getMemberAccessAtPosition(
@@ -1023,8 +881,8 @@ export class CompletionProvider {
       return false;
     }
 
-    const lexical = this.getLexicalCache(uri, document.version, text);
-    return lexical.hlslRanges.some((range) => offset >= range.start && offset <= range.end);
+    const lexical = this.documentManager.getLexicalAnalysis(uri);
+    return lexical?.hlslRanges.some((range) => offset >= range.start && offset <= range.end) ?? false;
   }
 
   private getBuiltinTypes(): string[] {

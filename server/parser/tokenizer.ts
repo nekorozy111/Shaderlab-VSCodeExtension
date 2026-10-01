@@ -1,5 +1,17 @@
 import { SourcePosition, Token, TokenKind } from './token';
 
+export type OffsetRange = { start: number; end: number };
+
+export type LexicalAnalysis = {
+  version: number;
+  sourceLength: number;
+  tokens: Token[];
+  maskedText: string;
+  commentRanges: OffsetRange[];
+  stringRanges: OffsetRange[];
+  hlslRanges: OffsetRange[];
+};
+
 const TWO_CHARACTER_OPERATORS = new Set<string>([
   '==',
   '!=',
@@ -29,11 +41,17 @@ export class Tokenizer {
   private offset = 0;
   private line = 0;
   private character = 0;
+  private readonly commentRanges: OffsetRange[] = [];
+  private readonly stringRanges: OffsetRange[] = [];
   public constructor(source: string) {
     this.source = source;
   }
 
   public tokenize(): Token[] {
+    return this.analyze().tokens;
+  }
+
+  public analyze(version = 0): LexicalAnalysis {
     const tokens: Token[] = [];
     while (!this.isAtEnd()) {
       this.skipWhitespaceAndComments();
@@ -56,7 +74,17 @@ export class Tokenizer {
         end: eofPosition,
       },
     });
-    return tokens;
+
+    const maskedText = this.buildMaskedText();
+    return {
+      version,
+      sourceLength: this.source.length,
+      tokens,
+      maskedText,
+      commentRanges: this.commentRanges,
+      stringRanges: this.stringRanges,
+      hlslRanges: this.buildHlslRanges(maskedText),
+    };
   }
 
   private readToken(): Token | undefined {
@@ -164,6 +192,7 @@ export class Tokenizer {
 
   private readString(): Token {
     const start = this.currentPosition();
+    const startOffset = this.offset;
     const quote = this.peek();
     let value = '';
     if (quote === undefined) {
@@ -204,6 +233,8 @@ export class Tokenizer {
       value += char;
       this.advance();
     }
+
+    this.stringRanges.push({ start: startOffset, end: this.offset });
 
     return {
       kind: 'string',
@@ -278,30 +309,71 @@ export class Tokenizer {
   }
 
   private skipLineComment(): void {
+    const start = this.offset;
     this.advance();
     this.advance();
     while (!this.isAtEnd()) {
       const char = this.peek();
       if (char === undefined || char === '\n') {
-        return;
+        break;
       }
 
       this.advance();
     }
+    this.commentRanges.push({ start, end: this.offset });
   }
 
   private skipBlockComment(): void {
+    const start = this.offset;
     this.advance();
     this.advance();
     while (!this.isAtEnd()) {
       if (this.peek() === '*' && this.peek(1) === '/') {
         this.advance();
         this.advance();
+        this.commentRanges.push({ start, end: this.offset });
         return;
       }
 
       this.advance();
     }
+    this.commentRanges.push({ start, end: this.offset });
+  }
+
+  private buildMaskedText(): string {
+    const masked = this.source.split('');
+    for (const range of [...this.commentRanges, ...this.stringRanges]) {
+      for (let index = range.start; index < range.end; index++) {
+        if (masked[index] !== '\n' && masked[index] !== '\r') {
+          masked[index] = ' ';
+        }
+      }
+    }
+    return masked.join('');
+  }
+
+  private buildHlslRanges(masked: string): OffsetRange[] {
+    const hlslRanges: OffsetRange[] = [];
+    const directivePattern = /\b(HLSLPROGRAM|CGPROGRAM|HLSLINCLUDE|ENDHLSL|ENDCG)\b/g;
+    let activeStart: number | undefined;
+    let match: RegExpExecArray | null;
+    while ((match = directivePattern.exec(masked)) !== null) {
+      const directive = match[1];
+      if (directive === 'HLSLPROGRAM' || directive === 'CGPROGRAM' || directive === 'HLSLINCLUDE') {
+        if (activeStart === undefined) {
+          activeStart = match.index;
+        }
+        continue;
+      }
+      if (activeStart !== undefined) {
+        hlslRanges.push({ start: activeStart, end: match.index + directive.length });
+        activeStart = undefined;
+      }
+    }
+    if (activeStart !== undefined) {
+      hlslRanges.push({ start: activeStart, end: masked.length });
+    }
+    return hlslRanges;
   }
 
   private currentPosition(): SourcePosition {

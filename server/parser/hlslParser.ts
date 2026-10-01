@@ -18,7 +18,7 @@ export class HlslParser {
   // offsetから位置を求めるための行頭offset表。毎回ソース先頭を走査しない。
   private readonly lineStartOffsets: number[];
   private index = 0;
-  public constructor(source: string) {
+  public constructor(source: string, tokens?: Token[]) {
     this.source = source;
     this.lineStartOffsets = [0];
     for (let index = 0; index < source.length; index++) {
@@ -26,7 +26,7 @@ export class HlslParser {
         this.lineStartOffsets.push(index + 1);
       }
     }
-    this.tokens = new Tokenizer(source).tokenize();
+    this.tokens = tokens ?? new Tokenizer(source).tokenize();
   }
 
   public parse(): HlslDocumentNode {
