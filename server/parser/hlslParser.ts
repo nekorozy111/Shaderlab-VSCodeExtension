@@ -99,6 +99,30 @@ export class HlslParser {
         return node;
       }
 
+      // #include <Foo.hlsl> はTokenizer上では複数tokenになるため、
+      // 山括弧を含む1行をinclude pathとして組み立てる。
+      if (includeToken.value === '<') {
+        const pathTokens: Token[] = [];
+        this.advance();
+        while (!this.isAtEnd() && this.current().range.start.line === startToken.range.start.line) {
+          if (this.current().value === '>') {
+            const endToken = this.current();
+            this.advance();
+            const node: HlslIncludeNode = {
+              kind: 'HlslInclude',
+              path: this.source.slice(includeToken.range.end.offset, endToken.range.start.offset).trim(),
+              range: {
+                start: startToken.range.start,
+                end: endToken.range.end,
+              },
+            };
+            return node;
+          }
+          pathTokens.push(this.current());
+          this.advance();
+        }
+      }
+
       return undefined;
     }
 
@@ -286,6 +310,7 @@ export class HlslParser {
       }
     }
 
+    const locals: HlslVariableNode[] = [];
     if (this.checkValue(';')) {
       end = this.current().range.end;
       this.advance();
@@ -294,6 +319,7 @@ export class HlslParser {
         returnType: typeToken.value,
         name: nameToken.value,
         parameters,
+        locals,
         range: {
           start: typeToken.range.start,
           end,
@@ -302,21 +328,49 @@ export class HlslParser {
     }
 
     if (this.checkValue('{')) {
-      let depth = 0;
-      while (!this.isAtEnd()) {
-        const token = this.current();
-        if (token.value === '{') {
-          depth++;
+      const scopeStack: Array<{ range: { start: SourcePosition; end: SourcePosition } }> = [];
+      const open = this.current();
+      const rootScope = {
+        range: {
+          start: open.range.start,
+          end: open.range.end,
+        },
+      };
+      this.advance();
+      scopeStack.push(rootScope);
+
+      while (!this.isAtEnd() && scopeStack.length > 0) {
+        if (this.checkValue('{')) {
+          const nestedOpen = this.current();
+          const nestedScope = {
+            range: {
+              start: nestedOpen.range.start,
+              end: nestedOpen.range.end,
+            },
+          };
+          scopeStack.push(nestedScope);
+          this.advance();
+          continue;
         }
 
-        if (token.value === '}') {
-          depth--;
-          end = token.range.end;
-          this.advance();
-          if (depth <= 0) {
-            break;
+        if (this.checkValue('}')) {
+          const close = this.current();
+          const scope = scopeStack.pop();
+          if (scope) {
+            scope.range.end = close.range.end;
           }
+          end = close.range.end;
+          this.advance();
+          continue;
+        }
 
+        const local = this.parseVariableStatement();
+        if (local) {
+          const scope = scopeStack[scopeStack.length - 1];
+          if (scope) {
+            local.scope = scope.range;
+          }
+          locals.push(local);
           continue;
         }
 
@@ -329,6 +383,7 @@ export class HlslParser {
       returnType: typeToken.value,
       name: nameToken.value,
       parameters,
+      locals,
       range: {
         start: typeToken.range.start,
         end,
@@ -499,6 +554,11 @@ export class HlslParser {
       return undefined;
     }
 
+    if (this.isVariableDeclarationKeyword(typeToken.value)) {
+      this.index = startIndex;
+      return undefined;
+    }
+
     const nameToken = this.current();
     if (nameToken.kind !== 'identifier') {
       this.index = startIndex;
@@ -571,6 +631,24 @@ export class HlslParser {
         end,
       },
     };
+  }
+
+  private isVariableDeclarationKeyword(value: string): boolean {
+    return new Set([
+      'if',
+      'else',
+      'for',
+      'while',
+      'do',
+      'switch',
+      'case',
+      'default',
+      'return',
+      'break',
+      'continue',
+      'discard',
+      'goto',
+    ]).has(value);
   }
 
   private current(): Token {

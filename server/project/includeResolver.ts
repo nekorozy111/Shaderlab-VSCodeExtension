@@ -35,6 +35,8 @@ export class IncludeResolver {
 
   // Directory -> direct include
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
+  // パッケージ全体を再帰走査した結果。unqualified include補完で再利用する。
+  private readonly packageRecursiveCompletionCache = new Map<string, string[]>();
   // Project directory -> file
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
   private readonly indexedProjectDirectories = new Set<string>();
@@ -109,6 +111,7 @@ export class IncludeResolver {
     this.packageIncludePathToFile.clear();
     this.packageDirectories.clear();
     this.packageCompletionIndex.clear();
+    this.packageRecursiveCompletionCache.clear();
     this.projectDirectoryIndex.clear();
     this.indexedProjectDirectories.clear();
     this.resolutionCache.clear();
@@ -404,8 +407,34 @@ export class IncludeResolver {
       return;
     }
 
+    for (const packageName of this.relevantPackageNames) {
+      const packageDirectory = this.getPackageDirectory(packageName, root);
+      if (!packageDirectory) {
+        continue;
+      }
+
+      const cacheKey = packageName.toLowerCase();
+      let files = this.packageRecursiveCompletionCache.get(cacheKey);
+      if (!files) {
+        files = this.buildRecursivePackageCompletionCache(packageDirectory);
+        this.packageRecursiveCompletionCache.set(cacheKey, files);
+      }
+
+      for (const relative of files) {
+        const fileName = path.posix.basename(relative).toLowerCase();
+        if (!fileName.startsWith(partial)) {
+          continue;
+        }
+        const includePath = `Packages/${packageName}/${relative}`;
+        candidates.set(includePath, { includePath });
+      }
+    }
+  }
+
+  private buildRecursivePackageCompletionCache(packageDirectory: string): string[] {
+    const result: string[] = [];
     const visited = new Set<string>();
-    const searchDirectory = (directoryPath: string, packageName: string): void => {
+    const searchDirectory = (directoryPath: string): void => {
       const normalizedDirectory = path.normalize(directoryPath);
       if (visited.has(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
         return;
@@ -416,31 +445,21 @@ export class IncludeResolver {
         const entryPath = path.join(normalizedDirectory, entry);
         if (this.fileSystem.isDirectory(entryPath)) {
           if (this.projectRoot.isInsideProject(entryPath)) {
-            searchDirectory(entryPath, packageName);
+            searchDirectory(entryPath);
           }
           continue;
         }
-        if (!this.isIncludeFile(entryPath) || !entry.toLowerCase().startsWith(partial)) {
+        if (!this.isIncludeFile(entryPath)) {
           continue;
         }
-        const relative = path
-          .relative(
-            path.join(this.getPackageDirectory(packageName, root) ?? path.resolve(root, 'Packages', packageName)),
-            entryPath,
-          )
-          .replace(/\\/g, '/');
-        candidates.set(`Packages/${packageName}/${relative}`, {
-          includePath: `Packages/${packageName}/${relative}`,
-        });
+        const relative = path.relative(packageDirectory, entryPath).replace(/\\/g, '/');
+        result.push(relative);
       }
     };
 
-    for (const packageName of this.relevantPackageNames) {
-      const packageDirectory = this.getPackageDirectory(packageName, root);
-      if (packageDirectory) {
-        searchDirectory(packageDirectory, packageName);
-      }
-    }
+    searchDirectory(packageDirectory);
+    result.sort();
+    return result;
   }
 
   private collectProjectCompletionCandidates(
@@ -562,6 +581,7 @@ export class IncludeResolver {
     files.delete(path.normalize(filePath));
     if (files.size === 0) {
       this.projectDirectoryIndex.delete(directory);
+      this.indexedProjectDirectories.delete(directory);
     }
   }
 
@@ -783,6 +803,10 @@ export class IncludeResolver {
     }
 
     const packageDirectory = path.join(cacheRoot, packageDirectoryName);
+    // PackageCache内のファイル変更は再帰補完キャッシュを無効化する。
+    if (parts.length > 0) {
+      this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
+    }
     if (type === 3 && parts.length === 0) {
       if (this.packageDirectories.get(packageName) === packageDirectory) {
         this.packageDirectories.delete(packageName);
@@ -790,12 +814,14 @@ export class IncludeResolver {
       this.packageIncludeFiles.clear();
       this.packageIncludePathToFile.clear();
       this.packageCompletionIndex.clear();
+      this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
       return;
     }
 
     if ((type === 1 || type === 2) && parts.length === 0) {
       this.packageDirectories.set(packageName, packageDirectory);
       this.packageCompletionIndex.clear();
+      this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
     }
   }
 
@@ -815,6 +841,7 @@ export class IncludeResolver {
 
     // Packages側も全走査はせず、既に作成済みの補完索引だけを無効化する。
     this.packageCompletionIndex.clear();
+    this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
     if (type === 3 || !this.isIncludeFile(filePath)) {
       this.packageIncludeFiles.delete(path.normalize(filePath));
       this.packageIncludePathToFile.delete(relative);
@@ -827,6 +854,14 @@ export class IncludeResolver {
     if (!this.isInsideAssets(normalized)) {
       return;
     }
+
+    // ディレクトリ自体が削除された場合は、空集合だけでなく索引済みマーカーも解放する。
+    if (type === 3 && this.projectDirectoryIndex.has(normalized)) {
+      this.projectDirectoryIndex.delete(normalized);
+      this.indexedProjectDirectories.delete(normalized);
+      return;
+    }
+
     const directory = path.normalize(path.dirname(normalized));
     const indexed = this.indexedProjectDirectories.has(directory);
 

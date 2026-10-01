@@ -20,6 +20,8 @@ export interface HlslVariableNode extends AstNode {
   typeName: string;
   name: string;
   semantic?: string;
+  /** ローカル変数の場合、その変数が有効なブロックスコープ。 */
+  scope?: SourceRange;
 }
 
 export interface HlslStructNode extends AstNode {
@@ -33,6 +35,8 @@ export interface HlslFunctionNode extends AstNode {
   returnType: string;
   name: string;
   parameters: HlslParameterNode[];
+  /** 関数本体から抽出したローカル変数。WorkspaceIndexには登録せずF12等から直接利用する。 */
+  locals: HlslVariableNode[];
 }
 
 export interface HlslIncludeNode extends AstNode {

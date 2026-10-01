@@ -2,7 +2,7 @@ import { Location, Position } from 'vscode-languageserver/node';
 import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { ShaderDocumentNode } from '../parser/ast';
+import { HlslDocumentNode, ShaderDocumentNode, HlslFunctionNode, HlslVariableNode } from '../parser/ast';
 import { isShaderLabDocument } from './languageId';
 
 export class DefinitionProvider {
@@ -679,209 +679,95 @@ export class DefinitionProvider {
       };
     };
   } | null {
-    const text = document.getText();
-    const functionScope = this.findFunctionScopeAtOffset(document, usageOffset);
-    const escapedName = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    /*
-     * ---------------------------------------------------------
-     * 1. 通常の変数宣言
-     *
-     * float4 color;
-     * float3 position;
-     * MyStruct data;
-     * const MyStruct data;
-     * static MyStruct data;
-     * ---------------------------------------------------------
-     */
-    const variablePattern = new RegExp(
-      '\\b' +
-        '(?:(?:const|static|uniform|volatile|in|out|inout)\\s+)*' +
-        '([A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^<>\\r\\n]+>)?)' +
-        '\\s+' +
-        escapedName +
-        '\\s*(?==|;|,|\\[|:)',
-      'g',
-    );
-    let best: {
-      name: string;
-      typeName: string;
-      startOffset: number;
-      endOffset: number;
-      blockDepth?: number;
-    } | null = null;
-    let match: RegExpExecArray | null;
-    while ((match = variablePattern.exec(text)) !== null) {
-      const startOffset = match.index;
-      if (startOffset >= usageOffset) {
-        continue;
+    const parsed = this.documentManager.getParsed(document.uri);
+    if (!parsed) {
+      return null;
+    }
+
+    let best: { variable: HlslVariableNode; depth: number } | null = null;
+    const visitFunction = (fn: HlslFunctionNode): void => {
+      if (usageOffset < fn.range.start.offset || usageOffset > fn.range.end.offset) {
+        return;
       }
 
-      if (functionScope) {
-        if (startOffset < functionScope.startOffset || startOffset > functionScope.endOffset) {
+      // 関数パラメータは関数本体から参照できるため、AST上の宣言位置を直接利用する。
+      for (const parameter of fn.parameters) {
+        if (parameter.name !== variableName || parameter.range.start.offset >= usageOffset) {
           continue;
+        }
+        const variable: HlslVariableNode = {
+          kind: 'HlslVariable',
+          typeName: parameter.typeName,
+          name: parameter.name,
+          semantic: parameter.semantic,
+          range: parameter.range,
+        };
+        if (!best || best.depth < 0 || parameter.range.start.offset > best.variable.range.start.offset) {
+          best = { variable, depth: 0 };
         }
       }
 
-      const typeName = match[1];
-
-      if (this.isVariableDeclarationKeyword(typeName)) {
-        continue;
-      }
-
-      const nameStart = text.indexOf(variableName, startOffset);
-      if (nameStart < 0) {
-        continue;
-      }
-
-      if (!best || startOffset > best.startOffset) {
-        const declarationBlock = this.findBlockScopeAtOffset(text, startOffset);
-        if (!declarationBlock) {
+      for (const local of fn.locals) {
+        if (local.name !== variableName || local.range.start.offset >= usageOffset || !local.scope) {
+          continue;
+        }
+        if (usageOffset < local.scope.start.offset || usageOffset > local.scope.end.offset) {
           continue;
         }
 
-        /*
-         * 宣言を含むblockのスコープ内に
-         * 使用位置が存在する必要がある。
-         *
-         * 外側block:
-         *
-         * {
-         *     position;        // declarationBlock = 外側
-         *
-         *     {
-         *         position;    // declarationBlock = 内側
-         *     }
-         *
-         *     position;        // 内側positionはここでは不可
-         * }
-         */
-        if (usageOffset < declarationBlock.startOffset || usageOffset > declarationBlock.endOffset) {
-          continue;
-        }
-
-        /*
-         * 同名変数が複数ある場合、
-         * 使用位置を含む最も内側のblockを優先する。
-         */
+        const depth = local.scope.start.offset;
         if (
           !best ||
-          best.blockDepth === undefined ||
-          declarationBlock.depth > best.blockDepth ||
-          (declarationBlock.depth === best.blockDepth && startOffset > best.startOffset)
+          best.depth < depth ||
+          (best.depth === depth && local.range.start.offset > best.variable.range.start.offset)
         ) {
-          best = {
-            name: variableName,
-            typeName,
-            startOffset: nameStart,
-            endOffset: nameStart + variableName.length,
-            blockDepth: declarationBlock.depth,
-          };
+          best = { variable: local, depth };
         }
       }
-    }
+    };
 
-    if (best) {
-      return {
-        name: best.name,
-        typeName: best.typeName,
-        uri: document.uri,
-        range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
-      };
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * 2. 関数パラメータ
-     *
-     * float4 Test(MyStruct a, MyStruct b)
-     *
-     * a.position
-     * b.position
-     *
-     * ここを現在の実装では拾えていなかった。
-     * ---------------------------------------------------------
-     */
-    const parameterPattern = new RegExp(
-      '\\b' + '([A-Za-z_][A-Za-z0-9_]*(?:\\s*<[^<>\\r\\n]+>)?)' + '\\s+' + escapedName + '\\s*(?=[,)])',
-      'g',
-    );
-    while ((match = parameterPattern.exec(text)) !== null) {
-      const startOffset = match.index;
-      if (startOffset >= usageOffset) {
-        continue;
-      }
-
-      if (functionScope) {
-        /*
-         * パラメータ は 関数本体の外側にある。
-         *
-         *     float2 GetUV(float2 uv)
-         *     {
-         *         return uv;
-         *     }
-         *
-         *                 ^ 関数Scope.startOffset
-         *
-         * なので、
-         *
-         *   signatureStartOffset <= パラメータ < startOffset
-         *
-         * の範囲を パラメータ として扱う。
-         */
-        if (startOffset < functionScope.signatureStartOffset || startOffset >= functionScope.startOffset) {
-          continue;
+    const visitHlslDocument = (hlsl: HlslDocumentNode): void => {
+      for (const declaration of hlsl.declarations) {
+        if (declaration.kind === 'HlslFunction') {
+          visitFunction(declaration);
         }
       }
+    };
 
-      const typeName = match[1];
-      if (this.isVariableDeclarationKeyword(typeName)) {
-        continue;
+    const visitShaderDocument = (shader: ShaderDocumentNode): void => {
+      for (const block of shader.hlslBlocks) {
+        visitHlslDocument(block.hlsl);
       }
+      for (const subShader of shader.subShaders) {
+        for (const block of subShader.hlslBlocks) {
+          visitHlslDocument(block.hlsl);
+        }
+        for (const pass of subShader.passes) {
+          for (const block of pass.hlslBlocks) {
+            visitHlslDocument(block.hlsl);
+          }
+        }
+      }
+    };
 
-      /*
-       * structのフィールドなどを
-       * パラメータと誤認しないため、
-       * 直前が "(" または "," のケースだけを
-       * パラメータとして扱う。
-       */
-      let before = startOffset - 1;
-      while (before >= 0 && /\s/.test(text[before])) {
-        before--;
-      }
-
-      if (before < 0) {
-        continue;
-      }
-
-      const beforeChar = text[before];
-      if (beforeChar !== '(' && beforeChar !== ',') {
-        continue;
-      }
-
-      const nameStart = text.indexOf(variableName, startOffset);
-      if (nameStart < 0) {
-        continue;
-      }
-
-      if (!best || startOffset > best.startOffset) {
-        best = {
-          name: variableName,
-          typeName,
-          startOffset: nameStart,
-          endOffset: nameStart + variableName.length,
-        };
-      }
+    if (parsed.ast.kind === 'HlslDocument') {
+      visitHlslDocument(parsed.ast);
+    } else {
+      visitShaderDocument(parsed.ast);
     }
 
-    if (!best) {
+    // クロージャ内で更新している変数はTypeScriptの制御フロー解析上、
+    // 到達後にneverへ狭められることがあるため、ここで明示的に確定させる。
+    const selectedBest = best as { variable: HlslVariableNode; depth: number } | null;
+    if (!selectedBest) {
       return null;
     }
 
     return {
-      name: best.name,
-      typeName: best.typeName,
+      name: selectedBest.variable.name,
+      typeName: selectedBest.variable.typeName,
       uri: document.uri,
-      range: this.rangeFromOffsets(document, best.startOffset, best.endOffset),
+      range: selectedBest.variable.range,
     };
   }
 
@@ -1165,18 +1051,6 @@ export class DefinitionProvider {
 
   /*
    * -------------------------------------------------------------
-   * オフセット → 範囲
-   * -------------------------------------------------------------
-   */
-  private rangeFromOffsets(document: TextDocument, startOffset: number, endOffset: number) {
-    return {
-      start: document.positionAt(startOffset),
-      end: document.positionAt(endOffset),
-    };
-  }
-
-  /*
-   * -------------------------------------------------------------
    * Shaderシンボル → LSPのLocation
    * -------------------------------------------------------------
    */
@@ -1225,139 +1099,6 @@ export class DefinitionProvider {
     }
 
     return text.substring(start, end);
-  }
-
-  private findBlockScopeAtOffset(
-    text: string,
-    offset: number,
-  ): {
-    startOffset: number;
-    endOffset: number;
-    depth: number;
-  } | null {
-    const stack: number[] = [];
-    let bestStart = -1;
-    let bestEnd = -1;
-    let bestDepth = -1;
-    for (let i = 0; i < text.length; i++) {
-      const char = text[i];
-      if (char === '{') {
-        stack.push(i);
-        continue;
-      }
-
-      if (char !== '}') {
-        continue;
-      }
-
-      if (stack.length === 0) {
-        continue;
-      }
-
-      const startOffset = stack.pop()!;
-      /*
-       * このblockが使用位置を含むか確認。
-       */
-      if (offset >= startOffset && offset <= i + 1) {
-        const depth = stack.length + 1;
-        if (depth > bestDepth) {
-          bestStart = startOffset;
-          bestEnd = i + 1;
-          bestDepth = depth;
-        }
-      }
-    }
-
-    if (bestStart < 0) {
-      return null;
-    }
-
-    return {
-      startOffset: bestStart,
-      endOffset: bestEnd,
-      depth: bestDepth,
-    };
-  }
-
-  private findFunctionScopeAtOffset(
-    document: TextDocument,
-    offset: number,
-  ): {
-    signatureStartOffset: number;
-    startOffset: number;
-    endOffset: number;
-  } | null {
-    const text = document.getText();
-    /*
-     * 関数の { を探す。
-     *
-     * HLSLでは、
-     *
-     *     ReturnType FunctionName(...)
-     *     {
-     *         ...
-     *     }
-     *
-     * という構造なので、カーソル位置より前にある
-     * 関数本体の開始位置を探す。
-     */
-    const functionPattern = /\b[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\([^{};]*\)\s*\{/g;
-    let match: RegExpExecArray | null;
-    let bestSignatureStart = -1;
-    let bestStart = -1;
-    let bestEnd = -1;
-    while ((match = functionPattern.exec(text)) !== null) {
-      const openBraceOffset = match.index + match[0].lastIndexOf('{');
-      if (openBraceOffset >= offset) {
-        continue;
-      }
-
-      /*
-       * この { に対応する } を探す。
-       */
-      let depth = 0;
-      let endOffset = -1;
-      for (let i = openBraceOffset; i < text.length; i++) {
-        const char = text[i];
-        if (char === '{') {
-          depth++;
-        } else if (char === '}') {
-          depth--;
-          if (depth === 0) {
-            endOffset = i + 1;
-            break;
-          }
-        }
-      }
-
-      if (endOffset < 0) {
-        continue;
-      }
-
-      /*
-       * カーソルがこの関数内にある。
-       *
-       * ネストした関数はHLSLでは通常存在しないため、
-       * 最も内側の一致を採用する。
-       */
-      if (offset >= openBraceOffset && offset <= endOffset) {
-        if (bestStart < 0 || openBraceOffset > bestStart) {
-          bestSignatureStart = match.index;
-          bestStart = openBraceOffset;
-          bestEnd = endOffset;
-        }
-      }
-    }
-
-    if (bestStart < 0) {
-      return null;
-    }
-
-    return {
-      signatureStartOffset: bestSignatureStart,
-      startOffset: bestStart,
-      endOffset: bestEnd,
-    };
   }
 
   private isInsideComment(text: string, offset: number): boolean {

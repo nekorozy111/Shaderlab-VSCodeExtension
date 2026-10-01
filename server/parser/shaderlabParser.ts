@@ -333,6 +333,11 @@ export class ShaderLabParser {
 
       const valueToken = this.current();
       if (valueToken.kind !== 'string') {
+        // 不正なタグ値でもカーソルを必ず進め、入力途中のShaderで無限ループしないようにする。
+        if (valueToken.kind === 'eof' || this.checkValue('}')) {
+          continue;
+        }
+        this.advance();
         continue;
       }
 
@@ -443,6 +448,12 @@ export class ShaderLabParser {
       if (declaration.kind === 'HlslFunction') {
         for (const parameter of declaration.parameters) {
           parameter.range = shiftRange(parameter.range);
+        }
+        for (const local of declaration.locals) {
+          local.range = shiftRange(local.range);
+          if (local.scope) {
+            local.scope = shiftRange(local.scope);
+          }
         }
       }
 
