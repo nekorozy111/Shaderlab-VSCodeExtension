@@ -34,6 +34,32 @@ export class FileSystem {
     }
   }
 
+  public async readTextAsync(filePath: string): Promise<string | undefined> {
+    try {
+      return await fs.promises.readFile(filePath, 'utf8');
+    } catch {
+      return undefined;
+    }
+  }
+
+  public async isDirectoryAsync(filePath: string): Promise<boolean> {
+    try {
+      const stat = await fs.promises.stat(path.normalize(filePath));
+      return stat.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  public async isFileAsync(filePath: string): Promise<boolean> {
+    try {
+      const stat = await fs.promises.stat(path.normalize(filePath));
+      return stat.isFile();
+    } catch {
+      return false;
+    }
+  }
+
   public listDirectory(directoryPath: string): string[] {
     const normalized = path.normalize(directoryPath);
     const now = Date.now();
@@ -55,6 +81,32 @@ export class FileSystem {
     }
     this.setDirectoryCache(normalized, entries, now + this.cacheTtlMs);
     return entries;
+  }
+
+  /**
+   * 大きなディレクトリ走査をイベントループから切り離すための非同期列挙。
+   */
+  public async listDirectoryEntriesAsync(directoryPath: string): Promise<fs.Dirent[]> {
+    try {
+      return await fs.promises.readdir(path.normalize(directoryPath), { withFileTypes: true });
+    } catch {
+      return [];
+    }
+  }
+
+  public async findDirectoryAsync(parentDirectory: string, prefix: string): Promise<string | undefined> {
+    try {
+      const entries = await fs.promises.readdir(path.normalize(parentDirectory), { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.name.startsWith(prefix) || !entry.isDirectory()) {
+          continue;
+        }
+        return path.join(parentDirectory, entry.name);
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
   }
 
   public findDirectory(parentDirectory: string, prefix: string): string | undefined {

@@ -16,13 +16,14 @@ type LexicalCache = {
 };
 
 export class CompletionProvider {
-  private lexicalCache?: LexicalCache;
+  private readonly lexicalCache = new Map<string, LexicalCache>();
+  private readonly maxLexicalCacheEntries = 16;
   private readonly completionSource = 'ShaderLab IntelliSense';
   public constructor(
     private readonly documentManager: DocumentManager,
     private readonly includeResolver: IncludeResolver,
   ) {}
-  public provideCompletion(uri: string, position: Position): CompletionItem[] {
+  public async provideCompletion(uri: string, position: Position): Promise<CompletionItem[]> {
     const document = this.documentManager.get(uri);
     if (!document) {
       return [];
@@ -615,11 +616,28 @@ export class CompletionProvider {
   }
 
   private getLexicalCache(uri: string, version: number, text: string): LexicalCache {
-    const cached = this.lexicalCache;
-    if (cached && cached.uri === uri && cached.version === version && cached.sourceLength === text.length) {
+    const cached = this.lexicalCache.get(uri);
+    if (cached && cached.version === version && cached.sourceLength === text.length) {
+      // LRU: 最近利用したエントリを末尾へ移動する。
+      this.lexicalCache.delete(uri);
+      this.lexicalCache.set(uri, cached);
       return cached;
     }
 
+    const lexical = this.buildLexicalCache(uri, version, text);
+    this.lexicalCache.delete(uri);
+    this.lexicalCache.set(uri, lexical);
+    while (this.lexicalCache.size > this.maxLexicalCacheEntries) {
+      const oldestUri = this.lexicalCache.keys().next().value as string | undefined;
+      if (oldestUri === undefined) {
+        break;
+      }
+      this.lexicalCache.delete(oldestUri);
+    }
+    return lexical;
+  }
+
+  private buildLexicalCache(uri: string, version: number, text: string): LexicalCache {
     const commentRanges: OffsetRange[] = [];
     const stringRanges: OffsetRange[] = [];
     let masked = '';
@@ -718,7 +736,6 @@ export class CompletionProvider {
       stringRanges,
       hlslRanges,
     };
-    this.lexicalCache = result;
     return result;
   }
 
@@ -760,17 +777,25 @@ export class CompletionProvider {
           functionPrefix = linePrefix.substring(0, openParenIndex);
         }
       } else {
-        // 引数が複数行にまたがる関数呼び出しだけ、必要時に限定して前方を調べる。
-        const fullPrefix = text.substring(0, safeOffset);
-        const fullDotIndex = fullPrefix.length - prefix.length - 1;
+        // 複数行の呼び出しでも全文substringを作らず、元ソース上を後方走査する。
+        const fullDotIndex = safeOffset - prefix.length - 1;
         let fullCloseParenIndex = fullDotIndex - 1;
-        while (fullCloseParenIndex >= 0 && /\s/.test(fullPrefix[fullCloseParenIndex])) {
+        while (fullCloseParenIndex >= 0 && /\s/.test(text[fullCloseParenIndex])) {
           fullCloseParenIndex--;
         }
-        if (fullCloseParenIndex >= 0 && fullPrefix[fullCloseParenIndex] === ')') {
-          const openParenIndex = this.findMatchingOpenParen(fullPrefix, fullCloseParenIndex);
+        if (fullCloseParenIndex >= 0 && text[fullCloseParenIndex] === ')') {
+          const openParenIndex = this.findMatchingOpenParenAt(text, fullCloseParenIndex);
           if (openParenIndex >= 0) {
-            functionPrefix = fullPrefix.substring(0, openParenIndex);
+            // 関数名だけを抽出し、カーソル先頭からの巨大文字列を生成しない。
+            let nameEnd = openParenIndex - 1;
+            while (nameEnd >= 0 && /\s/.test(text[nameEnd])) {
+              nameEnd--;
+            }
+            let nameStart = nameEnd;
+            while (nameStart >= 0 && /[A-Za-z0-9_]/.test(text[nameStart])) {
+              nameStart--;
+            }
+            functionPrefix = text.substring(nameStart + 1, nameEnd + 1);
           }
         }
       }
@@ -804,6 +829,22 @@ export class CompletionProvider {
       objectName: variableMatch[1],
       prefix: variableMatch[2],
     };
+  }
+
+  private findMatchingOpenParenAt(text: string, closeParenIndex: number): number {
+    let depth = 0;
+    for (let index = closeParenIndex; index >= 0; index--) {
+      const character = text[index];
+      if (character === ')') {
+        depth++;
+      } else if (character === '(') {
+        depth--;
+        if (depth === 0) {
+          return index;
+        }
+      }
+    }
+    return -1;
   }
 
   private findMatchingOpenParen(text: string, closeParenIndex: number): number {
@@ -1400,16 +1441,16 @@ export class CompletionProvider {
     };
   }
 
-  private provideIncludeCompletion(
+  private async provideIncludeCompletion(
     uri: string,
     context: {
       path: string;
       prefix: string;
     },
     offset: number,
-  ): CompletionItem[] {
+  ): Promise<CompletionItem[]> {
     const includePath = `${context.path}${context.prefix}`;
-    const candidates = this.includeResolver.getCompletionCandidates(includePath, uri);
+    const candidates = await this.includeResolver.getCompletionCandidates(includePath, uri);
     const document = this.documentManager.get(uri);
     if (!document) {
       return [];

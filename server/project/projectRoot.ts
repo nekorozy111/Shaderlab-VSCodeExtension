@@ -87,6 +87,25 @@ export class ProjectRoot {
     }
   }
 
+  /**
+   * ファイル監視イベントに合わせて、変更経路に依存するrealpath判定を無効化する。
+   */
+  public invalidatePath(filePath: string): void {
+    const normalized = path.resolve(filePath);
+    const prefixes = [normalized + path.sep];
+
+    for (const key of this.realPathCache.keys()) {
+      if (key === normalized || prefixes.some((prefix) => key.startsWith(prefix))) {
+        this.realPathCache.delete(key);
+      }
+    }
+    for (const key of this.insideProjectCache.keys()) {
+      if (key === normalized || prefixes.some((prefix) => key.startsWith(prefix))) {
+        this.insideProjectCache.delete(key);
+      }
+    }
+  }
+
   public toRelativePath(filePath: string): string | undefined {
     if (!this.rootPath) {
       return undefined;

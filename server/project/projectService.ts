@@ -19,7 +19,7 @@ export class ProjectService {
     return this.projectRoot.isInsideProject(filePath);
   }
 
-  public resolveInclude(includePath: string, fromUri: string): IncludeResolution | undefined {
+  public resolveInclude(includePath: string, fromUri: string): Promise<IncludeResolution | undefined> {
     return this.includeResolver.resolve(includePath, fromUri);
   }
 
@@ -36,6 +36,13 @@ export class ProjectService {
       return undefined;
     }
     return this.fileSystem.readText(filePath);
+  }
+
+  public async readFileAsync(filePath: string): Promise<string | undefined> {
+    if (!this.projectRoot.isInsideProject(filePath)) {
+      return undefined;
+    }
+    return this.fileSystem.readTextAsync(filePath);
   }
 
   public exists(filePath: string): boolean {

@@ -107,11 +107,12 @@ connection.onInitialized(async () => {
     ],
   });
 });
-connection.onDefinition((params) => {
+connection.onDefinition(async (params) => {
   const uri = params.textDocument.uri;
   const document = documentManager.get(uri);
   const version = document?.version ?? -1;
   const key = `definition|${uri}|${params.position.line}|${params.position.character}`;
+  await documentManager.prepareRelatedIncludeUris(uri);
   const cached = getCachedRequest<ReturnType<DefinitionProvider['provideDefinition']>>(key, version);
   if (cached !== undefined) {
     return cached;
@@ -121,11 +122,12 @@ connection.onDefinition((params) => {
   setCachedRequest(key, version, result);
   return result;
 });
-connection.onHover((params) => {
+connection.onHover(async (params) => {
   const uri = params.textDocument.uri;
   const document = documentManager.get(uri);
   const version = document?.version ?? -1;
   const key = `hover|${uri}|${params.position.line}|${params.position.character}`;
+  await documentManager.prepareRelatedIncludeUris(uri);
   const cached = getCachedRequest<ReturnType<HoverProvider['provideHover']>>(key, version);
   if (cached !== undefined) {
     return cached;
@@ -135,11 +137,12 @@ connection.onHover((params) => {
   setCachedRequest(key, version, result);
   return result;
 });
-connection.onCompletion((params) => {
+connection.onCompletion(async (params) => {
   const uri = params.textDocument.uri;
   const document = documentManager.get(uri);
   const version = document?.version ?? -1;
   const key = `completion|${uri}|${params.position.line}|${params.position.character}`;
+  await documentManager.prepareRelatedIncludeUris(uri);
   const cached = getCachedRequest<ReturnType<CompletionProvider['provideCompletion']>>(key, version);
   if (cached !== undefined) {
     return cached;
@@ -150,6 +153,7 @@ connection.onCompletion((params) => {
   return result;
 });
 documents.onDidOpen((event) => {
+  hoverProvider.invalidateDocument(event.document.uri);
   // Open時点でDocumentManagerにも登録しておく。
   // 変更通知を待たずにF12/Hover/Completionを要求されても最新Documentを取得できる。
   documentManager.open(event.document);
@@ -191,6 +195,7 @@ documents.onDidClose((event) => {
     pendingDocumentUpdates.delete(event.document.uri);
   }
 
+  hoverProvider.invalidateDocument(event.document.uri);
   documentManager.close(event.document);
 });
 connection.onRequest('urpShaderLab/memoryStats', () => documentManager.getMemoryStats());
@@ -204,6 +209,7 @@ connection.onShutdown(() => {
   // TTLを待たず、LSP終了時にリクエスト結果を即時解放する。
   requestResultCache.clear();
   // Document / AST / include graph / external documentを明示的に解放する。
+  hoverProvider.clear();
   documentManager.dispose();
 });
 documents.listen(connection);

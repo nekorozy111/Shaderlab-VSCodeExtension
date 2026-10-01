@@ -40,6 +40,7 @@ export class IncludeResolver {
   // Project directory -> file
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
   private readonly indexedProjectDirectories = new Set<string>();
+  private readonly maxProjectDirectoryIndexEntries = 256;
 
   private readonly resolutionCache = new Map<string, IncludeResolution | null>();
   private readonly maxResolutionCacheEntries = 4096;
@@ -56,7 +57,7 @@ export class IncludeResolver {
      */
   }
 
-  public resolve(includePath: string, fromUri: string): IncludeResolution | undefined {
+  public async resolve(includePath: string, fromUri: string): Promise<IncludeResolution | undefined> {
     const normalizedInclude = this.normalizeIncludePath(includePath);
     if (!normalizedInclude) {
       return undefined;
@@ -73,7 +74,7 @@ export class IncludeResolver {
       return cached ?? undefined;
     }
 
-    const result = this.resolveUncached(normalizedInclude, fromUri);
+    const result = await this.resolveUncached(normalizedInclude, fromUri);
     this.setResolutionCache(cacheKey, result);
     return result;
   }
@@ -91,6 +92,7 @@ export class IncludeResolver {
 
       const normalizedPath = path.normalize(filePath);
       const type = change.type;
+      this.projectRoot.invalidatePath(normalizedPath);
       this.fileSystem.invalidate(normalizedPath);
 
       if (this.isPackageCachePath(normalizedPath)) {
@@ -117,7 +119,7 @@ export class IncludeResolver {
     this.resolutionCache.clear();
   }
 
-  public getCompletionCandidates(includePath: string, fromUri: string): IncludeCompletionCandidate[] {
+  public async getCompletionCandidates(includePath: string, fromUri: string): Promise<IncludeCompletionCandidate[]> {
     const normalizedInclude = this.normalizeIncludePath(includePath);
     const root = this.projectRoot.getPath();
     const fromPath = this.uriToPath(fromUri);
@@ -128,7 +130,7 @@ export class IncludeResolver {
     const candidates = new Map<string, IncludeCompletionCandidate>();
 
     // Packages/... , PackageCache/...
-    this.collectPackageCompletionCandidates(normalizedInclude, candidates);
+    await this.collectPackageCompletionCandidates(normalizedInclude, candidates);
 
     const fromDirectory = path.dirname(fromPath);
     this.collectProjectCompletionCandidates(fromDirectory, normalizedInclude, candidates);
@@ -136,7 +138,7 @@ export class IncludeResolver {
     return Array.from(candidates.values()).sort((a, b) => a.includePath.localeCompare(b.includePath));
   }
 
-  private resolveUncached(normalizedInclude: string, fromUri: string): IncludeResolution | undefined {
+  private async resolveUncached(normalizedInclude: string, fromUri: string): Promise<IncludeResolution | undefined> {
     const fromPath = this.uriToPath(fromUri);
     if (!fromPath || !this.projectRoot.isInsideProject(fromPath)) {
       return undefined;
@@ -144,7 +146,7 @@ export class IncludeResolver {
 
     // ワークスペース内にある場合のみ許可する。
     if (path.isAbsolute(normalizedInclude)) {
-      const absoluteResult = this.tryResolve(normalizedInclude, 'absolute', normalizedInclude);
+      const absoluteResult = await this.tryResolve(normalizedInclude, 'absolute', normalizedInclude);
       if (absoluteResult) {
         return absoluteResult;
       }
@@ -160,17 +162,17 @@ export class IncludeResolver {
     if (isRelativeInclude && !this.isInsideAssets(relativePath)) {
       return undefined;
     }
-    const relativeResult = this.tryResolve(relativePath, 'relative', normalizedInclude);
+    const relativeResult = await this.tryResolve(relativePath, 'relative', normalizedInclude);
     if (relativeResult) {
       return relativeResult;
     }
 
-    const projectResult = this.resolveFromProject(normalizedInclude);
+    const projectResult = await this.resolveFromProject(normalizedInclude);
     if (projectResult) {
       return projectResult;
     }
 
-    const packagesResult = this.resolveFromPackages(normalizedInclude);
+    const packagesResult = await this.resolveFromPackages(normalizedInclude);
     if (packagesResult) {
       return packagesResult;
     }
@@ -231,7 +233,7 @@ export class IncludeResolver {
     return candidates.some((candidate) => path.normalize(candidate) === normalized);
   }
 
-  private resolveFromProject(includePath: string): IncludeResolution | undefined {
+  private async resolveFromProject(includePath: string): Promise<IncludeResolution | undefined> {
     const root = this.projectRoot.getPath();
     if (!root || includePath.startsWith('Packages/')) {
       return undefined;
@@ -241,7 +243,7 @@ export class IncludeResolver {
     return this.tryResolve(candidate, 'project', includePath);
   }
 
-  private resolveFromPackages(includePath: string): IncludeResolution | undefined {
+  private async resolveFromPackages(includePath: string): Promise<IncludeResolution | undefined> {
     const root = this.projectRoot.getPath();
     if (!root || !includePath.startsWith('Packages/')) {
       return undefined;
@@ -252,7 +254,7 @@ export class IncludeResolver {
     return this.tryResolve(candidate, 'packages', includePath);
   }
 
-  private resolveFromPackageCache(includePath: string): IncludeResolution | undefined {
+  private async resolveFromPackageCache(includePath: string): Promise<IncludeResolution | undefined> {
     const root = this.projectRoot.getPath();
     if (!root || !includePath.startsWith('Packages/')) {
       return undefined;
@@ -270,7 +272,7 @@ export class IncludeResolver {
       return undefined;
     }
 
-    const packageDirectory = this.getPackageCacheDirectory(packageName, root);
+    const packageDirectory = await this.getPackageCacheDirectory(packageName, root);
     if (!packageDirectory) {
       return undefined;
     }
@@ -283,12 +285,16 @@ export class IncludeResolver {
     return this.tryResolve(path.resolve(packageDirectory, packageRelative), 'packageCache', includePath);
   }
 
-  private tryResolve(filePath: string, source: IncludeSource, includePath: string): IncludeResolution | undefined {
+  private async tryResolve(
+    filePath: string,
+    source: IncludeSource,
+    includePath: string,
+  ): Promise<IncludeResolution | undefined> {
     const normalizedPath = path.normalize(filePath);
     if (!this.projectRoot.isInsideProject(normalizedPath)) {
       return undefined;
     }
-    if (!this.fileSystem.isFile(normalizedPath)) {
+    if (!(await this.fileSystem.isFileAsync(normalizedPath))) {
       return undefined;
     }
 
@@ -311,10 +317,10 @@ export class IncludeResolver {
     return result.replace(/\\/g, '/');
   }
 
-  private collectPackageCompletionCandidates(
+  private async collectPackageCompletionCandidates(
     includePath: string,
     candidates: Map<string, IncludeCompletionCandidate>,
-  ): void {
+  ): Promise<void> {
     const normalized = includePath.replace(/\\/g, '/');
     const lower = normalized.toLowerCase();
     const packagesPrefix = 'packages/';
@@ -323,7 +329,7 @@ export class IncludeResolver {
       // Core.hlslのようにパッケージ接頭辞を省略したincludeでは、
       // URP Core/Universalだけを必要時に探索する。空入力では全走査しない。
       if (lower.length > 0) {
-        this.collectRelevantPackageFileCandidates(lower, candidates);
+        await this.collectRelevantPackageFileCandidates(lower, candidates);
       }
       return;
     }
@@ -336,7 +342,7 @@ export class IncludeResolver {
       const partial = relative.toLowerCase();
       this.collectRelevantPackageDirectories(partial, candidates);
       if (partial.length > 0) {
-        this.collectRelevantPackageFileCandidates(partial, candidates);
+        await this.collectRelevantPackageFileCandidates(partial, candidates);
       }
       return;
     }
@@ -398,10 +404,10 @@ export class IncludeResolver {
     addDirectory(path.resolve(root, 'Library', 'PackageCache'));
   }
 
-  private collectRelevantPackageFileCandidates(
+  private async collectRelevantPackageFileCandidates(
     partial: string,
     candidates: Map<string, IncludeCompletionCandidate>,
-  ): void {
+  ): Promise<void> {
     const root = this.projectRoot.getPath();
     if (!root) {
       return;
@@ -416,7 +422,7 @@ export class IncludeResolver {
       const cacheKey = packageName.toLowerCase();
       let files = this.packageRecursiveCompletionCache.get(cacheKey);
       if (!files) {
-        files = this.buildRecursivePackageCompletionCache(packageDirectory);
+        files = await this.buildRecursivePackageCompletionCache(packageDirectory);
         this.packageRecursiveCompletionCache.set(cacheKey, files);
       }
 
@@ -431,33 +437,44 @@ export class IncludeResolver {
     }
   }
 
-  private buildRecursivePackageCompletionCache(packageDirectory: string): string[] {
+  private async buildRecursivePackageCompletionCache(packageDirectory: string): Promise<string[]> {
     const result: string[] = [];
     const visited = new Set<string>();
-    const searchDirectory = (directoryPath: string): void => {
+    const searchDirectory = async (directoryPath: string): Promise<void> => {
       const normalizedDirectory = path.normalize(directoryPath);
-      if (visited.has(normalizedDirectory) || !this.fileSystem.isDirectory(normalizedDirectory)) {
+      if (visited.has(normalizedDirectory)) {
         return;
       }
       visited.add(normalizedDirectory);
 
-      for (const entry of this.fileSystem.listDirectory(normalizedDirectory)) {
-        const entryPath = path.join(normalizedDirectory, entry);
-        if (this.fileSystem.isDirectory(entryPath)) {
-          if (this.projectRoot.isInsideProject(entryPath)) {
-            searchDirectory(entryPath);
-          }
+      // Direntを使ってstatSyncの連続呼び出しを避け、再帰I/Oを非同期化する。
+      const entries = await this.fileSystem.listDirectoryEntriesAsync(normalizedDirectory);
+      const childDirectories: string[] = [];
+      for (const entry of entries) {
+        // PackageCache配下のsymlinkはproject外へ出る可能性があるため索引対象にしない。
+        if (entry.isSymbolicLink()) {
           continue;
         }
-        if (!this.isIncludeFile(entryPath)) {
+
+        const entryPath = path.join(normalizedDirectory, entry.name);
+        if (entry.isDirectory()) {
+          childDirectories.push(entryPath);
+          continue;
+        }
+        if (!entry.isFile() || !this.isIncludeFile(entryPath)) {
           continue;
         }
         const relative = path.relative(packageDirectory, entryPath).replace(/\\/g, '/');
         result.push(relative);
       }
+
+      // 並列度を無制限にせず、Promiseチェーンで順番に処理してFS負荷を抑える。
+      for (const childDirectory of childDirectories) {
+        await searchDirectory(childDirectory);
+      }
     };
 
-    searchDirectory(packageDirectory);
+    await searchDirectory(packageDirectory);
     result.sort();
     return result;
   }
@@ -552,6 +569,12 @@ export class IncludeResolver {
   private ensureProjectDirectoryIndexed(directoryPath: string): void {
     const normalizedDirectory = path.normalize(directoryPath);
     if (this.indexedProjectDirectories.has(normalizedDirectory)) {
+      // LRU: 最近利用したディレクトリを末尾へ移動する。
+      const cached = this.projectDirectoryIndex.get(normalizedDirectory);
+      if (cached) {
+        this.projectDirectoryIndex.delete(normalizedDirectory);
+        this.projectDirectoryIndex.set(normalizedDirectory, cached);
+      }
       return;
     }
     // プロジェクト側キャッシュの最大到達地点をAssetsに固定する。
@@ -568,8 +591,17 @@ export class IncludeResolver {
       files.add(path.normalize(entryPath));
     }
 
+    this.projectDirectoryIndex.delete(normalizedDirectory);
     this.projectDirectoryIndex.set(normalizedDirectory, files);
     this.indexedProjectDirectories.add(normalizedDirectory);
+    while (this.projectDirectoryIndex.size > this.maxProjectDirectoryIndexEntries) {
+      const oldestDirectory = this.projectDirectoryIndex.keys().next().value as string | undefined;
+      if (oldestDirectory === undefined) {
+        break;
+      }
+      this.projectDirectoryIndex.delete(oldestDirectory);
+      this.indexedProjectDirectories.delete(oldestDirectory);
+    }
   }
 
   private removeProjectFileFromDirectoryIndex(filePath: string): void {
@@ -612,14 +644,14 @@ export class IncludeResolver {
     return found;
   }
 
-  private getPackageCacheDirectory(packageName: string, root: string): string | undefined {
+  private async getPackageCacheDirectory(packageName: string, root: string): Promise<string | undefined> {
     const cached = this.packageDirectories.get(packageName);
-    if (cached && this.fileSystem.isDirectory(cached)) {
+    if (cached && (await this.fileSystem.isDirectoryAsync(cached))) {
       return cached;
     }
 
     const cacheRoot = path.resolve(root, 'Library', 'PackageCache');
-    const found = this.fileSystem.findDirectory(cacheRoot, `${packageName}@`);
+    const found = await this.fileSystem.findDirectoryAsync(cacheRoot, `${packageName}@`);
     if (found) {
       this.packageDirectories.set(packageName, found);
     }
@@ -803,8 +835,11 @@ export class IncludeResolver {
     }
 
     const packageDirectory = path.join(cacheRoot, packageDirectoryName);
-    // PackageCache内のファイル変更は再帰補完キャッシュを無効化する。
+    // PackageCache内の変更は、ディレクトリ補完と再帰補完の両方を無効化する。
+    // どの親ディレクトリが既に索引済みかを追跡しないため、関連パッケージの
+    // 直接補完索引を一度捨てて再構築する方が、古い候補を残さず安全。
     if (parts.length > 0) {
+      this.packageCompletionIndex.clear();
       this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
     }
     if (type === 3 && parts.length === 0) {

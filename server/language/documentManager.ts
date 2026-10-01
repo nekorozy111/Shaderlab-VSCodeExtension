@@ -45,6 +45,9 @@ export class DocumentManager {
    */
   private readonly includeDependents = new Map<string, Set<string>>();
   private readonly externalSources = new Map<string, string>();
+  /** 同一rootへの非同期include解析を一本化する。 */
+  private readonly pendingIncludePreparations = new Map<string, Promise<void>>();
+  private includePreparationGeneration = 0;
   /**
    * 同一versionの再解析を防ぐための世代管理。
    * Parseは編集イベントのdebounce後に行い、LSP requestからは同期再Parseしない。
@@ -68,6 +71,9 @@ export class DocumentManager {
       return undefined;
     }
 
+    // include経由で保持していた同じURIの外部ASTを、open documentへ昇格させる。
+    this.externalDocuments.delete(document.uri);
+    this.externalSources.delete(document.uri);
     this.documents.set(document.uri, document);
     return this.parseDocument(document);
   }
@@ -86,6 +92,9 @@ export class DocumentManager {
       return;
     }
 
+    // open documentを外部includeキャッシュと二重保持しない。
+    this.externalDocuments.delete(document.uri);
+    this.externalSources.delete(document.uri);
     this.documents.set(document.uri, document);
   }
 
@@ -122,6 +131,8 @@ export class DocumentManager {
 
     // 内容が変わった場合だけ、古い include graph を破棄する。
     this.releaseIncludeDependencies(document.uri);
+    this.externalDocuments.delete(document.uri);
+    this.externalSources.delete(document.uri);
     this.documents.set(document.uri, document);
     return this.parseDocument(document, contentHash);
   }
@@ -264,6 +275,7 @@ export class DocumentManager {
   }
 
   public clear(): void {
+    this.includePreparationGeneration++;
     this.documents.clear();
     this.parsedDocuments.clear();
     this.documentContentHashes.clear();
@@ -274,6 +286,7 @@ export class DocumentManager {
     this.relatedIncludeUrisCache.clear();
     this.includeDependents.clear();
     this.externalReferenceCounts.clear();
+    this.pendingIncludePreparations.clear();
     this.workspaceIndex.clear();
   }
 
@@ -285,6 +298,7 @@ export class DocumentManager {
    * open document 自体は保持する。
    */
   public invalidateExternalIncludeCache(): void {
+    this.includePreparationGeneration++;
     for (const uri of this.externalDocuments.keys()) {
       this.workspaceIndex.remove(uri);
     }
@@ -295,6 +309,7 @@ export class DocumentManager {
     this.relatedIncludeUrisCache.clear();
     this.includeDependents.clear();
     this.externalReferenceCounts.clear();
+    this.pendingIncludePreparations.clear();
   }
 
   /**
@@ -334,7 +349,7 @@ export class DocumentManager {
     }
   }
 
-  public ensureExternalDocument(uri: string): ParsedDocument | undefined {
+  public async ensureExternalDocument(uri: string): Promise<ParsedDocument | undefined> {
     const openDocument = this.parsedDocuments.get(uri);
     if (openDocument) {
       return openDocument;
@@ -350,7 +365,7 @@ export class DocumentManager {
       return undefined;
     }
 
-    const text = this.projectService.readFile(filePath);
+    const text = await this.projectService.readFileAsync(filePath);
     if (text === undefined) {
       return undefined;
     }
@@ -368,6 +383,75 @@ export class DocumentManager {
     return parsed;
   }
 
+  public async prepareRelatedIncludeUris(rootUri: string): Promise<void> {
+    if (this.relatedIncludeUrisCache.has(rootUri)) {
+      return;
+    }
+
+    const pending = this.pendingIncludePreparations.get(rootUri);
+    if (pending) {
+      await pending;
+      return;
+    }
+
+    const preparation = this.buildRelatedIncludeUris(rootUri);
+    this.pendingIncludePreparations.set(rootUri, preparation);
+    try {
+      await preparation;
+    } finally {
+      if (this.pendingIncludePreparations.get(rootUri) === preparation) {
+        this.pendingIncludePreparations.delete(rootUri);
+      }
+    }
+  }
+
+  private async buildRelatedIncludeUris(rootUri: string): Promise<void> {
+    if (this.relatedIncludeUrisCache.has(rootUri)) {
+      return;
+    }
+
+    const cachedDependencies = this.includeDependencies.get(rootUri);
+    if (cachedDependencies) {
+      this.relatedIncludeUrisCache.set(rootUri, new Set([rootUri, ...cachedDependencies]));
+      return;
+    }
+
+    const rootDocument = this.documents.get(rootUri);
+    const preparationGeneration = this.includePreparationGeneration;
+    const parsed = this.getParsed(rootUri);
+    if (!parsed) {
+      this.relatedIncludeUrisCache.set(rootUri, new Set([rootUri]));
+      return;
+    }
+
+    const result = new Set<string>();
+    const visited = new Set<string>();
+    await this.collectRelatedIncludeUrisRecursive(rootUri, parsed, visited, result);
+    result.delete(rootUri);
+    // 非同期解析中にDocumentがclose/changeされた場合、古いgraphを公開しない。
+    if (this.documents.get(rootUri) !== rootDocument || this.includePreparationGeneration !== preparationGeneration) {
+      for (const uri of result) {
+        if ((this.externalReferenceCounts.get(uri) ?? 0) > 0 || this.documents.has(uri)) {
+          continue;
+        }
+        this.externalDocuments.delete(uri);
+        this.externalSources.delete(uri);
+        this.workspaceIndex.remove(uri);
+      }
+      return;
+    }
+
+    this.includeDependencies.set(rootUri, result);
+    const relatedUris = new Set([rootUri, ...result]);
+    this.relatedIncludeUrisCache.set(rootUri, relatedUris);
+    for (const uri of result) {
+      this.externalReferenceCounts.set(uri, (this.externalReferenceCounts.get(uri) ?? 0) + 1);
+      const dependents = this.includeDependents.get(uri) ?? new Set<string>();
+      dependents.add(rootUri);
+      this.includeDependents.set(uri, dependents);
+    }
+  }
+
   public getRelatedIncludeUris(rootUri: string): Set<string> {
     const cachedRelatedUris = this.relatedIncludeUrisCache.get(rootUri);
     if (cachedRelatedUris) {
@@ -381,26 +465,8 @@ export class DocumentManager {
       return relatedUris;
     }
 
-    const result = new Set<string>();
-    const visited = new Set<string>();
-    const parsed = this.getParsed(rootUri);
-    if (!parsed) {
-      return new Set([rootUri]);
-    }
-
-    this.collectRelatedIncludeUrisRecursive(rootUri, parsed, visited, result);
-    result.delete(rootUri);
-    this.includeDependencies.set(rootUri, result);
-    const relatedUris = new Set([rootUri, ...result]);
-    this.relatedIncludeUrisCache.set(rootUri, relatedUris);
-    for (const uri of result) {
-      this.externalReferenceCounts.set(uri, (this.externalReferenceCounts.get(uri) ?? 0) + 1);
-      const dependents = this.includeDependents.get(uri) ?? new Set<string>();
-      dependents.add(rootUri);
-      this.includeDependents.set(uri, dependents);
-    }
-
-    return relatedUris;
+    // 非同期のinclude解析はprepareRelatedIncludeUris()で先に完了させる。
+    return new Set([rootUri]);
   }
 
   private releaseIncludeDependencies(rootUri: string): void {
@@ -448,13 +514,13 @@ export class DocumentManager {
     }
   }
 
-  private collectRelatedIncludeUrisRecursive(
+  private async collectRelatedIncludeUrisRecursive(
     uri: string,
     parsed: ParsedDocument,
     visited: Set<string>,
     result: Set<string>,
     source?: string,
-  ): void {
+  ): Promise<void> {
     if (visited.has(uri)) {
       return;
     }
@@ -472,7 +538,7 @@ export class DocumentManager {
     }
 
     for (const includePath of includePaths) {
-      const resolved = this.projectService.resolveInclude(includePath, uri);
+      const resolved = await this.projectService.resolveInclude(includePath, uri);
       if (!resolved) {
         continue;
       }
@@ -481,7 +547,7 @@ export class DocumentManager {
       /*
        * include 先を Parse / Index。
        */
-      const externalDocument = this.ensureExternalDocument(resolved.uri);
+      const externalDocument = await this.ensureExternalDocument(resolved.uri);
       if (!externalDocument) {
         continue;
       }
@@ -491,7 +557,7 @@ export class DocumentManager {
        * 外部ファイルの raw source を取得する。
        */
       const externalSource = this.externalSources.get(resolved.uri);
-      this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
+      await this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
     }
   }
 

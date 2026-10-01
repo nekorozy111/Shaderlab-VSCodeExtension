@@ -14,9 +14,17 @@ import { HlslParser } from './hlslParser';
 export class ShaderLabParser {
   private readonly source: string;
   private readonly tokens: Token[];
+  // offsetから位置を求めるための行頭offset表。毎回ソース先頭を走査しない。
+  private readonly lineStartOffsets: number[];
   private index = 0;
   public constructor(source: string) {
     this.source = source;
+    this.lineStartOffsets = [0];
+    for (let index = 0; index < source.length; index++) {
+      if (source[index] === '\n') {
+        this.lineStartOffsets.push(index + 1);
+      }
+    }
     this.tokens = new Tokenizer(source).tokenize();
   }
 
@@ -519,22 +527,22 @@ export class ShaderLabParser {
   }
 
   private positionFromOffset(offset: number): SourcePosition {
-    let line = 0;
-    let character = 0;
-    const limit = Math.min(offset, this.source.length);
-    for (let index = 0; index < limit; index++) {
-      if (this.source[index] === '\n') {
-        line++;
-        character = 0;
+    const safeOffset = Math.max(0, Math.min(offset, this.source.length));
+    let low = 0;
+    let high = this.lineStartOffsets.length - 1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (this.lineStartOffsets[middle] <= safeOffset) {
+        low = middle + 1;
       } else {
-        character++;
+        high = middle - 1;
       }
     }
-
+    const line = Math.max(0, high);
     return {
       offset,
       line,
-      character,
+      character: safeOffset - this.lineStartOffsets[line],
     };
   }
 }
