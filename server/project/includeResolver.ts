@@ -37,8 +37,11 @@ export class IncludeResolver {
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
   // パッケージ全体を再帰走査した結果。unqualified include補完で再利用する。
   private readonly packageRecursiveCompletionCache = new Map<string, string[]>();
+  private readonly maxPackageRecursiveCompletionCacheEntries = 4;
   // 同一パッケージの再帰走査を同時に開始しない。
   private readonly pendingPackageRecursiveCompletionCache = new Map<string, Promise<string[]>>();
+  // 非同期Package走査の世代。無効化後に古い結果を再登録しない。
+  private packageCompletionGeneration = 0;
   // Project directory -> file
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
   private readonly indexedProjectDirectories = new Set<string>();
@@ -116,6 +119,7 @@ export class IncludeResolver {
     this.packageDirectories.clear();
     this.packageCompletionIndex.clear();
     this.packageRecursiveCompletionCache.clear();
+    this.packageCompletionGeneration++;
     this.pendingPackageRecursiveCompletionCache.clear();
     this.projectDirectoryIndex.clear();
     this.indexedProjectDirectories.clear();
@@ -143,7 +147,7 @@ export class IncludeResolver {
 
   private async resolveUncached(normalizedInclude: string, fromUri: string): Promise<IncludeResolution | undefined> {
     const fromPath = this.uriToPath(fromUri);
-    if (!fromPath || !this.projectRoot.isInsideProject(fromPath)) {
+    if (!fromPath || !(await this.projectRoot.isInsideProjectAsync(fromPath))) {
       return undefined;
     }
 
@@ -294,7 +298,7 @@ export class IncludeResolver {
     includePath: string,
   ): Promise<IncludeResolution | undefined> {
     const normalizedPath = path.normalize(filePath);
-    if (!this.projectRoot.isInsideProject(normalizedPath)) {
+    if (!(await this.projectRoot.isInsideProjectAsync(normalizedPath))) {
       return undefined;
     }
     if (!(await this.fileSystem.isFileAsync(normalizedPath))) {
@@ -416,15 +420,21 @@ export class IncludeResolver {
       let files = this.packageRecursiveCompletionCache.get(cacheKey);
       if (!files) {
         let pending = this.pendingPackageRecursiveCompletionCache.get(cacheKey);
+        let generation = this.packageCompletionGeneration;
         if (!pending) {
           pending = this.buildRecursivePackageCompletionCache(packageDirectory);
           this.pendingPackageRecursiveCompletionCache.set(cacheKey, pending);
         }
         try {
           files = await pending;
-          // 走査開始後にキャッシュ全体が無効化された場合は古い結果を残さない。
-          if (this.pendingPackageRecursiveCompletionCache.get(cacheKey) === pending) {
-            this.packageRecursiveCompletionCache.set(cacheKey, files);
+          // 走査中にキャッシュが無効化された世代なら結果を破棄する。
+          if (
+            generation === this.packageCompletionGeneration &&
+            this.pendingPackageRecursiveCompletionCache.get(cacheKey) === pending
+          ) {
+            this.setPackageRecursiveCompletionCache(cacheKey, files);
+          } else if (generation !== this.packageCompletionGeneration) {
+            files = undefined;
           }
         } finally {
           if (this.pendingPackageRecursiveCompletionCache.get(cacheKey) === pending) {
@@ -433,7 +443,7 @@ export class IncludeResolver {
         }
       }
 
-      for (const relative of files) {
+      for (const relative of files ?? []) {
         const fileName = path.posix.basename(relative).toLowerCase();
         if (!fileName.startsWith(partial)) {
           continue;
@@ -840,6 +850,16 @@ export class IncludeResolver {
     this.removePackageIncludeEntriesUnderDirectory(normalized);
   }
 
+  private setPackageRecursiveCompletionCache(cacheKey: string, files: string[]): void {
+    this.packageRecursiveCompletionCache.delete(cacheKey);
+    this.packageRecursiveCompletionCache.set(cacheKey, files);
+    while (this.packageRecursiveCompletionCache.size > this.maxPackageRecursiveCompletionCacheEntries) {
+      const oldest = this.packageRecursiveCompletionCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.packageRecursiveCompletionCache.delete(oldest);
+    }
+  }
+
   private updatePackageCacheFile(filePath: string, type: number): void {
     const root = this.projectRoot.getPath();
     if (!root) {
@@ -879,6 +899,7 @@ export class IncludeResolver {
       this.removePackageIncludeEntriesUnderDirectory(packageDirectory);
       this.packageCompletionIndex.clear();
       this.packageRecursiveCompletionCache.delete(packageKey);
+      this.packageCompletionGeneration++;
       return;
     }
 
@@ -886,6 +907,7 @@ export class IncludeResolver {
       // ファイル削除は対象エントリだけを取り除き、他ファイルの索引を保持する。
       this.removePackageIncludeFileOrDirectory(filePath);
       this.packageRecursiveCompletionCache.delete(packageKey);
+      this.packageCompletionGeneration++;
       return;
     }
 
@@ -893,6 +915,7 @@ export class IncludeResolver {
       this.packageDirectories.set(packageName, packageDirectory);
       this.packageCompletionIndex.clear();
       this.packageRecursiveCompletionCache.delete(packageKey);
+      this.packageCompletionGeneration++;
       return;
     }
 
@@ -901,6 +924,7 @@ export class IncludeResolver {
       const logicalInclude = `Packages/${packageName}/${parts.join('/')}`;
       this.addPackageIncludeFile(filePath, logicalInclude);
       this.packageRecursiveCompletionCache.delete(packageKey);
+      this.packageCompletionGeneration++;
       return;
     }
 
@@ -908,6 +932,7 @@ export class IncludeResolver {
     if (parts.length > 0) {
       this.packageCompletionIndex.clear();
       this.packageRecursiveCompletionCache.delete(packageKey);
+      this.packageCompletionGeneration++;
     }
   }
 
@@ -928,6 +953,7 @@ export class IncludeResolver {
     // Packages側も全走査はせず、既に作成済みの補完索引だけを無効化する。
     this.packageCompletionIndex.clear();
     this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
+    this.packageCompletionGeneration++;
     if (type === 3 || !this.isIncludeFile(filePath)) {
       this.removePackageIncludeFile(filePath);
       return;

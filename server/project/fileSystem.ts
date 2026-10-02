@@ -43,21 +43,11 @@ export class FileSystem {
   }
 
   public async isDirectoryAsync(filePath: string): Promise<boolean> {
-    try {
-      const stat = await fs.promises.stat(path.normalize(filePath));
-      return stat.isDirectory();
-    } catch {
-      return false;
-    }
+    return (await this.getStatKindAsync(filePath)) === 'directory';
   }
 
   public async isFileAsync(filePath: string): Promise<boolean> {
-    try {
-      const stat = await fs.promises.stat(path.normalize(filePath));
-      return stat.isFile();
-    } catch {
-      return false;
-    }
+    return (await this.getStatKindAsync(filePath)) === 'file';
   }
 
   public listDirectory(directoryPath: string): string[] {
@@ -164,6 +154,42 @@ export class FileSystem {
       statEntries: this.statCache.size,
       directoryEntries: this.directoryCache.size,
     };
+  }
+
+  private async getStatKindAsync(filePath: string): Promise<CachedStat['kind']> {
+    const normalized = path.normalize(filePath);
+    const now = Date.now();
+    const cached = this.statCache.get(normalized);
+    if (cached && cached.expiresAt > now) {
+      this.statCache.delete(normalized);
+      this.statCache.set(normalized, cached);
+      return cached.kind;
+    }
+    if (cached) {
+      this.statCache.delete(normalized);
+    }
+
+    try {
+      const stat = await fs.promises.stat(normalized);
+      const kind: CachedStat['kind'] = stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'missing';
+      this.setStatCache(normalized, kind, now + this.cacheTtlMs);
+      return kind;
+    } catch {
+      this.setStatCache(normalized, 'missing', now + this.cacheTtlMs);
+      return 'missing';
+    }
+  }
+
+  private setStatCache(filePath: string, kind: CachedStat['kind'], expiresAt: number): void {
+    this.statCache.delete(filePath);
+    this.statCache.set(filePath, { kind, expiresAt });
+    while (this.statCache.size > this.maxStatCacheEntries) {
+      const oldest = this.statCache.keys().next().value as string | undefined;
+      if (oldest === undefined) {
+        break;
+      }
+      this.statCache.delete(oldest);
+    }
   }
 
   private getStatKind(filePath: string): CachedStat['kind'] {

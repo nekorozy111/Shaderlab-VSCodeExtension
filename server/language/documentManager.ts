@@ -53,8 +53,12 @@ export class DocumentManager {
   private readonly includePreparationGenerations = new Map<string, number>();
   // 外部ファイルの読み込み世代はURIごとに管理する。
   private readonly externalDocumentGenerations = new Map<string, number>();
+  // 全external documentを一括無効化した世代。in-flight Promiseの復活を防ぐ。
+  private externalDocumentGenerationEpoch = 0;
   // debounce中のrootは旧include graphを保持し、最新ASTが確定するまで再構築しない。
   private readonly staleIncludeRoots = new Set<string>();
+  // root単位のinclude traversal全体で共有する同時実行数を制限する。
+  private readonly includeTraversalConcurrency = 24;
   /**
    * 同一versionの再解析を防ぐための世代管理。
    * Parseは編集イベントのdebounce後に行い、LSP requestからは同期再Parseしない。
@@ -318,6 +322,8 @@ export class DocumentManager {
   }
 
   public clear(): void {
+    // clear中のin-flight external document読み込みを全て古い世代として扱う。
+    this.externalDocumentGenerationEpoch++;
     this.documents.clear();
     this.parsedDocuments.clear();
     this.documentContentHashes.clear();
@@ -345,6 +351,8 @@ export class DocumentManager {
    * open document 自体は保持する。
    */
   public invalidateExternalIncludeCache(): void {
+    // 全体invalidaton前に世代を進め、実行中のPromiseが古いASTを再登録できないようにする。
+    this.externalDocumentGenerationEpoch++;
     for (const uri of this.externalDocuments.keys()) {
       this.workspaceIndex.remove(uri);
     }
@@ -464,7 +472,7 @@ export class DocumentManager {
     }
   }
 
-  private async loadExternalDocument(uri: string, preparationGeneration: number): Promise<ParsedDocument | undefined> {
+  private async loadExternalDocument(uri: string, preparationGeneration: string): Promise<ParsedDocument | undefined> {
     const filePath = this.uriToPath(uri);
     if (!filePath) {
       return undefined;
@@ -718,12 +726,15 @@ export class DocumentManager {
     this.includePreparationGenerations.set(rootUri, this.getIncludePreparationGeneration(rootUri) + 1);
   }
 
-  private getExternalDocumentGeneration(uri: string): number {
-    return this.externalDocumentGenerations.get(uri) ?? 0;
+  private getExternalDocumentGeneration(uri: string): string {
+    // 全体世代とURI単位の世代を別々に保持し、連結した値で比較する。
+    // 単純加算するとclear後の新世代と古いURI世代が同じ値になり得る。
+    return `${this.externalDocumentGenerationEpoch}:${this.externalDocumentGenerations.get(uri) ?? 0}`;
   }
 
   private bumpExternalDocumentGeneration(uri: string): void {
-    this.externalDocumentGenerations.set(uri, this.getExternalDocumentGeneration(uri) + 1);
+    const generation = this.externalDocumentGenerations.get(uri) ?? 0;
+    this.externalDocumentGenerations.set(uri, generation + 1);
   }
 
   // close済みrootで不要になったinclude解析世代を解放する。
@@ -818,36 +829,97 @@ export class DocumentManager {
     result: Set<string>,
     source?: string,
   ): Promise<void> {
-    if (visited.has(uri)) {
-      return;
+    interface TraversalItem {
+      uri: string;
+      parsed: ParsedDocument;
+      source?: string;
     }
+
+    // rootから開始した1回のtraversalでqueueとworker上限を共有する。
+    const queue: TraversalItem[] = [{ uri, parsed, source }];
+    let active = 0;
+    let settled = false;
+    let resolveTraversal: () => void = () => undefined;
+    let rejectTraversal: (error: unknown) => void = () => undefined;
+    const traversal = new Promise<void>((resolve, reject) => {
+      resolveTraversal = resolve;
+      rejectTraversal = reject;
+    });
 
     visited.add(uri);
-    let includePaths: string[];
-    /*
-     * 外部 HLSL は実ファイルの内容から
-     * #include を取得する。
-     */
-    if (isHlslDocument(parsed.uri, parsed.languageId) && source !== undefined) {
-      includePaths = this.collectRawHlslIncludes(source);
-    } else {
-      includePaths = this.collectIncludes(parsed);
-    }
+    let pump: () => void = () => undefined;
 
-    await Promise.all(
-      includePaths.map(async (includePath) => {
-        const resolved = await this.projectService.resolveInclude(includePath, uri);
-        if (!resolved) return;
+    const processItem = async (current: TraversalItem): Promise<void> => {
+      let includePaths: string[];
+      if (isHlslDocument(current.parsed.uri, current.parsed.languageId) && current.source !== undefined) {
+        includePaths = this.collectRawHlslIncludes(current.source);
+      } else {
+        includePaths = this.collectIncludes(current.parsed);
+      }
+
+      for (const includePath of includePaths) {
+        const resolved = await this.projectService.resolveInclude(includePath, current.uri);
+        if (!resolved) {
+          continue;
+        }
 
         result.add(resolved.uri);
-        // 独立したinclude branchは並列化し、同一URIのParseはin-flight cacheで共有する。
-        const externalDocument = await this.ensureExternalDocument(resolved.uri);
-        if (!externalDocument) return;
+        if (visited.has(resolved.uri)) {
+          continue;
+        }
+        visited.add(resolved.uri);
 
-        const externalSource = this.externalSources.get(resolved.uri);
-        await this.collectRelatedIncludeUrisRecursive(resolved.uri, externalDocument, visited, result, externalSource);
-      }),
-    );
+        const externalDocument = await this.ensureExternalDocument(resolved.uri);
+        if (!externalDocument) {
+          continue;
+        }
+
+        queue.push({
+          uri: resolved.uri,
+          parsed: externalDocument,
+          source: this.externalSources.get(resolved.uri),
+        });
+        // 子includeを発見した時点で空きworkerへ渡し、root全体の24並列を活用する。
+        pump();
+      }
+    };
+
+    pump = (): void => {
+      while (!settled && active < this.includeTraversalConcurrency && queue.length > 0) {
+        const current = queue.shift();
+        if (!current) {
+          break;
+        }
+
+        active++;
+        void processItem(current).then(
+          () => {
+            active--;
+            pump();
+            if (!settled && active === 0 && queue.length === 0) {
+              settled = true;
+              resolveTraversal();
+            }
+          },
+          (error) => {
+            if (!settled) {
+              settled = true;
+              rejectTraversal(error);
+            }
+          },
+        );
+      }
+
+      if (!settled && active === 0 && queue.length === 0) {
+        settled = true;
+        resolveTraversal();
+      }
+    };
+
+    // 子includeを同じqueueへ追加しながらpumpを再利用するため、
+    // 再帰階層ごとにworker poolが増えることはなく、traversal全体で最大24並列になる。
+    pump();
+    await traversal;
   }
 
   private collectIncludes(parsed: ParsedDocument): string[] {

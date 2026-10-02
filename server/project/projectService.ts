@@ -39,7 +39,8 @@ export class ProjectService {
   }
 
   public async readFileAsync(filePath: string): Promise<string | undefined> {
-    if (!this.projectRoot.isInsideProject(filePath)) {
+    // LSPのイベントループをブロックしないよう、プロジェクト判定も非同期化する。
+    if (!(await this.projectRoot.isInsideProjectAsync(filePath))) {
       return undefined;
     }
     return this.fileSystem.readTextAsync(filePath);
