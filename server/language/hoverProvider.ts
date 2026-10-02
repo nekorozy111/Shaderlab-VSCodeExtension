@@ -64,6 +64,25 @@ export class HoverProvider {
 
     /*
      * ---------------------------------------------------------
+     * Semantic上ではfield Symbolを解決しない。
+     * field.rangeは `float3 position : POSITION` 全体を含むため、
+     * semanticRangeを持たずに通常のSymbol検索を先に行うと
+     * POSITIONのHoverがposition fieldとして表示されてしまう。
+     * ---------------------------------------------------------
+     */
+    const semanticAtPosition = this.findSemanticAtPosition(uri, offset);
+    if (semanticAtPosition) {
+      const semanticDescription = this.getSemanticDescription(semanticAtPosition);
+      return {
+        contents: {
+          kind: 'markdown',
+          value: `**${semanticAtPosition}**\n\n` + (semanticDescription ?? 'HLSL semantic.'),
+        },
+      };
+    }
+
+    /*
+     * ---------------------------------------------------------
      * 1. 関数ローカル変数
      *
      * ローカル変数は、同名のstruct field / cbuffer field
@@ -309,6 +328,69 @@ export class HoverProvider {
       SV_SAMPLEINDEX: 'System-value semantic containing the sample index.',
     };
     return descriptions[semantic.toUpperCase()];
+  }
+
+  private findSemanticAtPosition(uri: string, offset: number): string | undefined {
+    const parsed = this.documentManager.getParsed(uri);
+    if (!parsed) {
+      return undefined;
+    }
+
+    const findInHlsl = (hlsl: HlslStructNode | ShaderHlslBlockNode['hlsl']): string | undefined => {
+      for (const declaration of hlsl.kind === 'HlslStruct' ? [hlsl] : hlsl.declarations) {
+        if (declaration.kind === 'HlslStruct') {
+          for (const field of declaration.fields) {
+            if (
+              field.semantic &&
+              field.semanticRange &&
+              offset >= field.semanticRange.start.offset &&
+              offset <= field.semanticRange.end.offset
+            ) {
+              return field.semantic;
+            }
+          }
+        } else if (declaration.kind === 'HlslFunction') {
+          for (const parameter of declaration.parameters) {
+            if (
+              parameter.semantic &&
+              parameter.semanticRange &&
+              offset >= parameter.semanticRange.start.offset &&
+              offset <= parameter.semanticRange.end.offset
+            ) {
+              return parameter.semantic;
+            }
+          }
+        } else if (declaration.kind === 'HlslVariable' && declaration.semanticRange) {
+          if (offset >= declaration.semanticRange.start.offset && offset <= declaration.semanticRange.end.offset) {
+            return declaration.semantic;
+          }
+        }
+      }
+      return undefined;
+    };
+
+    if (parsed.ast.kind === 'HlslDocument') {
+      return findInHlsl(parsed.ast);
+    }
+
+    const ast = parsed.ast;
+    for (const block of ast.hlslBlocks) {
+      const semantic = findInHlsl(block.hlsl);
+      if (semantic) return semantic;
+    }
+    for (const subShader of ast.subShaders) {
+      for (const block of subShader.hlslBlocks) {
+        const semantic = findInHlsl(block.hlsl);
+        if (semantic) return semantic;
+      }
+      for (const pass of subShader.passes) {
+        for (const block of pass.hlslBlocks) {
+          const semantic = findInHlsl(block.hlsl);
+          if (semantic) return semantic;
+        }
+      }
+    }
+    return undefined;
   }
 
   private findFieldBySemantic(

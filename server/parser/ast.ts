@@ -13,6 +13,7 @@ export interface HlslParameterNode extends AstNode {
   typeName: string;
   name: string;
   semantic?: string;
+  semanticRange?: SourceRange;
 }
 
 export interface HlslVariableNode extends AstNode {
@@ -20,6 +21,7 @@ export interface HlslVariableNode extends AstNode {
   typeName: string;
   name: string;
   semantic?: string;
+  semanticRange?: SourceRange;
   /** ローカル変数の場合、その変数が有効なブロックスコープ。 */
   scope?: SourceRange;
 }

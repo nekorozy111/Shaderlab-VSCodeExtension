@@ -9,7 +9,7 @@ import {
   HlslStructNode,
   HlslVariableNode,
 } from './ast';
-import { SourcePosition, Token } from './token';
+import { SourcePosition, SourceRange, Token } from './token';
 import { Tokenizer } from './tokenizer';
 
 export class HlslParser {
@@ -169,6 +169,14 @@ export class HlslParser {
       return node;
     }
 
+    // #pragma / #if / #endif など、ASTとして扱わないpreprocessorは
+    // ディレクティブの残りを同じ行の終端まで消費する。
+    // これを行わないと #pragma vertex TestVertex の TestVertex などが
+    // HLSLの通常の宣言として再解釈され、後続のstructを壊してしまう。
+    const directiveLine = startToken.range.start.line;
+    while (!this.isAtEnd() && this.current().range.start.line === directiveLine) {
+      this.advance();
+    }
     return undefined;
   }
 
@@ -475,11 +483,13 @@ export class HlslParser {
 
     this.advance();
     let semantic: string | undefined;
+    let semanticRange: SourceRange | undefined;
     let end = nameToken.range.end;
     if (this.checkValue(':')) {
       this.advance();
       if (this.current().kind === 'identifier') {
         semantic = this.current().value;
+        semanticRange = this.current().range;
         end = this.current().range.end;
         this.advance();
       }
@@ -491,6 +501,7 @@ export class HlslParser {
       typeName: typeToken.value,
       name: nameToken.value,
       semantic,
+      semanticRange,
       range: {
         start,
         end,
@@ -639,10 +650,12 @@ export class HlslParser {
       }
 
       let semantic: string | undefined;
+      let semanticRange: SourceRange | undefined;
       if (this.checkValue(':')) {
         this.advance();
         if (this.current().kind === 'identifier') {
           semantic = this.current().value;
+          semanticRange = this.current().range;
           end = this.current().range.end;
           this.advance();
         }
@@ -667,7 +680,12 @@ export class HlslParser {
           braceDepth--;
         }
 
-        if (parenDepth === 0 && bracketDepth === 0 && braceDepth === 0 && (token.value === ',' || token.value === ';')) {
+        if (
+          parenDepth === 0 &&
+          bracketDepth === 0 &&
+          braceDepth === 0 &&
+          (token.value === ',' || token.value === ';')
+        ) {
           break;
         }
         end = token.range.end;
@@ -679,6 +697,7 @@ export class HlslParser {
         typeName: typeToken.value,
         name: nameToken.value,
         semantic,
+        semanticRange,
         range: { start: typeToken.range.start, end },
       });
 
@@ -703,9 +722,28 @@ export class HlslParser {
 
   private isDeclarationQualifier(value: string): boolean {
     return new Set([
-      'const', 'static', 'uniform', 'volatile', 'precise', 'row_major', 'column_major',
-      'nointerpolation', 'linear', 'centroid', 'noperspective', 'sample', 'in', 'out', 'inout',
-      'groupshared', 'globallycoherent', 'shared', 'extern', 'inline', 'min16float', 'min16int',
+      'const',
+      'static',
+      'uniform',
+      'volatile',
+      'precise',
+      'row_major',
+      'column_major',
+      'nointerpolation',
+      'linear',
+      'centroid',
+      'noperspective',
+      'sample',
+      'in',
+      'out',
+      'inout',
+      'groupshared',
+      'globallycoherent',
+      'shared',
+      'extern',
+      'inline',
+      'min16float',
+      'min16int',
       'min16uint',
     ]).has(value);
   }

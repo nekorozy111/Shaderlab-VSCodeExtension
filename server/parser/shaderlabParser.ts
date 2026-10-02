@@ -428,9 +428,8 @@ export class ShaderLabParser {
       const toLocal = (position: SourcePosition): SourcePosition => ({
         offset: position.offset - contentStart,
         line: position.line - basePosition.line,
-        character: position.line === basePosition.line
-          ? position.character - basePosition.character
-          : position.character,
+        character:
+          position.line === basePosition.line ? position.character - basePosition.character : position.character,
       });
       localTokens.push({
         kind: token.kind,
@@ -479,12 +478,18 @@ export class ShaderLabParser {
       if (declaration.kind === 'HlslStruct') {
         for (const field of declaration.fields) {
           field.range = shiftRange(field.range);
+          if (field.semanticRange) {
+            field.semanticRange = shiftRange(field.semanticRange);
+          }
         }
       }
 
       if (declaration.kind === 'HlslFunction') {
         for (const parameter of declaration.parameters) {
           parameter.range = shiftRange(parameter.range);
+          if (parameter.semanticRange) {
+            parameter.semanticRange = shiftRange(parameter.semanticRange);
+          }
         }
         for (const local of declaration.locals) {
           local.range = shiftRange(local.range);
@@ -497,6 +502,9 @@ export class ShaderLabParser {
       if (declaration.kind === 'HlslCBuffer') {
         for (const field of declaration.fields) {
           field.range = shiftRange(field.range);
+          if (field.semanticRange) {
+            field.semanticRange = shiftRange(field.semanticRange);
+          }
         }
       }
     }
