@@ -37,7 +37,7 @@ export class IncludeResolver {
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
   // パッケージ全体を再帰走査した結果。unqualified include補完で再利用する。
   private readonly packageRecursiveCompletionCache = new Map<string, string[]>();
-  // 日本語コメント：同一パッケージの再帰走査を同時に開始しない。
+  // 同一パッケージの再帰走査を同時に開始しない。
   private readonly pendingPackageRecursiveCompletionCache = new Map<string, Promise<string[]>>();
   // Project directory -> file
   private readonly projectDirectoryIndex = new Map<string, Set<string>>();
@@ -422,7 +422,7 @@ export class IncludeResolver {
         }
         try {
           files = await pending;
-          // 日本語コメント：走査開始後にキャッシュ全体が無効化された場合は古い結果を残さない。
+          // 走査開始後にキャッシュ全体が無効化された場合は古い結果を残さない。
           if (this.pendingPackageRecursiveCompletionCache.get(cacheKey) === pending) {
             this.packageRecursiveCompletionCache.set(cacheKey, files);
           }
@@ -564,7 +564,11 @@ export class IncludeResolver {
       }
 
       const entryPath = path.join(directoryPath, entry.name);
-      if (!entry.isDirectory() || !(await this.fileSystem.isDirectoryAsync(entryPath)) || !(await this.projectRoot.isInsideProjectAsync(entryPath))) {
+      if (
+        !entry.isDirectory() ||
+        !(await this.fileSystem.isDirectoryAsync(entryPath)) ||
+        !(await this.projectRoot.isInsideProjectAsync(entryPath))
+      ) {
         continue;
       }
 
@@ -585,7 +589,10 @@ export class IncludeResolver {
       return;
     }
     // プロジェクト側キャッシュの最大到達地点をAssetsに固定する。
-    if (!(await this.isInsideAssetsAsync(normalizedDirectory)) || !(await this.fileSystem.isDirectoryAsync(normalizedDirectory))) {
+    if (
+      !(await this.isInsideAssetsAsync(normalizedDirectory)) ||
+      !(await this.fileSystem.isDirectoryAsync(normalizedDirectory))
+    ) {
       return;
     }
 
@@ -813,6 +820,26 @@ export class IncludeResolver {
     }
   }
 
+  private removePackageIncludeEntriesUnderDirectory(directoryPath: string): void {
+    const normalizedDirectory = path.normalize(directoryPath);
+    const prefix = normalizedDirectory.endsWith(path.sep) ? normalizedDirectory : normalizedDirectory + path.sep;
+    for (const cachedPath of Array.from(this.packageIncludeFiles.keys())) {
+      const normalizedCachedPath = path.normalize(cachedPath);
+      if (normalizedCachedPath === normalizedDirectory || normalizedCachedPath.startsWith(prefix)) {
+        this.removePackageIncludeFile(normalizedCachedPath);
+      }
+    }
+  }
+
+  private removePackageIncludeFileOrDirectory(filePath: string): void {
+    const normalized = path.normalize(filePath);
+    if (this.packageIncludeFiles.has(normalized)) {
+      this.removePackageIncludeFile(normalized);
+      return;
+    }
+    this.removePackageIncludeEntriesUnderDirectory(normalized);
+  }
+
   private updatePackageCacheFile(filePath: string, type: number): void {
     const root = this.projectRoot.getPath();
     if (!root) {
@@ -842,28 +869,45 @@ export class IncludeResolver {
     }
 
     const packageDirectory = path.join(cacheRoot, packageDirectoryName);
-    // PackageCache内の変更は、ディレクトリ補完と再帰補完の両方を無効化する。
-    // どの親ディレクトリが既に索引済みかを追跡しないため、関連パッケージの
-    // 直接補完索引を一度捨てて再構築する方が、古い候補を残さず安全。
-    if (parts.length > 0) {
-      this.packageCompletionIndex.clear();
-      this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
-    }
+    const packageKey = packageName.toLowerCase();
+    const isIncludeFileChange = parts.length > 0 && this.isIncludeFile(filePath);
+
     if (type === 3 && parts.length === 0) {
       if (this.packageDirectories.get(packageName) === packageDirectory) {
         this.packageDirectories.delete(packageName);
       }
-      this.packageIncludeFiles.clear();
-      this.packageIncludePathToFile.clear();
+      this.removePackageIncludeEntriesUnderDirectory(packageDirectory);
       this.packageCompletionIndex.clear();
-      this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
+      this.packageRecursiveCompletionCache.delete(packageKey);
+      return;
+    }
+
+    if (parts.length > 0 && type === 3) {
+      // ファイル削除は対象エントリだけを取り除き、他ファイルの索引を保持する。
+      this.removePackageIncludeFileOrDirectory(filePath);
+      this.packageRecursiveCompletionCache.delete(packageKey);
       return;
     }
 
     if ((type === 1 || type === 2) && parts.length === 0) {
       this.packageDirectories.set(packageName, packageDirectory);
       this.packageCompletionIndex.clear();
-      this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
+      this.packageRecursiveCompletionCache.delete(packageKey);
+      return;
+    }
+
+    if ((type === 1 || type === 2) && isIncludeFileChange) {
+      // ファイル単位の変更では全体のcompletion indexを破棄せず、該当URIだけ更新する。
+      const logicalInclude = `Packages/${packageName}/${parts.join('/')}`;
+      this.addPackageIncludeFile(filePath, logicalInclude);
+      this.packageRecursiveCompletionCache.delete(packageKey);
+      return;
+    }
+
+    // ディレクトリ変更は配下の候補構造が変わるため、関連索引を再構築する。
+    if (parts.length > 0) {
+      this.packageCompletionIndex.clear();
+      this.packageRecursiveCompletionCache.delete(packageKey);
     }
   }
 
@@ -885,10 +929,11 @@ export class IncludeResolver {
     this.packageCompletionIndex.clear();
     this.packageRecursiveCompletionCache.delete(packageName.toLowerCase());
     if (type === 3 || !this.isIncludeFile(filePath)) {
-      this.packageIncludeFiles.delete(path.normalize(filePath));
-      this.packageIncludePathToFile.delete(relative);
+      this.removePackageIncludeFile(filePath);
       return;
     }
+    // Packages配下のincludeも論理パスで索引し、削除時に正しく解放できるようにする。
+    this.addPackageIncludeFile(filePath, relative);
   }
 
   private updateProjectIncludeFile(filePath: string, type: number): void {

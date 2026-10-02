@@ -4,7 +4,7 @@ import { ShaderSymbol } from '../symbol/symbol';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { HlslDocumentNode, ShaderDocumentNode, HlslFunctionNode, HlslVariableNode } from '../parser/ast';
 import { isShaderLabDocument } from './languageId';
-import { containsOffset } from '../parser/lexicalUtils';
+import { getSourceLexicalContextAtOffset } from '../parser/lexicalUtils';
 
 export class DefinitionProvider {
   public constructor(private readonly documentManager: DocumentManager) {}
@@ -1103,7 +1103,7 @@ export class DefinitionProvider {
   }
 
   private isInsideComment(uri: string, offset: number): boolean {
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    return lexical ? containsOffset(lexical.commentRanges, offset) : false;
+    const document = this.documentManager.get(uri);
+    return document ? getSourceLexicalContextAtOffset(document.getText(), offset).inComment : false;
   }
 }

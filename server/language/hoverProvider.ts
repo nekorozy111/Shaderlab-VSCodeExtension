@@ -5,7 +5,7 @@ import { DefinitionProvider } from './definitionProvider';
 import { HlslStructNode, ShaderHlslBlockNode } from '../parser/ast';
 import { SourceRange } from '../parser/token';
 
-import { containsOffset } from '../parser/lexicalUtils';
+import { getSourceLexicalContextAtOffset } from '../parser/lexicalUtils';
 
 export class HoverProvider {
   public constructor(
@@ -456,7 +456,7 @@ export class HoverProvider {
   }
 
   private isInsideComment(uri: string, offset: number): boolean {
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    return lexical ? containsOffset(lexical.commentRanges, offset) : false;
+    const document = this.documentManager.get(uri);
+    return document ? getSourceLexicalContextAtOffset(document.getText(), offset).inComment : false;
   }
 }

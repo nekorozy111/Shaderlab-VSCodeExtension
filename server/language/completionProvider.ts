@@ -4,8 +4,7 @@ import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
 import { IncludeResolver } from '../project/includeResolver';
 
-import { LexicalAnalysis } from '../parser/tokenizer';
-import { containsOffset } from '../parser/lexicalUtils';
+import { getSourceLexicalContextAtOffset } from '../parser/lexicalUtils';
 
 export class CompletionProvider {
   private readonly completionSource = 'ShaderLab IntelliSense';
@@ -19,15 +18,11 @@ export class CompletionProvider {
       return [];
     }
 
-    // 編集直後はdebounce済みの直前ASTを利用する。
-    // Completion要求ごとの同期Parseを避け、入力イベントの遅延を抑える。
+    // 編集直後も全文Tokenizerを実行せず、現在位置だけを局所判定する。
     const text = document.getText();
     const offset = document.offsetAt(position);
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    if (!lexical) {
-      return [];
-    }
-    if (this.isInsideComment(text, offset, lexical)) {
+    const lexicalContext = getSourceLexicalContextAtOffset(text, offset);
+    if (lexicalContext.inComment) {
       return [];
     }
 
@@ -47,7 +42,7 @@ export class CompletionProvider {
     /*
      * 通常の string 内では Completion を出さない。
      */
-    if (this.isInsideString(text, offset, lexical)) {
+    if (lexicalContext.inString) {
       return [];
     }
 
@@ -400,37 +395,13 @@ export class CompletionProvider {
   }
 
   private findLocalVariableCompletions(uri: string, prefix: string, offset: number): CompletionItem[] {
-    const document = this.documentManager.get(uri);
-    if (!document) {
-      return [];
-    }
-
-    const text = document.getText();
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    if (!lexical) {
-      return [];
-    }
-    const safeOffset = Math.max(0, Math.min(offset, text.length));
-    const maskedSource = lexical.maskedText.slice(0, safeOffset);
-    const result: CompletionItem[] = [];
-    const pattern = /\b((?:[A-Za-z_][A-Za-z0-9_]*)(?:\s*<[^<>\r\n]+>)?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:;|=|\[|,)/g;
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(maskedSource)) !== null) {
-      const typeName = match[1];
-      const variableName = match[2];
-      if (!variableName.startsWith(prefix)) {
-        continue;
-      }
-
-      result.push({
-        label: variableName,
-        kind: CompletionItemKind.Variable,
-        detail: `${typeName} ${variableName}`,
-        documentation: this.completionSource,
-      });
-    }
-
-    return result;
+    // debounce済みのASTに保持されたlocalsを利用し、編集直後の全文文字列走査を避ける。
+    return this.documentManager.findLocalVariableDeclarations(uri, prefix, offset).map((local) => ({
+      label: local.name,
+      kind: CompletionItemKind.Variable,
+      detail: `${local.typeName} ${local.name}`,
+      documentation: this.completionSource,
+    }));
   }
 
   private findLocalVariableDeclaration(
@@ -448,82 +419,6 @@ export class CompletionProvider {
     const local = this.documentManager.findLocalVariable(uri, variableName, offset);
     if (!local) return null;
     return { name: local.name, typeName: local.typeName, range: local.range };
-  }
-
-  private maskComments(source: string): string {
-    let result = '';
-    let i = 0;
-    let inBlockComment = false;
-    let inLineComment = false;
-    while (i < source.length) {
-      const current = source[i];
-      const next = i + 1 < source.length ? source[i + 1] : '';
-      /*
-       * // コメント
-       */
-      if (!inBlockComment && !inLineComment && current === '/' && next === '/') {
-        result += ' ';
-        result += ' ';
-        i += 2;
-        inLineComment = true;
-        continue;
-      }
-
-      /*
-       * /* コメント開始
-       */
-      if (!inLineComment && !inBlockComment && current === '/' && next === '*') {
-        result += ' ';
-        result += ' ';
-        i += 2;
-        inBlockComment = true;
-        continue;
-      }
-
-      /*
-       * 行コメント終了
-       */
-      if (inLineComment && current === '\n') {
-        result += '\n';
-        i++;
-        inLineComment = false;
-        continue;
-      }
-
-      /*
-       * ブロックコメント終了
-       */
-      if (inBlockComment && current === '*' && next === '/') {
-        result += ' ';
-        result += ' ';
-        i += 2;
-        inBlockComment = false;
-        continue;
-      }
-
-      /*
-       * コメント内部は空白にする。
-       * 改行だけは維持する。
-       */
-      if (inLineComment || inBlockComment) {
-        result += current === '\n' ? '\n' : ' ';
-        i++;
-        continue;
-      }
-
-      result += current;
-      i++;
-    }
-
-    return result;
-  }
-
-  private isInsideComment(_text: string, offset: number, cache: LexicalAnalysis): boolean {
-    return containsOffset(cache.commentRanges, offset);
-  }
-
-  private isInsideString(_text: string, offset: number, cache: LexicalAnalysis): boolean {
-    return containsOffset(cache.stringRanges, offset);
   }
 
   private getMemberAccessAtPosition(
@@ -806,12 +701,29 @@ export class CompletionProvider {
       return true;
     }
 
-    if (!document) {
+    const parsed = this.documentManager.getParsed(uri);
+    if (!parsed || parsed.ast.kind !== 'ShaderDocument') {
       return false;
     }
 
-    const lexical = this.documentManager.getLexicalAnalysis(uri);
-    return lexical?.hlslRanges.some((range) => offset >= range.start && offset <= range.end) ?? false;
+    const visit = (node: any): boolean => {
+      if (!node || typeof node !== 'object') return false;
+      if (node.kind === 'ShaderHlslBlock' && node.range.start.offset <= offset && offset <= node.range.end.offset) {
+        return true;
+      }
+      for (const value of Object.values(node)) {
+        if (value && typeof value === 'object') {
+          if (Array.isArray(value)) {
+            if (value.some(visit)) return true;
+          } else if (visit(value)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    return visit(parsed.ast);
   }
 
   private getBuiltinTypes(): string[] {
