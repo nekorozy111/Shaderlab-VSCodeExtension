@@ -142,7 +142,6 @@ connection.onCompletion(async (params) => {
   const document = documentManager.get(uri);
   const version = document?.version ?? -1;
   const key = `completion|${uri}|${params.position.line}|${params.position.character}`;
-  await documentManager.prepareRelatedIncludeUris(uri);
   const cached = getCachedRequest<ReturnType<CompletionProvider['provideCompletion']>>(key, version);
   if (cached !== undefined) {
     return cached;

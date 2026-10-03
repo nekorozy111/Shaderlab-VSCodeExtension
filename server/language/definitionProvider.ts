@@ -2,7 +2,13 @@ import { Location, Position } from 'vscode-languageserver/node';
 import { DocumentManager } from './documentManager';
 import { ShaderSymbol } from '../symbol/symbol';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { HlslDocumentNode, ShaderDocumentNode, HlslFunctionNode, HlslVariableNode } from '../parser/ast';
+import {
+  HlslDocumentNode,
+  ShaderDocumentNode,
+  ShaderHlslBlockNode,
+  HlslFunctionNode,
+  HlslVariableNode,
+} from '../parser/ast';
 import { isShaderLabDocument } from './languageId';
 import { getSourceLexicalContextAtOffset } from '../parser/lexicalUtils';
 
@@ -112,7 +118,7 @@ export class DefinitionProvider {
        */
       const localObject = this.findVariableDeclarationInSource(document, memberAccess.objectName, offset);
       if (localObject) {
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri, offset);
         if (member) {
           return this.toLocation(member);
         }
@@ -135,7 +141,7 @@ export class DefinitionProvider {
         );
         if (objectSymbol) {
           if (objectSymbol.typeName) {
-            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
+            const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri, offset);
             if (member) {
               return this.toLocation(member);
             }
@@ -155,7 +161,7 @@ export class DefinitionProvider {
        * 必要時に構築するため、ここで別途ロードしない。
        */
       if (localObject) {
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri, offset);
         if (member) {
           return this.toLocation(member);
         }
@@ -321,7 +327,7 @@ export class DefinitionProvider {
        */
       const localObject = this.findVariableDeclarationInSource(document, memberAccess.objectName, offset);
       if (localObject) {
-        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri);
+        const member = this.findStructField(localObject.typeName, memberAccess.memberName, uri, offset);
         if (member) {
           return member;
         }
@@ -342,7 +348,7 @@ export class DefinitionProvider {
           objectMatches.map((match) => match.symbol),
         );
         if (objectSymbol && objectSymbol.typeName) {
-          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri);
+          const member = this.findStructField(objectSymbol.typeName, memberAccess.memberName, uri, offset);
           if (member) {
             return member;
           }
@@ -777,7 +783,12 @@ export class DefinitionProvider {
    * struct.フィールド を検索
    * -------------------------------------------------------------
    */
-  private findStructField(typeName: string, memberName: string, rootUri: string): ShaderSymbol | null {
+  private findStructField(
+    typeName: string,
+    memberName: string,
+    rootUri: string,
+    usageOffset?: number,
+  ): ShaderSymbol | null {
     const normalizedType = typeName.replace(/\b(const|static|uniform|volatile|in|out|inout)\b/g, '').trim();
     const normalizedMember = memberName.toLowerCase();
     /*
@@ -798,6 +809,18 @@ export class DefinitionProvider {
      * ワークスペース上に存在するだけの別Shaderは対象外。
      * ---------------------------------------------------------
      */
+    // 現在位置が属するHLSL blockを最優先する。
+    // HLSLINCLUDE / HLSLPROGRAM / CGPROGRAM に同名Structがある場合、
+    // 型名だけでファイル先頭から検索すると別blockのStructを誤選択するため、
+    // usageOffsetから現在のblockを特定して、そのblock内を先に検索する。
+    const localStruct = this.findStructNodeInContext(rootUri, normalizedType, usageOffset);
+    if (localStruct) {
+      const localField = localStruct.fields.find((field) => field.name.toLowerCase() === normalizedMember);
+      if (localField) {
+        return this.toShaderSymbolField(rootUri, localStruct.name, localField);
+      }
+    }
+
     const structMatches = this.documentManager.findByKindInRelated(rootUri, normalizedType, 'struct');
     /*
      * ---------------------------------------------------------
@@ -836,6 +859,124 @@ export class DefinitionProvider {
     }
 
     return null;
+  }
+
+  private findStructNodeInContext(
+    rootUri: string,
+    typeName: string,
+    usageOffset?: number,
+  ): import('../parser/ast').HlslStructNode | null {
+    const parsed = this.documentManager.getParsed(rootUri);
+    if (!parsed) {
+      return null;
+    }
+
+    const findInHlsl = (
+      hlsl: import('../parser/ast').HlslDocumentNode,
+    ): import('../parser/ast').HlslStructNode | null => {
+      for (const declaration of hlsl.declarations) {
+        if (declaration.kind === 'HlslStruct' && declaration.name === typeName) {
+          return declaration;
+        }
+      }
+      return null;
+    };
+
+    if (parsed.ast.kind === 'HlslDocument') {
+      return findInHlsl(parsed.ast);
+    }
+
+    const blocks: ShaderHlslBlockNode[] = [];
+    const shader = parsed.ast;
+    blocks.push(...shader.hlslBlocks);
+    for (const subShader of shader.subShaders) {
+      blocks.push(...subShader.hlslBlocks);
+      for (const pass of subShader.passes) {
+        blocks.push(...pass.hlslBlocks);
+      }
+    }
+
+    // 現在位置を含むblockを最優先する。
+    if (usageOffset !== undefined) {
+      const containing = blocks.filter(
+        (block) => usageOffset >= block.range.start.offset && usageOffset <= block.range.end.offset,
+      );
+      for (const block of containing) {
+        const found = findInHlsl(block.hlsl);
+        if (found) {
+          return found;
+        }
+      }
+    }
+
+    // 現在blockに型がない場合は、従来どおりroot document内を探索する。
+    for (const block of blocks) {
+      const found = findInHlsl(block.hlsl);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  private findStructNodeInDocument(rootUri: string, typeName: string): import('../parser/ast').HlslStructNode | null {
+    const parsed = this.documentManager.getParsed(rootUri);
+    if (!parsed) {
+      return null;
+    }
+
+    const visit = (hlsl: import('../parser/ast').HlslDocumentNode): import('../parser/ast').HlslStructNode | null => {
+      for (const declaration of hlsl.declarations) {
+        if (declaration.kind === 'HlslStruct' && declaration.name === typeName) {
+          return declaration;
+        }
+      }
+      return null;
+    };
+
+    if (parsed.ast.kind === 'HlslDocument') {
+      return visit(parsed.ast);
+    }
+
+    const shader = parsed.ast;
+    for (const block of shader.hlslBlocks) {
+      const found = visit(block.hlsl);
+      if (found) return found;
+    }
+    for (const subShader of shader.subShaders) {
+      for (const block of subShader.hlslBlocks) {
+        const found = visit(block.hlsl);
+        if (found) return found;
+      }
+      for (const pass of subShader.passes) {
+        for (const block of pass.hlslBlocks) {
+          const found = visit(block.hlsl);
+          if (found) return found;
+        }
+      }
+    }
+    return null;
+  }
+
+  private toShaderSymbolField(
+    uri: string,
+    parentName: string,
+    field: import('../parser/ast').HlslVariableNode,
+  ): ShaderSymbol {
+    return {
+      name: field.name,
+      kind: 'field',
+      location: {
+        uri,
+        range: field.range,
+        selectionRange: field.range,
+      },
+      typeName: field.typeName,
+      semantic: field.semantic,
+      parentName,
+      children: [],
+    };
   }
 
   /*

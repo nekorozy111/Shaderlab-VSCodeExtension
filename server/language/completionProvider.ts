@@ -36,11 +36,13 @@ export class CompletionProvider {
      */
     const includeContext = this.getIncludeCompletionContext(text, offset);
     if (includeContext) {
+      // include補完はinclude graphやASTを必要としないため、ここでは待たない。
       return this.provideIncludeCompletion(uri, includeContext, offset);
     }
 
     /*
      * 通常の string 内では Completion を出さない。
+     * 不要なinclude解析も待たない。
      */
     if (lexicalContext.inString) {
       return [];
@@ -50,6 +52,9 @@ export class CompletionProvider {
     if (!this.isInsideHlslContext(uri, text, offset)) {
       return [];
     }
+
+    // 通常のCompletionだけが関連includeのシンボルを必要とする。
+    await this.documentManager.prepareRelatedIncludeUris(uri);
 
     const memberAccess = this.getMemberAccessAtPosition(text, offset);
     if (memberAccess) {

@@ -517,6 +517,79 @@ export class HoverProvider {
   }
 
   private findFieldDeclarationAtPosition(uri: string, offset: number, name: string): ShaderSymbol | null {
+    // 宣言位置のfieldはWorkspace indexの名前検索ではなく、現在ファイルのASTを
+    // 直接見る。別HLSL blockに同名fieldがある場合でも、現在位置のfieldを一意に
+    // 解決できるようにする。
+    const parsed = this.documentManager.getParsed(uri);
+    if (parsed) {
+      const findInHlsl = (hlsl: ShaderHlslBlockNode['hlsl']): ShaderSymbol | null => {
+        for (const declaration of hlsl.declarations) {
+          if (declaration.kind !== 'HlslStruct') {
+            continue;
+          }
+          for (const field of declaration.fields) {
+            if (field.name !== name) {
+              continue;
+            }
+            if (offset < field.range.start.offset || offset > field.range.end.offset) {
+              continue;
+            }
+            return {
+              name: field.name,
+              kind: 'field',
+              location: {
+                uri,
+                range: field.range,
+                selectionRange: field.range,
+              },
+              typeName: field.typeName,
+              semantic: field.semantic,
+              parentName: declaration.name,
+              children: [],
+            };
+          }
+        }
+        return null;
+      };
+
+      if (parsed.ast.kind === 'HlslDocument') {
+        // HLSL単体ではstruct宣言を直接走査する。
+        for (const declaration of parsed.ast.declarations) {
+          if (declaration.kind !== 'HlslStruct') continue;
+          for (const field of declaration.fields) {
+            if (field.name === name && offset >= field.range.start.offset && offset <= field.range.end.offset) {
+              return {
+                name: field.name,
+                kind: 'field',
+                location: { uri, range: field.range, selectionRange: field.range },
+                typeName: field.typeName,
+                semantic: field.semantic,
+                parentName: declaration.name,
+                children: [],
+              };
+            }
+          }
+        }
+      } else {
+        for (const block of parsed.ast.hlslBlocks) {
+          const found = findInHlsl(block.hlsl);
+          if (found) return found;
+        }
+        for (const subShader of parsed.ast.subShaders) {
+          for (const block of subShader.hlslBlocks) {
+            const found = findInHlsl(block.hlsl);
+            if (found) return found;
+          }
+          for (const pass of subShader.passes) {
+            for (const block of pass.hlslBlocks) {
+              const found = findInHlsl(block.hlsl);
+              if (found) return found;
+            }
+          }
+        }
+      }
+    }
+
     const matches = this.documentManager.getWorkspaceIndex().findExact(name);
     for (const match of matches) {
       const symbol = match.symbol;

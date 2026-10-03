@@ -1,14 +1,29 @@
 import * as path from 'path';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { ParsedDocument } from '../parser/ast';
+import { HlslFunctionNode, ParsedDocument } from '../parser/ast';
 import { ParserService } from '../parser/parserService';
 import { WorkspaceIndex, SymbolMatch } from '../symbol/workspaceIndex';
 import { ProjectService } from '../project/projectService';
 import { isHlslDocument } from './languageId';
 
+type LocalSymbolEntry = {
+  name: string;
+  typeName: string;
+  range: import('../parser/token').SourceRange;
+  scope?: import('../parser/token').SourceRange;
+};
+
+type LocalFunctionIndex = {
+  range: import('../parser/token').SourceRange;
+  parameters: LocalSymbolEntry[];
+  locals: LocalSymbolEntry[];
+};
+
 export class DocumentManager {
   private readonly documents = new Map<string, TextDocument>();
   private readonly parsedDocuments = new Map<string, ParsedDocument>();
+  /** 関数単位のローカルシンボル索引。Completion/Hover時のAST全走査を避ける。 */
+  private readonly localFunctionIndexes = new Map<string, LocalFunctionIndex[]>();
   /**
    * URIごとの直前のソース内容ハッシュ。
    * LSP versionだけが変わって内容が同一になった場合、ASTを再生成しない。
@@ -77,6 +92,7 @@ export class DocumentManager {
       this.documents.delete(document.uri);
       this.parserService.invalidate(document.uri);
       this.parsedDocuments.delete(document.uri);
+      this.localFunctionIndexes.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
       this.parsingVersions.delete(document.uri);
       this.workspaceIndex.remove(document.uri);
@@ -102,6 +118,7 @@ export class DocumentManager {
       this.documents.delete(document.uri);
       this.parserService.invalidate(document.uri);
       this.parsedDocuments.delete(document.uri);
+      this.localFunctionIndexes.delete(document.uri);
       this.documentContentHashes.delete(document.uri);
       this.parsingVersions.delete(document.uri);
       this.workspaceIndex.remove(document.uri);
@@ -171,6 +188,7 @@ export class DocumentManager {
     this.documents.delete(document.uri);
     this.parserService.invalidate(document.uri);
     this.parsedDocuments.delete(document.uri);
+    this.localFunctionIndexes.delete(document.uri);
     this.documentContentHashes.delete(document.uri);
     this.parsingVersions.delete(document.uri);
     this.workspaceIndex.remove(document.uri);
@@ -326,6 +344,7 @@ export class DocumentManager {
     this.externalDocumentGenerationEpoch++;
     this.documents.clear();
     this.parsedDocuments.clear();
+    this.localFunctionIndexes.clear();
     this.documentContentHashes.clear();
     this.parsingVersions.clear();
     this.parserService.clear();
@@ -593,44 +612,36 @@ export class DocumentManager {
     prefix: string,
     offset: number,
   ): Array<{ name: string; typeName: string; range: import('../parser/token').SourceRange }> {
-    const parsed = this.parsedDocuments.get(uri);
-    if (!parsed) {
+    const functionIndex = this.findContainingLocalFunction(uri, offset);
+    if (!functionIndex) {
       return [];
     }
 
     const result: Array<{ name: string; typeName: string; range: import('../parser/token').SourceRange }> = [];
     const seen = new Set<string>();
-    const contains = (range: import('../parser/token').SourceRange, point: number): boolean =>
-      range.start.offset <= point && point <= range.end.offset;
-
-    const visit = (node: any): void => {
-      if (!node || typeof node !== 'object') return;
-      if (node.kind === 'HlslFunction' && contains(node.range, offset)) {
-        for (const parameter of node.parameters ?? []) {
-          if (!parameter?.name || !parameter?.typeName) continue;
-          if (!parameter.name.startsWith(prefix) || seen.has(`parameter:${parameter.name}`)) continue;
-          seen.add(`parameter:${parameter.name}`);
-          result.push({ name: parameter.name, typeName: parameter.typeName, range: parameter.range });
-        }
-        for (const local of node.locals ?? []) {
-          if (!local?.name || !local?.typeName || !local?.range) continue;
-          if (!local.name.startsWith(prefix) || local.range.start.offset > offset) continue;
-          if (local.scope && !contains(local.scope, offset)) continue;
-          if (seen.has(`local:${local.name}:${local.range.start.offset}`)) continue;
-          seen.add(`local:${local.name}:${local.range.start.offset}`);
-          result.push({ name: local.name, typeName: local.typeName, range: local.range });
-        }
+    for (const parameter of functionIndex.parameters) {
+      if (!parameter.name.startsWith(prefix) || seen.has(`parameter:${parameter.name}`)) {
+        continue;
       }
+      seen.add(`parameter:${parameter.name}`);
+      result.push({ name: parameter.name, typeName: parameter.typeName, range: parameter.range });
+    }
 
-      for (const value of Object.values(node)) {
-        if (value && typeof value === 'object') {
-          if (Array.isArray(value)) value.forEach(visit);
-          else if ((value as any).kind) visit(value);
-        }
+    for (const local of functionIndex.locals) {
+      if (!local.name.startsWith(prefix) || local.range.start.offset > offset) {
+        continue;
       }
-    };
+      if (local.scope && !this.rangeContainsOffset(local.scope, offset)) {
+        continue;
+      }
+      const key = `local:${local.name}:${local.range.start.offset}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      result.push({ name: local.name, typeName: local.typeName, range: local.range });
+    }
 
-    visit(parsed.ast);
     return result;
   }
 
@@ -645,56 +656,76 @@ export class DocumentManager {
         range: import('../parser/token').SourceRange;
       }
     | undefined {
-    const parsed = this.parsedDocuments.get(uri);
-    if (!parsed) {
+    const functionIndex = this.findContainingLocalFunction(uri, offset);
+    if (!functionIndex) {
       return undefined;
     }
 
     let best:
       | { name: string; typeName: string; range: import('../parser/token').SourceRange; span: number }
       | undefined;
-    const contains = (range: import('../parser/token').SourceRange, point: number): boolean =>
-      range.start.offset <= point && point <= range.end.offset;
 
-    const visit = (node: any): void => {
-      if (!node || typeof node !== 'object') return;
-      if (node.kind === 'HlslFunction') {
-        const fn = node;
-        if (contains(fn.range, offset)) {
-          for (const parameter of fn.parameters ?? []) {
-            if (parameter.name !== name || !contains(fn.range, offset)) continue;
-            if (parameter.range.start.offset <= offset) {
-              best = {
-                name: parameter.name,
-                typeName: parameter.typeName,
-                range: parameter.range,
-                span: fn.range.end.offset - fn.range.start.offset,
-              };
-            }
-          }
-          for (const local of fn.locals ?? []) {
-            if (local.name !== name || local.range.start.offset > offset) continue;
-            if (local.scope && !contains(local.scope, offset)) continue;
-            const span = local.scope
-              ? local.scope.end.offset - local.scope.start.offset
-              : fn.range.end.offset - fn.range.start.offset;
-            if (!best || span <= best.span) {
-              best = { name: local.name, typeName: local.typeName, range: local.range, span };
-            }
-          }
-        }
+    for (const parameter of functionIndex.parameters) {
+      if (parameter.name !== name || parameter.range.start.offset > offset) {
+        continue;
       }
-      for (const value of Object.values(node)) {
-        if (value && typeof value === 'object') {
-          if (Array.isArray(value)) value.forEach(visit);
-          else if ((value as any).kind) visit(value);
-        }
-      }
-    };
+      best = {
+        name: parameter.name,
+        typeName: parameter.typeName,
+        range: parameter.range,
+        span: functionIndex.range.end.offset - functionIndex.range.start.offset,
+      };
+    }
 
-    visit(parsed.ast);
+    for (const local of functionIndex.locals) {
+      if (local.name !== name || local.range.start.offset > offset) {
+        continue;
+      }
+      if (local.scope && !this.rangeContainsOffset(local.scope, offset)) {
+        continue;
+      }
+      const span = local.scope
+        ? local.scope.end.offset - local.scope.start.offset
+        : functionIndex.range.end.offset - functionIndex.range.start.offset;
+      if (!best || span <= best.span) {
+        best = { name: local.name, typeName: local.typeName, range: local.range, span };
+      }
+    }
+
     if (!best) return undefined;
     return { name: best.name, typeName: best.typeName, range: best.range };
+  }
+
+  private findContainingLocalFunction(uri: string, offset: number): LocalFunctionIndex | undefined {
+    const functions = this.localFunctionIndexes.get(uri);
+    if (!functions || functions.length === 0) {
+      return undefined;
+    }
+
+    // 開始位置で二分探索し、offset以前で最も後ろにある関数だけを候補にする。
+    let low = 0;
+    let high = functions.length - 1;
+    let candidate = -1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (functions[mid].range.start.offset <= offset) {
+        candidate = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    if (candidate < 0) {
+      return undefined;
+    }
+
+    const functionIndex = functions[candidate];
+    return this.rangeContainsOffset(functionIndex.range, offset) ? functionIndex : undefined;
+  }
+
+  private rangeContainsOffset(range: import('../parser/token').SourceRange, offset: number): boolean {
+    return range.start.offset <= offset && offset <= range.end.offset;
   }
 
   public getRelatedIncludeUris(rootUri: string): Set<string> {
@@ -1012,8 +1043,56 @@ export class DocumentManager {
     this.parsedDocuments.set(document.uri, parsed);
     this.documentContentHashes.set(document.uri, knownContentHash ?? this.hashSource(document.getText()));
     this.parsingVersions.set(document.uri, document.version);
+    this.localFunctionIndexes.set(document.uri, this.buildLocalFunctionIndex(parsed.ast));
     this.workspaceIndex.update(parsed);
     return parsed;
+  }
+
+  private buildLocalFunctionIndex(ast: ParsedDocument['ast']): LocalFunctionIndex[] {
+    const result: LocalFunctionIndex[] = [];
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== 'object') {
+        return;
+      }
+
+      const candidate = node as { kind?: string; range?: import('../parser/token').SourceRange };
+      if (candidate.kind === 'HlslFunction' && candidate.range) {
+        const fn = node as HlslFunctionNode;
+        result.push({
+          range: fn.range,
+          parameters: (fn.parameters ?? [])
+            .filter((parameter) => Boolean(parameter?.name && parameter?.typeName))
+            .map((parameter) => ({
+              name: parameter.name,
+              typeName: parameter.typeName,
+              range: parameter.range,
+            })),
+          locals: (fn.locals ?? [])
+            .filter((local) => Boolean(local?.name && local?.typeName && local?.range))
+            .map((local) => ({
+              name: local.name,
+              typeName: local.typeName,
+              range: local.range,
+              scope: local.scope,
+            })),
+        });
+        return;
+      }
+
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            visit(item);
+          }
+        } else if (value && typeof value === 'object') {
+          visit(value);
+        }
+      }
+    };
+
+    visit(ast);
+    result.sort((a, b) => a.range.start.offset - b.range.start.offset);
+    return result;
   }
 
   /** FNV-1a 32bit。暗号学的用途ではなく、同一内容判定専用。 */

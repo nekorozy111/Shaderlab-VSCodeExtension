@@ -7,7 +7,7 @@ import { LexicalAnalysis, Tokenizer } from './tokenizer';
 
 export class ParserService {
   private readonly lexicalCache = new Map<string, LexicalAnalysis>();
-  private readonly maxLexicalCacheEntries = 64;
+  private readonly maxLexicalCacheEntries = 32;
 
   public getLexicalAnalysis(document: TextDocument): LexicalAnalysis {
     const key = document.uri;
