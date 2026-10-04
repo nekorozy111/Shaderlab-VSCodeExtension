@@ -103,7 +103,7 @@ export class ParserService {
       this.requests.delete(response.id);
       if (this.activeRequestId === response.id) {
         this.activeRequestId = undefined;
-          }
+      }
 
       if (response.error) {
         pending.reject(new Error(response.error));
@@ -143,19 +143,25 @@ export class ParserService {
       return;
     }
 
-    const nextId = this.queuedByUri.values().next().value as number | undefined;
-    if (nextId === undefined) {
+    const next = this.queuedByUri.entries().next().value as [string, number] | undefined;
+
+    if (next === undefined) {
       return;
     }
 
+    const [uri, nextId] = next;
     const request = this.requests.get(nextId);
+
     if (!request) {
-      this.queuedByUri.delete(request?.uri ?? '');
+      // 対応するリクエストが既に削除されている場合はキューから除去する。
+      this.queuedByUri.delete(uri);
+      this.dispatchNext();
       return;
     }
 
-    this.queuedByUri.delete(request.uri);
+    this.queuedByUri.delete(uri);
     this.activeRequestId = nextId;
+
     this.ensureWorker().postMessage({
       id: nextId,
       uri: request.document.uri,
@@ -175,7 +181,7 @@ export class ParserService {
     }
     if (this.activeRequestId === id) {
       this.activeRequestId = undefined;
-      }
+    }
     pending?.reject(error);
     this.dispatchNext();
   }
