@@ -14,6 +14,7 @@ import { HlslParser } from './hlslParser';
 export class ShaderLabParser {
   private readonly source: string;
   private readonly tokens: Token[];
+  private readonly tokenStartOffsets: number[];
   // offsetから位置を求めるための行頭offset表。毎回ソース先頭を走査しない。
   private readonly lineStartOffsets: number[];
   private index = 0;
@@ -26,6 +27,7 @@ export class ShaderLabParser {
       }
     }
     this.tokens = tokens ?? new Tokenizer(source).tokenize();
+    this.tokenStartOffsets = this.tokens.map((token) => token.range.start.offset);
   }
 
   public parse(): ShaderDocumentNode {
@@ -422,21 +424,30 @@ export class ShaderLabParser {
   private createLocalHlslTokens(contentStart: number, contentEnd: number): Token[] {
     const basePosition = this.positionFromOffset(contentStart);
     const localTokens: Token[] = [];
-    for (const token of this.tokens) {
-      if (token.kind === 'eof') continue;
-      if (token.range.start.offset < contentStart || token.range.end.offset > contentEnd) continue;
-      const toLocal = (position: SourcePosition): SourcePosition => ({
-        offset: position.offset - contentStart,
-        line: position.line - basePosition.line,
-        character:
-          position.line === basePosition.line ? position.character - basePosition.character : position.character,
-      });
+    const startIndex = this.lowerBoundTokenStart(contentStart);
+    const toLocal = (position: SourcePosition): SourcePosition => ({
+      offset: position.offset - contentStart,
+      line: position.line - basePosition.line,
+      character:
+        position.line === basePosition.line ? position.character - basePosition.character : position.character,
+    });
+
+    // Tokenの開始offsetは単調増加しているため、block先頭を二分探索してから必要範囲だけ走査する。
+    for (let index = startIndex; index < this.tokens.length; index++) {
+      const token = this.tokens[index];
+      if (token.kind === 'eof' || token.range.start.offset >= contentEnd) {
+        break;
+      }
+      if (token.range.end.offset > contentEnd) {
+        continue;
+      }
       localTokens.push({
         kind: token.kind,
         value: token.value,
         range: { start: toLocal(token.range.start), end: toLocal(token.range.end) },
       });
     }
+
     const end = this.positionFromOffset(contentEnd);
     const localEnd: SourcePosition = {
       offset: contentEnd - contentStart,
@@ -445,6 +456,20 @@ export class ShaderLabParser {
     };
     localTokens.push({ kind: 'eof', value: '', range: { start: localEnd, end: localEnd } });
     return localTokens;
+  }
+
+  private lowerBoundTokenStart(offset: number): number {
+    let low = 0;
+    let high = this.tokenStartOffsets.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (this.tokenStartOffsets[middle] < offset) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    return low;
   }
 
   private shiftHlslDocument(

@@ -153,9 +153,10 @@ connection.onCompletion(async (params) => {
 });
 documents.onDidOpen((event) => {
   hoverProvider.invalidateDocument(event.document.uri);
-  // Open時点でDocumentManagerにも登録しておく。
-  // 変更通知を待たずにF12/Hover/Completionを要求されても最新Documentを取得できる。
-  documentManager.open(event.document);
+  // ParseはWorkerへ委譲するため、open通知ではPromiseを待たずイベントループを継続する。
+  void documentManager.open(event.document).catch((error) => {
+    connection.console.error(`Failed to parse opened document: ${String(error)}`);
+  });
 });
 documents.onDidChangeContent((event) => {
   const uri = event.document.uri;
@@ -174,7 +175,9 @@ documents.onDidChangeContent((event) => {
       return;
     }
 
-    documentManager.update(latest);
+    void documentManager.update(latest).catch((error) => {
+      connection.console.error(`Failed to parse changed document: ${String(error)}`);
+    });
   }, UPDATE_DEBOUNCE_MS);
   pendingDocumentUpdates.set(uri, timer);
 });

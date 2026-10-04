@@ -87,7 +87,7 @@ export class DocumentManager {
     return this.projectService;
   }
 
-  public open(document: TextDocument): ParsedDocument | undefined {
+  public async open(document: TextDocument): Promise<ParsedDocument | undefined> {
     if (!this.isProjectDocument(document.uri)) {
       this.documents.delete(document.uri);
       this.parserService.invalidate(document.uri);
@@ -137,7 +137,7 @@ export class DocumentManager {
     this.documents.set(document.uri, document);
   }
 
-  public update(document: TextDocument): ParsedDocument {
+  public async update(document: TextDocument): Promise<ParsedDocument> {
     if (!this.isProjectDocument(document.uri)) {
       this.documents.delete(document.uri);
       this.parsedDocuments.delete(document.uri);
@@ -215,7 +215,7 @@ export class DocumentManager {
    * 必要な場合だけ明示的に最新ASTへ更新する。
    * 通常のLSP requestでは呼ばず、open/debounce更新など管理側から使用する。
    */
-  public ensureParsed(uri: string): ParsedDocument | undefined {
+  public async ensureParsed(uri: string): Promise<ParsedDocument | undefined> {
     const document = this.documents.get(uri);
     const parsed = this.parsedDocuments.get(uri);
     if (document && (!parsed || parsed.version !== document.version)) {
@@ -508,7 +508,7 @@ export class DocumentManager {
     }
 
     const document = TextDocument.create(uri, languageId, 0, text);
-    const parsed = this.parserService.parse(document);
+    const parsed = await this.parserService.parse(document);
     // 読み込み中にinclude graphが変更された結果は登録しない。
     if (preparationGeneration !== this.getExternalDocumentGeneration(uri)) {
       return undefined;
@@ -1038,8 +1038,13 @@ export class DocumentManager {
     return result;
   }
 
-  private parseDocument(document: TextDocument, knownContentHash?: number): ParsedDocument {
-    const parsed = this.parserService.parse(document);
+  private async parseDocument(document: TextDocument, knownContentHash?: number): Promise<ParsedDocument> {
+    const parsed = await this.parserService.parse(document);
+    const currentDocument = this.documents.get(document.uri);
+    if (currentDocument !== document || currentDocument.version !== document.version) {
+      // Worker解析中に新しい編集/closeが入った場合、古いASTをIndexへ公開しない。
+      return this.parsedDocuments.get(document.uri) ?? parsed;
+    }
     this.parsedDocuments.set(document.uri, parsed);
     this.documentContentHashes.set(document.uri, knownContentHash ?? this.hashSource(document.getText()));
     this.parsingVersions.set(document.uri, document.version);
