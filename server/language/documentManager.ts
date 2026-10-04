@@ -201,7 +201,22 @@ export class DocumentManager {
   }
 
   public get(uri: string): TextDocument | undefined {
-    return this.documents.get(uri);
+    const document = this.documents.get(uri);
+    if (document) {
+      return document;
+    }
+
+    const parsed = this.externalDocuments.get(uri);
+    const source = this.externalSources.get(uri);
+    if (!parsed || source === undefined) {
+      return undefined;
+    }
+
+    return TextDocument.create(uri, parsed.languageId, parsed.version, source);
+  }
+
+  public getSourceText(uri: string): string | undefined {
+    return this.documents.get(uri)?.getText() ?? this.externalSources.get(uri);
   }
 
   public getParsed(uri: string): ParsedDocument | undefined {

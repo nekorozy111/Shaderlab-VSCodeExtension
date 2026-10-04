@@ -4,12 +4,14 @@ import {
   TextDocuments,
   DidChangeWatchedFilesNotification,
   WatchKind,
+  Location,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { DocumentManager } from './language/documentManager';
 import { DefinitionProvider } from './language/definitionProvider';
 import { HoverProvider } from './language/hoverProvider';
 import { CompletionProvider } from './language/completionProvider';
+import { ReferenceProvider } from './language/referenceProvider';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments<TextDocument>(TextDocument);
@@ -17,6 +19,7 @@ const documentManager = new DocumentManager();
 const definitionProvider = new DefinitionProvider(documentManager);
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
+const referenceProvider = new ReferenceProvider(documentManager, definitionProvider);
 // 連続入力中のParseをまとめる。
 // LSP requestでは直前のASTを再利用し、ここでだけ最新DocumentをParse/Indexする。
 const UPDATE_DEBOUNCE_MS = 150;
@@ -92,7 +95,7 @@ connection.onInitialize((params) => {
       },
       hoverProvider: true,
       definitionProvider: true,
-      referencesProvider: false,
+      referencesProvider: true,
     },
   };
 });
@@ -119,6 +122,25 @@ connection.onDefinition(async (params) => {
   }
 
   const result = definitionProvider.provideDefinition(uri, params.position);
+  setCachedRequest(key, version, result);
+  return result;
+});
+connection.onReferences(async (params) => {
+  const uri = params.textDocument.uri;
+  const document = documentManager.get(uri);
+  const version = document?.version ?? -1;
+  const key = `references|${uri}|${params.position.line}|${params.position.character}|${params.context.includeDeclaration}`;
+  await documentManager.prepareRelatedIncludeUris(uri);
+  const cached = getCachedRequest<Location[]>(key, version);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const result = await referenceProvider.provideReferences(
+    uri,
+    params.position,
+    params.context.includeDeclaration,
+  );
   setCachedRequest(key, version, result);
   return result;
 });
@@ -182,6 +204,7 @@ documents.onDidChangeContent((event) => {
   pendingDocumentUpdates.set(uri, timer);
 });
 connection.onDidChangeWatchedFiles((event) => {
+  invalidateRequestCache();
   documentManager
     .getProjectService()
     .updateChangedIncludeFiles(event.changes.map((change) => ({ uri: change.uri, type: change.type })));
