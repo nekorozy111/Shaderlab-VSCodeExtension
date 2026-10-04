@@ -35,6 +35,8 @@ export class IncludeResolver {
 
   // Directory -> direct include
   private readonly packageCompletionIndex = new Map<string, Set<string>>();
+  // Package補完インデックスがPackage構造の増加で無制限に膨らまないようにする。
+  private readonly maxPackageCompletionIndexEntries = 1024;
   // パッケージ全体を再帰走査した結果。unqualified include補完で再利用する。
   private readonly packageRecursiveCompletionCache = new Map<string, string[]>();
   private readonly maxPackageRecursiveCompletionCacheEntries = 4;
@@ -363,7 +365,7 @@ export class IncludeResolver {
     const parent = `Packages/${relative.substring(0, relative.lastIndexOf('/') + 1)}`;
     const partial = relative.substring(relative.lastIndexOf('/') + 1).toLowerCase();
     await this.ensurePackageCompletionDirectory(parent);
-    const units = this.packageCompletionIndex.get(parent.toLowerCase());
+    const units = this.getPackageCompletionIndex(parent.toLowerCase());
     if (!units) {
       return;
     }
@@ -457,41 +459,46 @@ export class IncludeResolver {
   private async buildRecursivePackageCompletionCache(packageDirectory: string): Promise<string[]> {
     const result: string[] = [];
     const visited = new Set<string>();
-    const searchDirectory = async (directoryPath: string): Promise<void> => {
-      const normalizedDirectory = path.normalize(directoryPath);
-      if (visited.has(normalizedDirectory)) {
-        return;
-      }
-      visited.add(normalizedDirectory);
+    const queue: string[] = [path.normalize(packageDirectory)];
+    // PackageCache全体を直列探索すると初回Completionが長時間待たされるため、
+    // Directory単位で限定並列化する。Promise数を無制限に増やさない。
+    const concurrency = 8;
 
-      // Direntを使ってstatSyncの連続呼び出しを避け、再帰I/Oを非同期化する。
-      const entries = await this.fileSystem.listDirectoryEntriesAsync(normalizedDirectory);
-      const childDirectories: string[] = [];
-      for (const entry of entries) {
-        // PackageCache配下のsymlinkはproject外へ出る可能性があるため索引対象にしない。
-        if (entry.isSymbolicLink()) {
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const directoryPath = queue.shift();
+        if (!directoryPath) {
+          return;
+        }
+        const normalizedDirectory = path.normalize(directoryPath);
+        if (visited.has(normalizedDirectory)) {
           continue;
         }
+        visited.add(normalizedDirectory);
 
-        const entryPath = path.join(normalizedDirectory, entry.name);
-        if (entry.isDirectory()) {
-          childDirectories.push(entryPath);
-          continue;
-        }
-        if (!entry.isFile() || !this.isIncludeFile(entryPath)) {
-          continue;
-        }
-        const relative = path.relative(packageDirectory, entryPath).replace(/\\/g, '/');
-        result.push(relative);
-      }
+        const entries = await this.fileSystem.listDirectoryEntriesAsync(normalizedDirectory);
+        for (const entry of entries) {
+          // PackageCache配下のsymlinkはproject外へ出る可能性があるため索引対象にしない。
+          if (entry.isSymbolicLink()) {
+            continue;
+          }
 
-      // 並列度を無制限にせず、Promiseチェーンで順番に処理してFS負荷を抑える。
-      for (const childDirectory of childDirectories) {
-        await searchDirectory(childDirectory);
+          const entryPath = path.join(normalizedDirectory, entry.name);
+          if (entry.isDirectory()) {
+            queue.push(entryPath);
+            continue;
+          }
+          if (!entry.isFile() || !this.isIncludeFile(entryPath)) {
+            continue;
+          }
+          const relative = path.relative(packageDirectory, entryPath).replace(/\\/g, '/');
+          result.push(relative);
+        }
       }
     };
 
-    await searchDirectory(packageDirectory);
+    const workerCount = Math.min(concurrency, queue.length || 1);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
     result.sort();
     return result;
   }
@@ -747,7 +754,30 @@ export class IncludeResolver {
         units.add(entry.name);
       }
     }
+    this.setPackageCompletionIndex(key, units);
+  }
+
+  private getPackageCompletionIndex(key: string): Set<string> | undefined {
+    const units = this.packageCompletionIndex.get(key);
+    if (!units) {
+      return undefined;
+    }
+    // LRU: 最近参照したディレクトリを末尾へ移動する。
+    this.packageCompletionIndex.delete(key);
     this.packageCompletionIndex.set(key, units);
+    return units;
+  }
+
+  private setPackageCompletionIndex(key: string, units: Set<string>): void {
+    this.packageCompletionIndex.delete(key);
+    this.packageCompletionIndex.set(key, units);
+    while (this.packageCompletionIndex.size > this.maxPackageCompletionIndexEntries) {
+      const oldestKey = this.packageCompletionIndex.keys().next().value as string | undefined;
+      if (oldestKey === undefined) {
+        break;
+      }
+      this.packageCompletionIndex.delete(oldestKey);
+    }
   }
 
   private addCompletionIndex(includePath: string): void {
@@ -765,7 +795,7 @@ export class IncludeResolver {
       let units = this.packageCompletionIndex.get(parentKey);
       if (!units) {
         units = new Set<string>();
-        this.packageCompletionIndex.set(parentKey, units);
+        this.setPackageCompletionIndex(parentKey, units);
       }
       units.add(unit);
       parent += unit;
@@ -775,7 +805,7 @@ export class IncludeResolver {
     let units = this.packageCompletionIndex.get(leafParentKey);
     if (!units) {
       units = new Set<string>();
-      this.packageCompletionIndex.set(leafParentKey, units);
+      this.setPackageCompletionIndex(leafParentKey, units);
     }
     units.add(fileName);
   }
@@ -809,7 +839,7 @@ export class IncludeResolver {
     for (let i = parents.length - 2; i >= 0; i--) {
       const parent = parents[i];
       const unit = parts[i] + '/';
-      const units = this.packageCompletionIndex.get(parent.toLowerCase());
+      const units = this.getPackageCompletionIndex(parent.toLowerCase());
       if (!units || !units.has(unit)) {
         continue;
       }

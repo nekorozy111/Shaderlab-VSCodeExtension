@@ -1,3 +1,4 @@
+import * as os from 'os';
 import { Worker } from 'worker_threads';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { ParsedDocument } from './ast';
@@ -14,15 +15,23 @@ type ParseResponse = {
   error?: string;
 };
 
+type WorkerSlot = {
+  worker: Worker;
+  activeRequestId?: number;
+  terminating: boolean;
+};
+
 export class ParserService {
   private readonly lexicalCache = new Map<string, LexicalAnalysis>();
   private readonly maxLexicalCacheEntries = 32;
-  private worker: Worker | undefined;
+  // CPUコア数に応じて2〜4本に制限し、過剰なWorker生成を防ぐ。
+  private readonly workerCount = Math.min(4, Math.max(2, os.cpus().length));
+  private readonly workers: WorkerSlot[] = [];
   private workerRequestId = 0;
   private readonly pending = new Map<number, PendingParse>();
   private readonly requests = new Map<number, { uri: string; document: TextDocument }>();
   private readonly queuedByUri = new Map<string, number>();
-  private activeRequestId: number | undefined;
+  private disposed = false;
 
   public getLexicalAnalysis(document: TextDocument): LexicalAnalysis {
     const key = document.uri;
@@ -44,19 +53,47 @@ export class ParserService {
 
   public invalidate(uri: string): void {
     this.lexicalCache.delete(uri);
+
     const queuedRequestId = this.queuedByUri.get(uri);
     if (queuedRequestId !== undefined) {
       this.rejectPending(queuedRequestId, new Error('Parse invalidated'));
     }
+
+    // 実行中の古いParseも止める。PromiseだけをrejectしてWorkerを走らせ続けると、
+    // 大きなShaderの連続編集時にCPUと一時メモリを消費し続けるため、Workerごと再生成する。
+    for (const slot of this.workers.slice()) {
+      const activeRequestId = slot.activeRequestId;
+      if (activeRequestId === undefined) {
+        continue;
+      }
+      const request = this.requests.get(activeRequestId);
+      if (request?.uri === uri) {
+        this.cancelActiveWorker(slot, activeRequestId, new Error('Parse invalidated'));
+      }
+    }
   }
 
   public async parse(document: TextDocument): Promise<ParsedDocument> {
-    const requestId = ++this.workerRequestId;
+    if (this.disposed) {
+      return Promise.reject(new Error('Parser service is disposed'));
+    }
 
-    // 同じURIでWorker待ちになっている古いParseは捨て、最新の内容だけをキューに残す。
+    const requestId = ++this.workerRequestId;
     const queuedRequestId = this.queuedByUri.get(document.uri);
     if (queuedRequestId !== undefined) {
       this.rejectPending(queuedRequestId, new Error('Parse superseded by a newer document version'));
+    }
+
+    // 同一URIで実行中の古いParseはWorkerごとキャンセルする。
+    for (const slot of this.workers.slice()) {
+      const activeRequestId = slot.activeRequestId;
+      if (activeRequestId === undefined) {
+        continue;
+      }
+      const request = this.requests.get(activeRequestId);
+      if (request?.uri === document.uri) {
+        this.cancelActiveWorker(slot, activeRequestId, new Error('Parse superseded by a newer document version'));
+      }
     }
 
     this.requests.set(requestId, { uri: document.uri, document });
@@ -71,6 +108,7 @@ export class ParserService {
   }
 
   public clear(): void {
+    this.disposed = true;
     this.lexicalCache.clear();
     for (const [id, pending] of this.pending) {
       pending.reject(new Error('Parser service cleared'));
@@ -78,31 +116,37 @@ export class ParserService {
     }
     this.requests.clear();
     this.queuedByUri.clear();
-    this.activeRequestId = undefined;
-    const worker = this.worker;
-    this.worker = undefined;
-    if (worker) {
-      void worker.terminate();
+
+    const slots = this.workers.splice(0, this.workers.length);
+    for (const slot of slots) {
+      slot.terminating = true;
+      void slot.worker.terminate();
     }
   }
 
-  private ensureWorker(): Worker {
-    if (this.worker) {
-      return this.worker;
-    }
+  private createWorkerSlot(): WorkerSlot {
+    const slot: WorkerSlot = {
+      worker: new Worker(require.resolve('./parserWorker')),
+      terminating: false,
+    };
 
-    const worker = new Worker(require.resolve('./parserWorker'));
-    worker.on('message', (response: ParseResponse) => {
-      const pending = this.pending.get(response.id);
-      const request = this.requests.get(response.id);
+    slot.worker.on('message', (response: ParseResponse) => {
+      const requestId = response.id;
+      if (slot.activeRequestId === requestId) {
+        slot.activeRequestId = undefined;
+      }
+
+      const pending = this.pending.get(requestId);
+      const request = this.requests.get(requestId);
       if (!pending || !request) {
+        this.dispatchNext();
         return;
       }
 
-      this.pending.delete(response.id);
-      this.requests.delete(response.id);
-      if (this.activeRequestId === response.id) {
-        this.activeRequestId = undefined;
+      this.pending.delete(requestId);
+      this.requests.delete(requestId);
+      if (this.queuedByUri.get(request.uri) === requestId) {
+        this.queuedByUri.delete(request.uri);
       }
 
       if (response.error) {
@@ -114,64 +158,118 @@ export class ParserService {
       }
       this.dispatchNext();
     });
-    worker.on('error', (error) => {
-      if (this.worker === worker) {
-        this.worker = undefined;
+
+    const handleWorkerFailure = (error: Error): void => {
+      if (slot.terminating) {
+        return;
       }
-      if (this.activeRequestId !== undefined) {
-        const id = this.activeRequestId;
-        this.activeRequestId = undefined;
-        this.rejectPending(id, error);
+      slot.terminating = true;
+      const requestId = slot.activeRequestId;
+      slot.activeRequestId = undefined;
+      this.removeWorkerSlot(slot);
+      if (requestId !== undefined) {
+        this.rejectPending(requestId, error, false);
+      }
+      if (!this.disposed) {
+        this.ensureWorkerPool();
+        this.dispatchNext();
+      }
+    };
+
+    slot.worker.on('error', handleWorkerFailure);
+    slot.worker.on('exit', (code) => {
+      if (slot.terminating || this.disposed) {
+        this.removeWorkerSlot(slot);
+        return;
+      }
+      if (code !== 0) {
+        handleWorkerFailure(new Error(`Parser worker exited with code ${code}`));
+      } else {
+        const requestId = slot.activeRequestId;
+        slot.activeRequestId = undefined;
+        this.removeWorkerSlot(slot);
+        if (requestId !== undefined) {
+          this.rejectPending(requestId, new Error('Parser worker exited unexpectedly'), false);
+        }
+        this.ensureWorkerPool();
+        this.dispatchNext();
       }
     });
-    worker.on('exit', (code) => {
-      if (this.worker === worker) {
-        this.worker = undefined;
-      }
-      if (code !== 0 && this.activeRequestId !== undefined) {
-        const id = this.activeRequestId;
-        this.activeRequestId = undefined;
-        this.rejectPending(id, new Error(`Parser worker exited with code ${code}`));
+
+    this.workers.push(slot);
+    return slot;
+  }
+
+  private ensureWorkerPool(): void {
+    if (this.disposed) {
+      return;
+    }
+    while (this.workers.length < this.workerCount) {
+      this.createWorkerSlot();
+    }
+  }
+
+  private removeWorkerSlot(slot: WorkerSlot): void {
+    const index = this.workers.indexOf(slot);
+    if (index >= 0) {
+      this.workers.splice(index, 1);
+    }
+  }
+
+  private cancelActiveWorker(slot: WorkerSlot, requestId: number, error: Error): void {
+    if (slot.activeRequestId !== requestId || slot.terminating) {
+      return;
+    }
+
+    slot.activeRequestId = undefined;
+    slot.terminating = true;
+    this.removeWorkerSlot(slot);
+    this.rejectPending(requestId, error, false);
+    void slot.worker.terminate().finally(() => {
+      if (!this.disposed) {
+        this.ensureWorkerPool();
+        this.dispatchNext();
       }
     });
-    this.worker = worker;
-    return worker;
   }
 
   private dispatchNext(): void {
-    if (this.activeRequestId !== undefined) {
+    if (this.disposed) {
       return;
     }
 
-    const next = this.queuedByUri.entries().next().value as [string, number] | undefined;
+    this.ensureWorkerPool();
 
-    if (next === undefined) {
-      return;
-    }
+    for (const slot of this.workers) {
+      if (slot.terminating || slot.activeRequestId !== undefined) {
+        continue;
+      }
 
-    const [uri, nextId] = next;
-    const request = this.requests.get(nextId);
+      const next = this.queuedByUri.entries().next().value as [string, number] | undefined;
+      if (next === undefined) {
+        return;
+      }
 
-    if (!request) {
-      // 対応するリクエストが既に削除されている場合はキューから除去する。
+      const [uri, nextId] = next;
+      const request = this.requests.get(nextId);
+      if (!request) {
+        this.queuedByUri.delete(uri);
+        continue;
+      }
+
       this.queuedByUri.delete(uri);
-      this.dispatchNext();
-      return;
+      slot.activeRequestId = nextId;
+      slot.worker.postMessage({
+        id: nextId,
+        uri: request.document.uri,
+        languageId: request.document.languageId,
+        version: request.document.version,
+        source: request.document.getText(),
+      });
     }
-
-    this.queuedByUri.delete(uri);
-    this.activeRequestId = nextId;
-
-    this.ensureWorker().postMessage({
-      id: nextId,
-      uri: request.document.uri,
-      languageId: request.document.languageId,
-      version: request.document.version,
-      source: request.document.getText(),
-    });
   }
 
-  private rejectPending(id: number, error: Error): void {
+  private rejectPending(id: number, error: Error, dispatch = true): void {
     const pending = this.pending.get(id);
     const request = this.requests.get(id);
     this.pending.delete(id);
@@ -179,10 +277,9 @@ export class ParserService {
     if (request && this.queuedByUri.get(request.uri) === id) {
       this.queuedByUri.delete(request.uri);
     }
-    if (this.activeRequestId === id) {
-      this.activeRequestId = undefined;
-    }
     pending?.reject(error);
-    this.dispatchNext();
+    if (dispatch) {
+      this.dispatchNext();
+    }
   }
 }
