@@ -6,6 +6,7 @@ import {
   WatchKind,
   Location,
   InlayHintRequest,
+  SemanticTokensRequest,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { DocumentManager } from './language/documentManager';
@@ -15,6 +16,7 @@ import { CompletionProvider } from './language/completionProvider';
 import { ReferenceProvider } from './language/referenceProvider';
 import { DiagnosticProvider } from './language/diagnosticProvider';
 import { InlayHintProvider } from './language/inlayHintProvider';
+import { HlslSemanticTokensLegend, SemanticTokenProvider } from './language/semanticTokenProvider';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments<TextDocument>(TextDocument);
@@ -25,6 +27,7 @@ const completionProvider = new CompletionProvider(documentManager, documentManag
 const referenceProvider = new ReferenceProvider(documentManager, definitionProvider);
 const diagnosticProvider = new DiagnosticProvider(documentManager);
 const inlayHintProvider = new InlayHintProvider(documentManager);
+const semanticTokenProvider = new SemanticTokenProvider(documentManager);
 // 連続入力中のParseをまとめる。
 // LSP requestでは直前のASTを再利用し、ここでだけ最新DocumentをParse/Indexする。
 const UPDATE_DEBOUNCE_MS = 150;
@@ -102,6 +105,10 @@ connection.onInitialize((params) => {
       definitionProvider: true,
       referencesProvider: true,
       inlayHintProvider: true,
+      semanticTokensProvider: {
+        legend: HlslSemanticTokensLegend,
+        full: true,
+      },
     },
   };
 });
@@ -179,6 +186,11 @@ connection.onRequest(InlayHintRequest.type, async (params) => {
   const uri = params.textDocument.uri;
   await documentManager.prepareRelatedIncludeUris(uri);
   return inlayHintProvider.provideInlayHints(uri);
+});
+connection.onRequest(SemanticTokensRequest.type, async (params) => {
+  const uri = params.textDocument.uri;
+  await documentManager.prepareRelatedIncludeUris(uri);
+  return semanticTokenProvider.provideSemanticTokens(params);
 });
 documents.onDidOpen((event) => {
   hoverProvider.invalidateDocument(event.document.uri);

@@ -91,6 +91,120 @@
           "description": "Trace Language Server communication."
         }
       }
+    },
+    "configurationDefaults": {
+      "[shaderlab]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.semanticTokenColorCustomizations": {
+          "rules": {
+            "namespace": "#4FC1FF",
+            "type": "#4EC9B0",
+            "struct": "#4EC9B0",
+            "class": "#4EC9B0",
+            "interface": "#4EC9B0",
+            "enum": "#4EC9B0",
+            "enumMember": "#4FC1FF",
+            "typeParameter": "#4EC9B0",
+            "function": "#DCDCAA",
+            "method": "#DCDCAA",
+            "property": "#4FC1FF",
+            "field": "#4FC1FF",
+            "variable": "#9CDCFE",
+            "parameter": "#9CDCFE",
+            "constant": "#4FC1FF",
+            "macro": "#569CD6",
+            "keyword": "#C586C0",
+            "operator": "#D4D4D4",
+            "number": "#B5CEA8",
+            "string": "#CE9178",
+            "comment": "#6A9955"
+          }
+        }
+      },
+      "[hlsl]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.semanticTokenColorCustomizations": {
+          "rules": {
+            "namespace": "#4FC1FF",
+            "type": "#4EC9B0",
+            "struct": "#4EC9B0",
+            "class": "#4EC9B0",
+            "interface": "#4EC9B0",
+            "enum": "#4EC9B0",
+            "enumMember": "#4FC1FF",
+            "typeParameter": "#4EC9B0",
+            "function": "#DCDCAA",
+            "method": "#DCDCAA",
+            "property": "#4FC1FF",
+            "field": "#4FC1FF",
+            "variable": "#9CDCFE",
+            "parameter": "#9CDCFE",
+            "constant": "#4FC1FF",
+            "macro": "#569CD6",
+            "keyword": "#C586C0",
+            "operator": "#D4D4D4",
+            "number": "#B5CEA8",
+            "string": "#CE9178",
+            "comment": "#6A9955"
+          }
+        }
+      },
+      "[hlsli]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.semanticTokenColorCustomizations": {
+          "rules": {
+            "namespace": "#4FC1FF",
+            "type": "#4EC9B0",
+            "struct": "#4EC9B0",
+            "class": "#4EC9B0",
+            "interface": "#4EC9B0",
+            "enum": "#4EC9B0",
+            "enumMember": "#4FC1FF",
+            "typeParameter": "#4EC9B0",
+            "function": "#DCDCAA",
+            "method": "#DCDCAA",
+            "property": "#4FC1FF",
+            "field": "#4FC1FF",
+            "variable": "#9CDCFE",
+            "parameter": "#9CDCFE",
+            "constant": "#4FC1FF",
+            "macro": "#569CD6",
+            "keyword": "#C586C0",
+            "operator": "#D4D4D4",
+            "number": "#B5CEA8",
+            "string": "#CE9178",
+            "comment": "#6A9955"
+          }
+        }
+      },
+      "[compute]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.semanticTokenColorCustomizations": {
+          "rules": {
+            "namespace": "#4FC1FF",
+            "type": "#4EC9B0",
+            "struct": "#4EC9B0",
+            "class": "#4EC9B0",
+            "interface": "#4EC9B0",
+            "enum": "#4EC9B0",
+            "enumMember": "#4FC1FF",
+            "typeParameter": "#4EC9B0",
+            "function": "#DCDCAA",
+            "method": "#DCDCAA",
+            "property": "#4FC1FF",
+            "field": "#4FC1FF",
+            "variable": "#9CDCFE",
+            "parameter": "#9CDCFE",
+            "constant": "#4FC1FF",
+            "macro": "#569CD6",
+            "keyword": "#C586C0",
+            "operator": "#D4D4D4",
+            "number": "#B5CEA8",
+            "string": "#CE9178",
+            "comment": "#6A9955"
+          }
+        }
+      }
     }
   },
   "scripts": {
