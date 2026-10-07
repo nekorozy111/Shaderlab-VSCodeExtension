@@ -5,6 +5,7 @@ import {
   DidChangeWatchedFilesNotification,
   WatchKind,
   Location,
+  InlayHintRequest,
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { DocumentManager } from './language/documentManager';
@@ -13,6 +14,7 @@ import { HoverProvider } from './language/hoverProvider';
 import { CompletionProvider } from './language/completionProvider';
 import { ReferenceProvider } from './language/referenceProvider';
 import { DiagnosticProvider } from './language/diagnosticProvider';
+import { InlayHintProvider } from './language/inlayHintProvider';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments<TextDocument>(TextDocument);
@@ -22,6 +24,7 @@ const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
 const referenceProvider = new ReferenceProvider(documentManager, definitionProvider);
 const diagnosticProvider = new DiagnosticProvider(documentManager);
+const inlayHintProvider = new InlayHintProvider(documentManager);
 // 連続入力中のParseをまとめる。
 // LSP requestでは直前のASTを再利用し、ここでだけ最新DocumentをParse/Indexする。
 const UPDATE_DEBOUNCE_MS = 150;
@@ -98,6 +101,7 @@ connection.onInitialize((params) => {
       hoverProvider: true,
       definitionProvider: true,
       referencesProvider: true,
+      inlayHintProvider: true,
     },
   };
 });
@@ -170,6 +174,11 @@ connection.onCompletion(async (params) => {
   const result = completionProvider.provideCompletion(uri, params.position);
   setCachedRequest(key, version, result);
   return result;
+});
+connection.onRequest(InlayHintRequest.type, async (params) => {
+  const uri = params.textDocument.uri;
+  await documentManager.prepareRelatedIncludeUris(uri);
+  return inlayHintProvider.provideInlayHints(uri);
 });
 documents.onDidOpen((event) => {
   hoverProvider.invalidateDocument(event.document.uri);
