@@ -16,7 +16,7 @@ import { ReferenceProvider } from './language/referenceProvider';
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments<TextDocument>(TextDocument);
 const documentManager = new DocumentManager();
-const definitionProvider = new DefinitionProvider(documentManager);
+const definitionProvider = new DefinitionProvider(documentManager, documentManager.getProjectService().includeResolver);
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
 const referenceProvider = new ReferenceProvider(documentManager, definitionProvider);
@@ -116,12 +116,12 @@ connection.onDefinition(async (params) => {
   const version = document?.version ?? -1;
   const key = `definition|${uri}|${params.position.line}|${params.position.character}`;
   await documentManager.prepareRelatedIncludeUris(uri);
-  const cached = getCachedRequest<ReturnType<DefinitionProvider['provideDefinition']>>(key, version);
+  const cached = getCachedRequest<Awaited<ReturnType<DefinitionProvider['provideDefinition']>>>(key, version);
   if (cached !== undefined) {
     return cached;
   }
 
-  const result = definitionProvider.provideDefinition(uri, params.position);
+  const result = await definitionProvider.provideDefinition(uri, params.position);
   setCachedRequest(key, version, result);
   return result;
 });
@@ -136,11 +136,7 @@ connection.onReferences(async (params) => {
     return cached;
   }
 
-  const result = await referenceProvider.provideReferences(
-    uri,
-    params.position,
-    params.context.includeDeclaration,
-  );
+  const result = await referenceProvider.provideReferences(uri, params.position, params.context.includeDeclaration);
   setCachedRequest(key, version, result);
   return result;
 });

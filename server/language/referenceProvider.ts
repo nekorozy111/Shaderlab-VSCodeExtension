@@ -9,11 +9,7 @@ export class ReferenceProvider {
     private readonly definitionProvider: DefinitionProvider,
   ) {}
 
-  public async provideReferences(
-    uri: string,
-    position: Position,
-    includeDeclaration: boolean,
-  ): Promise<Location[]> {
+  public async provideReferences(uri: string, position: Position, includeDeclaration: boolean): Promise<Location[]> {
     const document = this.documentManager.get(uri);
     if (!document) {
       return [];
@@ -24,7 +20,7 @@ export class ReferenceProvider {
       return [];
     }
 
-    const target = this.definitionProvider.provideDefinition(uri, position);
+    const target = await this.definitionProvider.provideDefinition(uri, position);
     if (!target) {
       return [];
     }
@@ -35,9 +31,9 @@ export class ReferenceProvider {
 
     // include先のファイル自身からさらにincludeしている場合も正しく解決できるよう、
     // 各候補ファイルのinclude graphを先に構築する。
-    await Promise.all(Array.from(relatedUris, (relatedUri) =>
-      this.documentManager.prepareRelatedIncludeUris(relatedUri),
-    ));
+    await Promise.all(
+      Array.from(relatedUris, (relatedUri) => this.documentManager.prepareRelatedIncludeUris(relatedUri)),
+    );
 
     for (const relatedUri of relatedUris) {
       const source = this.documentManager.getSourceText(relatedUri);
@@ -57,7 +53,7 @@ export class ReferenceProvider {
         }
 
         const tokenPosition = tokenDocument.positionAt(token.range.start.offset);
-        const definition = this.definitionProvider.provideDefinition(relatedUri, tokenPosition);
+        const definition = await this.definitionProvider.provideDefinition(relatedUri, tokenPosition);
         if (!definition || !this.sameLocation(definition, target)) {
           continue;
         }

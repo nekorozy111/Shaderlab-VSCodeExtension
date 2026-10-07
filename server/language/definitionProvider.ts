@@ -11,10 +11,14 @@ import {
 } from '../parser/ast';
 import { isShaderLabDocument } from './languageId';
 import { getSourceLexicalContextAtOffset } from '../parser/lexicalUtils';
+import { IncludeResolver } from '../project/includeResolver';
 
 export class DefinitionProvider {
-  public constructor(private readonly documentManager: DocumentManager) {}
-  public provideDefinition(uri: string, position: Position): Location | null {
+  public constructor(
+    private readonly documentManager: DocumentManager,
+    private readonly includeResolver: IncludeResolver,
+  ) {}
+  public async provideDefinition(uri: string, position: Position): Promise<Location | null> {
     const document = this.documentManager.get(uri);
     if (!document) {
       return null;
@@ -39,10 +43,25 @@ export class DefinitionProvider {
     const lineEndIndex = text.indexOf('\n', offset);
     const lineEnd = lineEndIndex >= 0 ? lineEndIndex : text.length;
     const line = text.substring(lineStart, lineEnd);
-    const cursorInLine = offset - lineStart;
-    const textBeforeCursor = line.substring(0, cursorInLine);
-    const includeMatch = /^\s*#\s*include\s*(?:"[^"]*|<[^>]*)$/.test(textBeforeCursor);
+    const includeMatch = line.match(/^\s*#\s*include\s*(?:"([^"]*)"?|<([^>]*)>?)/);
     if (includeMatch) {
+      const includePath = includeMatch[1] ?? includeMatch[2];
+      if (includePath !== undefined) {
+        const includeStart = lineStart + includeMatch[0].indexOf(includePath);
+        const includeEnd = includeStart + includePath.length;
+        if (offset >= includeStart && offset <= includeEnd) {
+          const resolved = await this.includeResolver.resolve(includePath, uri);
+          if (resolved) {
+            return {
+              uri: resolved.uri,
+              range: {
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 0 },
+              },
+            };
+          }
+        }
+      }
       return null;
     }
 
