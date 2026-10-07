@@ -128,6 +128,16 @@ export class DiagnosticProvider {
     'sampler2D',
     'sampler3D',
     'samplerCUBE',
+    'matrix',
+    'vector',
+    'RayDesc',
+    'RayQuery',
+    'RayQuery64',
+    'RaytracingAccelerationStructure',
+    'Triangle',
+    'TriangleStrip',
+    'Line',
+    'LineStrip',
   ]);
 
   private readonly keywords = new Set([
@@ -159,12 +169,36 @@ export class DiagnosticProvider {
     'true',
     'false',
     'NULL',
+    'typedef',
+    'enum',
+    'union',
+    'interface',
+    'template',
+    'typename',
+    'extern',
+    'inline',
+    'precise',
+    'nointerpolation',
+    'linear',
+    'centroid',
+    'noperspective',
+    'sample',
+    'snorm',
+    'unorm',
+    'row_major',
+    'column_major',
+    'groupshared',
+    'globallycoherent',
+    'shared',
+    'static',
+    'packoffset',
     'true',
     'false',
     'SamplerState',
     'SamplerComparisonState',
     // Unity/ShaderLabのHLSLブロック・CBUFFER用マクロ。
     'HLSLPROGRAM',
+    'HLSLINCLUDE',
     'ENDHLSL',
     'CGPROGRAM',
     'ENDCG',
@@ -183,6 +217,146 @@ export class DiagnosticProvider {
     'UNITY_DECLARE_TEX3D',
     'UNITY_DECLARE_TEXCUBE',
     'UNITY_DECLARE_TEX2DARRAY',
+  ]);
+
+  // Unityのインクルードファイル等で提供されるマクロ。
+  // 関数のように見えるマクロは通常の関数検索へ渡さない。
+  private readonly builtinMacros = new Set([
+    'HLSLPROGRAM',
+    'HLSLINCLUDE',
+    'ENDHLSL',
+    'CGPROGRAM',
+    'ENDCG',
+    'CBUFFER_START',
+    'CBUFFER_END',
+    'UNITY_BRANCH',
+    'UNITY_FLATTEN',
+    'UNITY_UNROLL',
+    'UNITY_LOOP',
+    'UNITY_ASSUME',
+    'UNITY_UNROLLX',
+    'UNITY_LOOPX',
+    'UNITY_VERTEX_INPUT_INSTANCE_ID',
+    'UNITY_SETUP_INSTANCE_ID',
+    'UNITY_TRANSFER_INSTANCE_ID',
+    'UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO',
+    'UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX',
+    'UNITY_VERTEX_OUTPUT_STEREO',
+    'UNITY_INITIALIZE_OUTPUT',
+    'UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO',
+    'UNITY_ANY_INSTANCING_ENABLED',
+    'UNITY_ACCESS_INSTANCED_PROP',
+    'UNITY_DEFINE_INSTANCED_PROP',
+    'UNITY_INSTANCING_BUFFER_START',
+    'UNITY_INSTANCING_BUFFER_END',
+    'UNITY_INSTANCING_CBUFFER_START',
+    'UNITY_INSTANCING_CBUFFER_END',
+    'UNITY_DECLARE_TEX2D',
+    'UNITY_DECLARE_TEX3D',
+    'UNITY_DECLARE_TEXCUBE',
+    'UNITY_DECLARE_TEX2DARRAY',
+    'UNITY_DECLARE_TEXCUBEARRAY',
+    'UNITY_DECLARE_TEX2D_MSAA',
+    'UNITY_DECLARE_TEX2DARRAY_MSAA',
+    'UNITY_DECLARE_SHADOWMAP',
+    'UNITY_DECLARE_TEX2D_NOSAMPLER',
+    'UNITY_DECLARE_TEX3D_NOSAMPLER',
+    'UNITY_DECLARE_TEXCUBE_NOSAMPLER',
+    'UNITY_SAMPLE_TEX2D',
+    'UNITY_SAMPLE_TEX3D',
+    'UNITY_SAMPLE_TEXCUBE',
+    'UNITY_SAMPLE_TEX2DARRAY',
+    'UNITY_SAMPLE_TEXCUBEARRAY',
+    'UNITY_SAMPLE_TEX2D_SAMPLER',
+    'UNITY_SAMPLE_TEX3D_SAMPLER',
+    'UNITY_SAMPLE_TEXCUBE_SAMPLER',
+    'UNITY_SAMPLE_TEX2DARRAY_SAMPLER',
+    'UNITY_SAMPLE_TEXCUBEARRAY_SAMPLER',
+    'SAMPLE_TEXTURE2D',
+    'SAMPLE_TEXTURE2D_LOD',
+    'SAMPLE_TEXTURE2D_BIAS',
+    'SAMPLE_TEXTURE2D_GRAD',
+    'SAMPLE_TEXTURE2D_ARRAY',
+    'SAMPLE_TEXTURE2D_ARRAY_LOD',
+    'SAMPLE_TEXTURE3D',
+    'SAMPLE_TEXTURE3D_LOD',
+    'SAMPLE_TEXTURECUBE',
+    'SAMPLE_TEXTURECUBE_LOD',
+    'SAMPLE_TEXTURECUBE_ARRAY',
+    'SAMPLE_TEXTURECUBE_ARRAY_LOD',
+    'LOAD_TEXTURE2D',
+    'LOAD_TEXTURE2D_ARRAY',
+    'LOAD_TEXTURE3D',
+    'LOAD_TEXTURECUBE',
+    'TRANSFORM_TEX',
+    'TEXTURE2D',
+    'TEXTURE2D_ARRAY',
+    'TEXTURE3D',
+    'TEXTURECUBE',
+    'TEXTURECUBE_ARRAY',
+    'SAMPLER',
+    'SAMPLER_CMP',
+    'DECLARE_TEX2D',
+    'DECLARE_TEX3D',
+    'DECLARE_TEXCUBE',
+    'DECLARE_TEX2D_ARRAY',
+    'DECLARE_TEXCUBE_ARRAY',
+    'DECLARE_SAMPLER',
+  ]);
+
+  // HLSL/Unityが暗黙に提供するグローバルシンボル。
+  private readonly builtinSymbols = new Set([
+    'PI',
+    'FLT_EPSILON',
+    'FLT_MIN',
+    'FLT_MAX',
+    'INT_MIN',
+    'INT_MAX',
+    'UINT_MIN',
+    'UINT_MAX',
+    'HALF_MIN',
+    'HALF_MAX',
+    'unity_ObjectToWorld',
+    'unity_WorldToObject',
+    'unity_MatrixVP',
+    'unity_MatrixV',
+    'unity_MatrixInvV',
+    'unity_MatrixP',
+    'unity_MatrixInvP',
+    'unity_CameraProjection',
+    'unity_CameraInvProjection',
+    'unity_CameraWorldClipPlanes',
+    'unity_CameraWorldPos',
+    'unity_OrthoParams',
+    'unity_CameraParams',
+    'unity_DeltaTime',
+    'unity_Time',
+    'unity_SinTime',
+    'unity_CosTime',
+    'unity_WorldTransformParams',
+    'unity_LODFade',
+    'unity_RenderingLayer',
+    'unity_LightmapST',
+    'unity_DynamicLightmapST',
+    'unity_SHAr',
+    'unity_SHAg',
+    'unity_SHAb',
+    'unity_SHBr',
+    'unity_SHBg',
+    'unity_SHBb',
+    'unity_SHC',
+    'unity_SpecCube0',
+    'unity_SpecCube1',
+    'unity_SpecCube0_HDR',
+    'unity_SpecCube1_HDR',
+    'unity_StereoEyeIndex',
+    'unity_StereoScaleOffset',
+    'unity_StereoMatrixP',
+    'unity_StereoMatrixV',
+    'unity_StereoMatrixInvV',
+    'unity_StereoMatrixVP',
+    'unity_StereoCameraProjection',
+    'unity_StereoCameraInvProjection',
   ]);
 
   // HLSL/Unityで頻出する組み込み関数。外部ヘッダーを開いていない場合でも誤警告しない。
@@ -277,6 +451,51 @@ export class DiagnosticProvider {
     'WaveActiveCountBits',
     'WaveGetLaneCount',
     'WaveGetLaneIndex',
+    'countbits',
+    'firstbitlow',
+    'firstbithigh',
+    'reversebits',
+    'rcp',
+    'mad',
+    'fma',
+    'dst',
+    'msad4',
+    'noise',
+    'ldexp',
+    'asdouble',
+    'f16tof32',
+    'f32tof16',
+    'pack_clamp',
+    'pack_s8',
+    'pack_u8',
+    'unpack_s8',
+    'unpack_u8',
+    'CheckAccessFullyMapped',
+    'EvaluateAttributeSnapped',
+    'EvaluateAttributeCentroid',
+    'EvaluateAttributeAtSample',
+    'GetRenderTargetSampleCount',
+    'GetRenderTargetSamplePosition',
+    'GetDimensions',
+    'CalculateLevelOfDetail',
+    'CalculateLevelOfDetailUnclamped',
+    'Gather',
+    'GatherRed',
+    'GatherGreen',
+    'GatherBlue',
+    'GatherAlpha',
+    'GatherCmp',
+    'GatherCmpRed',
+    'GatherCmpGreen',
+    'GatherCmpBlue',
+    'GatherCmpAlpha',
+    'NonUniformResourceIndex',
+    'QuadReadLaneAt',
+    'QuadReadAcrossDiagonal',
+    'QuadReadAcrossX',
+    'QuadReadAcrossY',
+    'QuadAny',
+    'QuadAll',
   ]);
 
   public constructor(private readonly documentManager: DocumentManager) {}
@@ -340,6 +559,8 @@ export class DiagnosticProvider {
       if (
         this.isTypeName(uri, token.value, structs) ||
         this.isSemantic(token.value) ||
+        this.isBuiltinMacro(token.value) ||
+        this.isBuiltinSymbol(token.value) ||
         this.builtinFunctions.has(token.value) ||
         this.keywords.has(token.value)
       ) {
@@ -382,11 +603,15 @@ export class DiagnosticProvider {
       return;
     }
 
-    const matches = this.documentManager.findByKindInRelated(uri, nameToken.value, 'function');
-    if (this.builtinFunctions.has(nameToken.value)) {
+    if (
+      this.isBuiltinMacro(nameToken.value) ||
+      this.isBuiltinSymbol(nameToken.value) ||
+      this.builtinFunctions.has(nameToken.value)
+    ) {
       return;
     }
 
+    const matches = this.documentManager.findByKindInRelated(uri, nameToken.value, 'function');
     // 現在ファイル/到達可能なincludeのどこにも定義がない関数呼び出しも診断する。
     if (matches.length === 0) {
       add(nameToken, `関数 '${nameToken.value}' が定義されていません。`, DiagnosticSeverity.Warning);
@@ -616,6 +841,25 @@ export class DiagnosticProvider {
 
   private isLikelyLabel(tokens: Token[], index: number): boolean {
     return tokens[index + 1]?.value === ':';
+  }
+
+  private isBuiltinMacro(name: string): boolean {
+    if (this.builtinMacros.has(name)) return true;
+
+    // Unityのヘッダーはバージョンやレンダーパイプラインによって大量のUNITY_/SHADER_マクロを定義する。
+    // 個別列挙だけでは取りこぼすため、明確に組み込み名前空間と判断できるものをまとめて除外する。
+    return /^(UNITY_|SHADER_|PLATFORM_|STEREO_|XR_|TEXTURE\dD|TEXTURECUBE|SAMPLER\d?D|SAMPLE_TEXTURE|LOAD_TEXTURE|DECLARE_TEX|DECLARE_SAMPLER)/.test(
+      name,
+    );
+  }
+
+  private isBuiltinSymbol(name: string): boolean {
+    if (this.builtinSymbols.has(name)) return true;
+
+    // Unityの組み込みグローバルには大量のバージョン依存シンボルがあるため、既知の名前空間も許可する。
+    return (
+      /^unity_[A-Za-z0-9_]+$/.test(name) || /^UNITY_MATRIX_[A-Za-z0-9_]+$/.test(name) || /^UNITY_[A-Z0-9_]+$/.test(name)
+    );
   }
 
   private isTypeName(uri: string, name: string, structs: Map<string, HlslStructNode>): boolean {
