@@ -211,6 +211,7 @@ export class SymbolExtractor {
           selectionRange: parameter.range,
         },
         typeName: parameter.typeName,
+        qualifier: parameter.qualifier,
         semantic: parameter.semantic,
         parentName: node.name,
         children: [],

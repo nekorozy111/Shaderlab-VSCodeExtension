@@ -12,6 +12,7 @@ import { DefinitionProvider } from './language/definitionProvider';
 import { HoverProvider } from './language/hoverProvider';
 import { CompletionProvider } from './language/completionProvider';
 import { ReferenceProvider } from './language/referenceProvider';
+import { DiagnosticProvider } from './language/diagnosticProvider';
 
 const connection = createConnection(ProposedFeatures.all);
 const documents = new TextDocuments<TextDocument>(TextDocument);
@@ -20,6 +21,7 @@ const definitionProvider = new DefinitionProvider(documentManager, documentManag
 const hoverProvider = new HoverProvider(documentManager, definitionProvider);
 const completionProvider = new CompletionProvider(documentManager, documentManager.getProjectService().includeResolver);
 const referenceProvider = new ReferenceProvider(documentManager, definitionProvider);
+const diagnosticProvider = new DiagnosticProvider(documentManager);
 // 連続入力中のParseをまとめる。
 // LSP requestでは直前のASTを再利用し、ここでだけ最新DocumentをParse/Indexする。
 const UPDATE_DEBOUNCE_MS = 150;
@@ -172,9 +174,18 @@ connection.onCompletion(async (params) => {
 documents.onDidOpen((event) => {
   hoverProvider.invalidateDocument(event.document.uri);
   // ParseはWorkerへ委譲するため、open通知ではPromiseを待たずイベントループを継続する。
-  void documentManager.open(event.document).catch((error) => {
-    connection.console.error(`Failed to parse opened document: ${String(error)}`);
-  });
+  void documentManager
+    .open(event.document)
+    .then(async () => {
+      await documentManager.prepareRelatedIncludeUris(event.document.uri);
+      connection.sendDiagnostics({
+        uri: event.document.uri,
+        diagnostics: diagnosticProvider.provideDiagnostics(event.document.uri),
+      });
+    })
+    .catch((error) => {
+      connection.console.error(`Failed to parse opened document: ${String(error)}`);
+    });
 });
 documents.onDidChangeContent((event) => {
   const uri = event.document.uri;
@@ -193,9 +204,18 @@ documents.onDidChangeContent((event) => {
       return;
     }
 
-    void documentManager.update(latest).catch((error) => {
-      connection.console.error(`Failed to parse changed document: ${String(error)}`);
-    });
+    void documentManager
+      .update(latest)
+      .then(async () => {
+        await documentManager.prepareRelatedIncludeUris(uri);
+        connection.sendDiagnostics({
+          uri,
+          diagnostics: diagnosticProvider.provideDiagnostics(uri),
+        });
+      })
+      .catch((error) => {
+        connection.console.error(`Failed to parse changed document: ${String(error)}`);
+      });
   }, UPDATE_DEBOUNCE_MS);
   pendingDocumentUpdates.set(uri, timer);
 });
@@ -217,6 +237,7 @@ documents.onDidClose((event) => {
   }
 
   hoverProvider.invalidateDocument(event.document.uri);
+  connection.sendDiagnostics({ uri: event.document.uri, diagnostics: [] });
   documentManager.close(event.document);
 });
 connection.onRequest('urpShaderLab/memoryStats', () => documentManager.getMemoryStats());

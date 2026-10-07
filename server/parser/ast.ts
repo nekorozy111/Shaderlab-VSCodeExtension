@@ -12,6 +12,8 @@ export interface HlslParameterNode extends AstNode {
   kind: 'HlslParameter';
   typeName: string;
   name: string;
+  /** 引数の修飾子。呼び出し側のInlayHint表示に利用する。 */
+  qualifier?: 'in' | 'out' | 'inout' | 'uniform';
   semantic?: string;
   semanticRange?: SourceRange;
 }

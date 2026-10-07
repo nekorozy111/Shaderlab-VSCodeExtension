@@ -26,6 +26,8 @@ export interface ShaderSymbol {
   typeName?: string;
   returnType?: string;
   semantic?: string;
+  /** 関数パラメータのHLSL修飾子。 */
+  qualifier?: 'in' | 'out' | 'inout' | 'uniform';
   parentName?: string;
   children: ShaderSymbol[];
 }

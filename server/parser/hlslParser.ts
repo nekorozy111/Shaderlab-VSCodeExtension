@@ -458,6 +458,7 @@ export class HlslParser {
   private parseParameter(): HlslParameterNode | undefined {
     const startIndex = this.index;
     const qualifierTokens: Token[] = [];
+    let qualifier: HlslParameterNode['qualifier'];
     while (
       this.checkIdentifier('in') ||
       this.checkIdentifier('out') ||
@@ -465,7 +466,11 @@ export class HlslParser {
       this.checkIdentifier('const') ||
       this.checkIdentifier('uniform')
     ) {
-      qualifierTokens.push(this.current());
+      const token = this.current();
+      qualifierTokens.push(token);
+      if (token.value === 'in' || token.value === 'out' || token.value === 'inout' || token.value === 'uniform') {
+        qualifier = token.value;
+      }
       this.advance();
     }
 
@@ -500,6 +505,7 @@ export class HlslParser {
       kind: 'HlslParameter',
       typeName: typeToken.value,
       name: nameToken.value,
+      qualifier,
       semantic,
       semanticRange,
       range: {
