@@ -7,6 +7,7 @@ import {
   HlslMacroNode,
   HlslParameterNode,
   HlslStructNode,
+  HlslTypedefNode,
   HlslVariableNode,
 } from './ast';
 import { SourcePosition, SourceRange, Token } from './token';
@@ -73,6 +74,11 @@ export class HlslParser {
       return declaration ? [declaration] : [];
     }
 
+    if (this.checkIdentifier('typedef')) {
+      const declaration = this.parseTypedef();
+      return declaration ? [declaration] : [];
+    }
+
     if (this.checkIdentifier('struct')) {
       const declaration = this.parseStruct();
       return declaration ? [declaration] : [];
@@ -88,6 +94,38 @@ export class HlslParser {
       return [parsed.function];
     }
     return parsed.variables;
+  }
+
+  private parseTypedef(): HlslTypedefNode | undefined {
+    const start = this.current().range.start;
+    this.advance();
+
+    // typedefの対象型と別名を解析する。
+    const typeToken = this.parseTypeName();
+    if (!typeToken || this.current().kind !== 'identifier') {
+      return undefined;
+    }
+
+    const nameToken = this.current();
+    this.advance();
+    let end = nameToken.range.end;
+
+    // 配列typedefなどの末尾をセミコロンまで消費する。
+    while (!this.isAtEnd() && !this.checkValue(';')) {
+      end = this.current().range.end;
+      this.advance();
+    }
+    if (this.checkValue(';')) {
+      end = this.current().range.end;
+      this.advance();
+    }
+
+    return {
+      kind: 'HlslTypedef',
+      name: nameToken.value,
+      typeName: typeToken.value,
+      range: { start, end },
+    };
   }
 
   private parsePreprocessor(): HlslDeclarationNode | undefined {

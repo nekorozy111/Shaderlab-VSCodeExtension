@@ -697,7 +697,14 @@ export class DiagnosticProvider {
     const result: SymbolInfo[] = [];
     const visitHlsl = (hlsl: HlslDocumentNode): void => {
       for (const declaration of hlsl.declarations) {
-        if (declaration.kind === 'HlslVariable') {
+        if (declaration.kind === 'HlslTypedef') {
+          result.push({
+            name: declaration.name,
+            typeName: declaration.typeName,
+            kind: 'typedef',
+            range: declaration.range,
+          });
+        } else if (declaration.kind === 'HlslVariable') {
           result.push({
             name: declaration.name,
             typeName: declaration.typeName,
@@ -866,7 +873,9 @@ export class DiagnosticProvider {
     return (
       this.builtinTypes.has(name) ||
       structs.has(name.toLowerCase()) ||
-      this.documentManager.findExactInRelated(uri, name).some((match) => match.symbol.kind === 'struct')
+      this.documentManager
+        .findExactInRelated(uri, name)
+        .some((match) => match.symbol.kind === 'struct' || match.symbol.kind === 'typedef')
     );
   }
 

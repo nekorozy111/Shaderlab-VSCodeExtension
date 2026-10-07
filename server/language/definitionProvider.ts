@@ -307,6 +307,46 @@ export class DefinitionProvider {
     return this.toLocation(selected);
   }
 
+  /**
+   * ShaderLab Property行のうち、Property名以外の構文部分かどうかを判定する。
+   *
+   *   _Color ("Color", Color) = (1,1,1,1)
+   *   ^^^^^ だけをSymbolとして扱い、それ以外はHLSL Symbol検索を行わない。
+   */
+  public isShaderPropertySyntaxAtPosition(uri: string, position: Position): boolean {
+    const document = this.documentManager.get(uri);
+    const parsed = this.documentManager.getParsed(uri);
+    if (!document || !parsed || !isShaderLabDocument(parsed.uri, parsed.languageId)) {
+      return false;
+    }
+
+    const ast = parsed.ast as ShaderDocumentNode;
+    if (!ast?.properties) {
+      return false;
+    }
+
+    const offset = document.offsetAt(position);
+    const text = document.getText();
+    for (const property of ast.properties) {
+      if (offset < property.range.start.offset || offset > property.range.end.offset) {
+        continue;
+      }
+
+      // Property名自身の範囲だけは、通常のProperty Symbol解決を許可する。
+      const propertyText = text.slice(property.range.start.offset, property.range.end.offset);
+      const nameOffset = propertyText.indexOf(property.name);
+      if (nameOffset < 0) {
+        return true;
+      }
+
+      const nameStart = property.range.start.offset + nameOffset;
+      const nameEnd = nameStart + property.name.length;
+      return offset < nameStart || offset > nameEnd;
+    }
+
+    return false;
+  }
+
   public resolveSymbolAtPosition(uri: string, position: Position): ShaderSymbol | null {
     const document = this.documentManager.get(uri);
     if (!document) {
@@ -835,9 +875,14 @@ export class DefinitionProvider {
     const localStruct = this.findStructNodeInContext(rootUri, normalizedType, usageOffset);
     if (localStruct) {
       const localField = localStruct.fields.find((field) => field.name.toLowerCase() === normalizedMember);
-      if (localField) {
-        return this.toShaderSymbolField(rootUri, localStruct.name, localField);
-      }
+      // 型が現在のコンテキストで確定している場合、同名の別Structへフォールバックしない。
+      // これにより `data.missing` のHover/F12が別Structの同名fieldへ誤解決されるのを防ぐ。
+      return localField ? this.toShaderSymbolField(rootUri, localStruct.name, localField) : null;
+    }
+
+    const typedef = this.findTypedefType(rootUri, normalizedType);
+    if (typedef && typedef !== normalizedType) {
+      return this.findStructField(typedef, memberName, rootUri, usageOffset);
     }
 
     const structMatches = this.documentManager.findByKindInRelated(rootUri, normalizedType, 'struct');
@@ -865,19 +910,22 @@ export class DefinitionProvider {
       ...structMatches.filter((match) => match.symbol.location.uri === rootUri),
       ...structMatches.filter((match) => match.symbol.location.uri !== rootUri),
     ];
-    for (const match of orderedMatches) {
-      const struct = match.symbol;
-      const field = struct.children.find(
-        (child) => child.kind === 'field' && child.name.toLowerCase() === normalizedMember,
-      );
-      if (!field) {
-        continue;
-      }
-
-      return field;
+    const selectedStruct = orderedMatches[0]?.symbol;
+    if (!selectedStruct) {
+      return null;
     }
 
-    return null;
+    const field = selectedStruct.children.find(
+      (child) => child.kind === 'field' && child.name.toLowerCase() === normalizedMember,
+    );
+    return field ?? null;
+  }
+
+  private findTypedefType(rootUri: string, typeName: string): string | null {
+    const match = this.documentManager
+      .findExactInRelated(rootUri, typeName)
+      .find((candidate) => candidate.symbol.kind === 'typedef');
+    return match?.symbol.typeName ?? null;
   }
 
   private findStructNodeInContext(

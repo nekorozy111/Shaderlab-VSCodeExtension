@@ -53,6 +53,24 @@ export class HoverProvider {
       return null;
     }
 
+    // ShaderLab Propertyの表示名・型・既定値などはSymbolではない。
+    // ここで通常のHLSL Symbol検索へ進ませないことで、同名Struct等への誤Hoverを防ぐ。
+    if (this.definitionProvider.isShaderPropertySyntaxAtPosition(uri, position)) {
+      return null;
+    }
+
+    // メンバーアクセスでは、解決できた型のメンバーだけをHover対象にする。
+    // 解決失敗時に名前だけでWorkspace検索すると、別Structの同名fieldを誤表示するため、
+    // member accessのときは通常のinclude/global fallbackへ進ませない。
+    const memberAccess = this.getMemberAccessAtPosition(text, offset);
+    if (memberAccess && !this.isHlslSwizzle(memberAccess.memberName)) {
+      const resolved = this.definitionProvider.resolveSymbolAtPosition(uri, position);
+      if (!resolved) {
+        return null;
+      }
+      return { contents: this.createHoverContents(resolved, uri) };
+    }
+
     /*
      * ---------------------------------------------------------
      * コメント内では Hover を表示しない
@@ -269,6 +287,40 @@ export class HoverProvider {
       .join(', ');
 
     return `${symbol.name}(${parameters})`;
+  }
+
+  private getMemberAccessAtPosition(text: string, offset: number): { objectName: string; memberName: string } | null {
+    const isIdentifierCharacter = (char: string): boolean => /[A-Za-z0-9_]/.test(char);
+    let memberStart = offset;
+    while (memberStart > 0 && isIdentifierCharacter(text[memberStart - 1])) {
+      memberStart--;
+    }
+    let memberEnd = offset;
+    while (memberEnd < text.length && isIdentifierCharacter(text[memberEnd])) {
+      memberEnd++;
+    }
+    if (memberStart === memberEnd) return null;
+
+    let dotOffset = memberStart;
+    while (dotOffset > 0 && /\s/.test(text[dotOffset - 1])) dotOffset--;
+    if (dotOffset <= 0 || text[dotOffset - 1] !== '.') return null;
+    dotOffset--;
+
+    let objectEnd = dotOffset;
+    while (objectEnd > 0 && /\s/.test(text[objectEnd - 1])) objectEnd--;
+    let objectStart = objectEnd;
+    while (objectStart > 0 && isIdentifierCharacter(text[objectStart - 1])) objectStart--;
+    if (objectStart === objectEnd) return null;
+
+    return {
+      objectName: text.substring(objectStart, objectEnd),
+      memberName: text.substring(memberStart, memberEnd),
+    };
+  }
+
+  private isHlslSwizzle(name: string): boolean {
+    if (name.length < 1 || name.length > 4) return false;
+    return [...name.toLowerCase()].every((character) => 'xyzwrgba'.includes(character));
   }
 
   private getWordAtPosition(text: string, offset: number): string | null {

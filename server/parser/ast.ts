@@ -43,6 +43,12 @@ export interface HlslFunctionNode extends AstNode {
   locals: HlslVariableNode[];
 }
 
+export interface HlslTypedefNode extends AstNode {
+  kind: 'HlslTypedef';
+  name: string;
+  typeName: string;
+}
+
 export interface HlslIncludeNode extends AstNode {
   kind: 'HlslInclude';
   path: string;
@@ -64,6 +70,7 @@ export type HlslDeclarationNode =
   | HlslStructNode
   | HlslFunctionNode
   | HlslVariableNode
+  | HlslTypedefNode
   | HlslIncludeNode
   | HlslMacroNode
   | HlslCBufferNode;

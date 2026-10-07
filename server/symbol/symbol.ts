@@ -12,7 +12,8 @@ export type SymbolKind =
   | 'variable'
   | 'cbuffer'
   | 'macro'
-  | 'include';
+  | 'include'
+  | 'typedef';
 export interface SymbolLocation {
   uri: string;
   range: SourceRange;

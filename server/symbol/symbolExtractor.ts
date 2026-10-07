@@ -6,6 +6,7 @@ import {
   HlslIncludeNode,
   HlslMacroNode,
   HlslStructNode,
+  HlslTypedefNode,
   HlslVariableNode,
   ParsedDocument,
   ShaderDocumentNode,
@@ -164,11 +165,26 @@ export class SymbolExtractor {
         return this.extractMacro(declaration, uri);
       case 'HlslInclude':
         return this.extractInclude(declaration, uri);
+      case 'HlslTypedef':
+        return this.extractTypedef(declaration, uri);
       default:
         return undefined;
     }
   }
 
+  private extractTypedef(node: HlslTypedefNode, uri: string): ShaderSymbol {
+    return {
+      name: node.name,
+      kind: 'typedef',
+      location: {
+        uri,
+        range: node.range,
+        selectionRange: node.range,
+      },
+      typeName: node.typeName,
+      children: [],
+    };
+  }
   private extractStruct(node: HlslStructNode, uri: string): ShaderSymbol {
     const children: ShaderSymbol[] = [];
     for (const field of node.fields) {
