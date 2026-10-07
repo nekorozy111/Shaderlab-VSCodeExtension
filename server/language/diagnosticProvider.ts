@@ -163,6 +163,26 @@ export class DiagnosticProvider {
     'false',
     'SamplerState',
     'SamplerComparisonState',
+    // Unity/ShaderLabのHLSLブロック・CBUFFER用マクロ。
+    'HLSLPROGRAM',
+    'ENDHLSL',
+    'CGPROGRAM',
+    'ENDCG',
+    'CBUFFER_START',
+    'CBUFFER_END',
+    'UNITY_BRANCH',
+    'UNITY_FLATTEN',
+    'UNITY_UNROLL',
+    'UNITY_LOOP',
+    'UNITY_VERTEX_INPUT_INSTANCE_ID',
+    'UNITY_SETUP_INSTANCE_ID',
+    'UNITY_TRANSFER_INSTANCE_ID',
+    'UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO',
+    'UNITY_VERTEX_OUTPUT_STEREO',
+    'UNITY_DECLARE_TEX2D',
+    'UNITY_DECLARE_TEX3D',
+    'UNITY_DECLARE_TEXCUBE',
+    'UNITY_DECLARE_TEX2DARRAY',
   ]);
 
   // HLSL/Unityで頻出する組み込み関数。外部ヘッダーを開いていない場合でも誤警告しない。
@@ -315,17 +335,19 @@ export class DiagnosticProvider {
         continue;
       }
 
-      if (next?.value === '(') {
-        this.checkFunctionCall(uri, token, tokens, i, add);
-        continue;
-      }
-
+      // float4(...)などの組み込み型コンストラクタは関数呼び出しではない。
+      // 型名判定を関数呼び出し判定より先に行う。
       if (
         this.isTypeName(uri, token.value, structs) ||
         this.isSemantic(token.value) ||
         this.builtinFunctions.has(token.value) ||
         this.keywords.has(token.value)
       ) {
+        continue;
+      }
+
+      if (next?.value === '(') {
+        this.checkFunctionCall(uri, token, tokens, i, add);
         continue;
       }
 
