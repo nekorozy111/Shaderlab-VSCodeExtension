@@ -40,7 +40,11 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
   private readonly changed = new vscode.EventEmitter<void>();
   public readonly onDidChangeTreeData = this.changed.event;
   private readonly childrenCache = new Map<string, vscode.Uri[]>();
-  private readonly rootCache = new Map<string, vscode.Uri[]>();
+  private readonly rootCache = new Map<string, { activePath: string; roots: vscode.Uri[] }>();
+  private readonly projectRootCache = new Map<string, string | undefined>();
+  private readonly packageCacheEntries = new Map<string, string[]>();
+  private readonly maxChildrenCacheEntries = 512;
+  private rootSearchGeneration = 0;
   // パスの比較には小文字化したキーを使い、実際のパス表記は保持する。
   private selectedRootPath: string | undefined;
 
@@ -63,6 +67,7 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
   }
 
   public async reconcileActiveRoot(): Promise<string | undefined> {
+    const generation = ++this.rootSearchGeneration;
     const active = vscode.window.activeTextEditor?.document.uri;
     if (!active || active.scheme !== 'file') return undefined;
     const current = this.selectedRootPath;
@@ -72,8 +77,9 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
       if (await this.containsFile(currentUri, active, new Set())) return undefined;
     }
     const roots = await this.findRoots();
+    if (generation !== this.rootSearchGeneration) return undefined;
     const next = roots[0];
-    if (next && next.fsPath.toLowerCase() !== current) {
+    if (next && (!current || this.pathKey(next.fsPath) !== this.pathKey(current))) {
       this.selectedRootPath = next.fsPath;
       return next.toString();
     }
@@ -91,9 +97,15 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
     return false;
   }
 
-  public refresh(): void {
-    this.childrenCache.clear();
+  public refresh(invalidateIncludes = false): void {
+    // 通常の表示更新ではinclude解析結果を再利用し、明示更新や保存時だけ無効化する。
+    this.rootSearchGeneration++;
     this.rootCache.clear();
+    if (invalidateIncludes) {
+      this.childrenCache.clear();
+      this.packageCacheEntries.clear();
+      this.projectRootCache.clear();
+    }
     this.changed.fire();
   }
 
@@ -106,7 +118,9 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
       return [];
     }
     if (!item) {
+      const generation = this.rootSearchGeneration;
       const roots = await this.findRoots();
+      if (generation !== this.rootSearchGeneration) return [];
       const items: IncludeTreeItem[] = [];
       for (const uri of roots) {
         const children = await this.readIncludes(uri);
@@ -172,6 +186,8 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
     }
 
     const activePath = active.fsPath.toLowerCase();
+    const cachedRoots = this.rootCache.get(activePath);
+    if (cachedRoots && cachedRoots.activePath === activePath) return cachedRoots.roots;
     // タブ情報からアクティブファイルを取得できない場合でも、開いているファイル自身をroot候補として扱う。
     // そのファイルがincludeしている子ファイルのツリーを表示できるよう、ここでは早期returnしない。
 
@@ -222,11 +238,15 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
       const selected = vscode.Uri.file(this.selectedRootPath);
       if (await this.containsFile(selected, active, new Set())) {
         const selectedKey = this.pathKey(this.selectedRootPath);
-        return [selected, ...roots.filter((root) => this.pathKey(root.fsPath) !== selectedKey)];
+        const ordered = [selected, ...roots.filter((root) => this.pathKey(root.fsPath) !== selectedKey)];
+        this.rootCache.set(activePath, { activePath, roots: ordered });
+        return ordered;
       }
     }
     // include祖先がないファイルは、そのファイル自身をrootにして子includeを表示する。
-    return roots.length > 0 ? roots : [active];
+    const result = roots.length > 0 ? roots : [active];
+    this.rootCache.set(activePath, { activePath, roots: result });
+    return result;
   }
 
   private isPackageCachePath(uri: vscode.Uri): boolean {
@@ -234,8 +254,12 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
   }
 
   private async readIncludes(uri: vscode.Uri): Promise<vscode.Uri[]> {
-    const cached = this.childrenCache.get(uri.fsPath);
+    const cacheKey = this.pathKey(uri.fsPath);
+    const cached = this.childrenCache.get(cacheKey);
     if (cached) {
+      // LRUとして最近使ったエントリーを末尾へ移動する。
+      this.childrenCache.delete(cacheKey);
+      this.childrenCache.set(cacheKey, cached);
       return cached;
     }
     let source = '';
@@ -257,11 +281,25 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
       // UnityプロジェクトのAssets配下などを開いている場合も、親ディレクトリを遡ってPackagesを探す。
       let parent = path.dirname(uri.fsPath);
       let projectRoot: string | undefined;
+      // Unityプロジェクトルートは同じディレクトリ階層について一度だけ探索する。
+      const workspaceKey = (vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath ?? parent).toLowerCase();
+      if (this.projectRootCache.has(workspaceKey)) {
+        projectRoot = this.projectRootCache.get(workspaceKey);
+      } else {
+        while (true) {
+          if (fsSync.existsSync(path.join(parent, 'Assets')) && fsSync.existsSync(path.join(parent, 'ProjectSettings'))) {
+            projectRoot = parent;
+            break;
+          }
+          const next = path.dirname(parent);
+          if (next === parent) break;
+          parent = next;
+        }
+        this.projectRootCache.set(workspaceKey, projectRoot);
+      }
+      parent = path.dirname(uri.fsPath);
       while (true) {
         candidates.push(path.resolve(parent, includePath));
-        if (fsSync.existsSync(path.join(parent, 'Assets')) && fsSync.existsSync(path.join(parent, 'ProjectSettings'))) {
-          projectRoot = parent;
-        }
         const next = path.dirname(parent);
         if (next === parent) break;
         parent = next;
@@ -278,9 +316,17 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
           const remainder = packageMatch[2];
           const packageCache = path.join(projectRoot, 'Library', 'PackageCache');
           try {
-            for (const entry of fsSync.readdirSync(packageCache, { withFileTypes: true })) {
-              if (entry.isDirectory() && (entry.name === packageName || entry.name.startsWith(`${packageName}@`))) {
-                candidates.push(path.join(packageCache, entry.name, remainder));
+            const packageKey = packageCache.toLowerCase();
+            let entries = this.packageCacheEntries.get(packageKey);
+            if (!entries) {
+              entries = fsSync.readdirSync(packageCache, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => entry.name);
+              this.packageCacheEntries.set(packageKey, entries);
+            }
+            for (const entryName of entries) {
+              if (entryName === packageName || entryName.startsWith(`${packageName}@`)) {
+                candidates.push(path.join(packageCache, entryName, remainder));
               }
             }
           } catch {
@@ -299,7 +345,12 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
         result.push(vscode.Uri.file(found));
       }
     }
-    this.childrenCache.set(uri.fsPath, result);
+    this.childrenCache.set(cacheKey, result);
+    while (this.childrenCache.size > this.maxChildrenCacheEntries) {
+      const oldestKey = this.childrenCache.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.childrenCache.delete(oldestKey);
+    }
     return result;
   }
 }
@@ -322,7 +373,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     await setAnalysisRoot(savedRoot);
   }
   context.subscriptions.push(
-    vscode.commands.registerCommand('urpShaderLab.refreshIncludeTree', () => includeTree.refresh()),
+    vscode.commands.registerCommand('urpShaderLab.refreshIncludeTree', () => includeTree.refresh(true)),
   );
   // タブの開閉や切り替えに合わせて root 候補を更新する
   context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(() => includeTree.refresh()));
@@ -336,7 +387,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       includeTree.refresh();
     }),
   );
-  context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(() => includeTree.refresh()));
+  context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(() => includeTree.refresh(true)));
+  context.subscriptions.push(vscode.workspace.onDidCreateFiles(() => includeTree.refresh(true)));
+  context.subscriptions.push(vscode.workspace.onDidDeleteFiles(() => includeTree.refresh(true)));
+  context.subscriptions.push(vscode.workspace.onDidRenameFiles(() => includeTree.refresh(true)));
   context.subscriptions.push(
     vscode.commands.registerCommand('urpShaderLab.selectAnalysisRoot', async (item?: IncludeTreeItem) => {
       const selected = item?.rootUri ?? item?.uri;
