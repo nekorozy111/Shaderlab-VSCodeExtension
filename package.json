@@ -70,6 +70,18 @@
       {
         "command": "urpShaderLab.showMemoryStats",
         "title": "URP ShaderLab Tools: Show Memory Stats"
+      },
+      {
+        "command": "urpShaderLab.selectAnalysisRoot",
+        "title": "rootを選択"
+      },
+      {
+        "command": "urpShaderLab.clearAnalysisRoot",
+        "title": "rootを解除"
+      },
+      {
+        "command": "urpShaderLab.refreshIncludeTree",
+        "title": "ShaderLab: Include Treeを更新"
       }
     ],
     "configuration": {
@@ -205,6 +217,28 @@
           }
         }
       }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "urpShaderLab.includeTree",
+          "name": "ShaderLab Include Roots"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "urpShaderLab.selectAnalysisRoot",
+          "when": "view == urpShaderLab.includeTree",
+          "group": "inline@1"
+        },
+        {
+          "command": "urpShaderLab.refreshIncludeTree",
+          "when": "view == urpShaderLab.includeTree",
+          "group": "navigation"
+        }
+      ]
     }
   },
   "scripts": {

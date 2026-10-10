@@ -76,3 +76,10 @@ export async function requestMemoryStats(): Promise<Record<string, unknown> | un
 
   return client.sendRequest<Record<string, unknown>>('urpShaderLab/memoryStats');
 }
+
+export async function setAnalysisRoot(uri: string | undefined): Promise<void> {
+  if (client === undefined) {
+    return;
+  }
+  await client.sendRequest('urpShaderLab/setAnalysisRoot', { uri });
+}

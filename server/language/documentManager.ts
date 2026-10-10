@@ -20,6 +20,21 @@ type LocalFunctionIndex = {
 };
 
 export class DocumentManager {
+  private selectedAnalysisRootUri: string | undefined;
+
+  public setSelectedAnalysisRoot(uri: string | undefined): void {
+    this.selectedAnalysisRootUri = uri;
+    if (uri) {
+      // rootを選び直したときは、以前の一時的な解析待ちや古いinclude graphを再利用せず、
+      // 最新のDocument/ファイル配置から構成を作り直す。
+      this.invalidateRootIncludeCache(uri);
+    }
+  }
+
+  public getSelectedAnalysisRoot(): string | undefined {
+    return this.selectedAnalysisRootUri;
+  }
+
   private readonly documents = new Map<string, TextDocument>();
   private readonly parsedDocuments = new Map<string, ParsedDocument>();
   /** 関数単位のローカルシンボル索引。Completion/Hover時のAST全走査を避ける。 */
@@ -295,28 +310,15 @@ export class DocumentManager {
    */
   public findExactInRelated(rootUri: string, name: string): SymbolMatch[] {
     const relatedUris = this.getRelatedIncludeUris(rootUri);
-    const globalMatches = this.workspaceIndex.findExact(name);
-    // 同名symbolが少ない場合はWorkspace index側の検索が最も安い。
-    // 関連Documentが非常に少ない場合だけURI側を直接走査する。
-    const relatedSymbolCount = this.workspaceIndex.getDocumentSymbolCount(relatedUris);
-    if (relatedSymbolCount < globalMatches.length) {
-      return this.workspaceIndex.findExactInUris(name, relatedUris);
-    }
-
-    return globalMatches.filter((match) => relatedUris.has(match.uri));
+    const relatedKeys = new Set(Array.from(relatedUris, (uri) => this.uriComparisonKey(uri)));
+    // Windowsのfile URIは大文字・小文字を区別しないため、解析対象のURI比較も同じ規則にする。
+    return this.workspaceIndex.findExact(name).filter((match) => relatedKeys.has(this.uriComparisonKey(match.uri)));
   }
 
   public findPrefixInRelated(rootUri: string, prefix: string): SymbolMatch[] {
     const relatedUris = this.getRelatedIncludeUris(rootUri);
-    const globalMatches = this.workspaceIndex.findPrefix(prefix);
-    const relatedSymbolCount = this.workspaceIndex.getDocumentSymbolCount(relatedUris);
-    // PackageCache全体に対するprefix候補が大量でも、現在のShaderが
-    // 少数のincludeだけを持つなら、そのincludeだけを走査した方が速い。
-    if (relatedSymbolCount < globalMatches.length) {
-      return this.workspaceIndex.findPrefixInUris(prefix, relatedUris);
-    }
-
-    return globalMatches.filter((match) => relatedUris.has(match.uri));
+    const relatedKeys = new Set(Array.from(relatedUris, (uri) => this.uriComparisonKey(uri)));
+    return this.workspaceIndex.findPrefix(prefix).filter((match) => relatedKeys.has(this.uriComparisonKey(match.uri)));
   }
 
   public findByKindInRelated(
@@ -325,13 +327,10 @@ export class DocumentManager {
     kind: Parameters<WorkspaceIndex['findByKind']>[1],
   ): SymbolMatch[] {
     const relatedUris = this.getRelatedIncludeUris(rootUri);
-    const globalMatches = this.workspaceIndex.findByKind(name, kind);
-    const relatedSymbolCount = this.workspaceIndex.getDocumentSymbolCount(relatedUris);
-    if (relatedSymbolCount < globalMatches.length) {
-      return this.workspaceIndex.findExactInUris(name, relatedUris).filter((match) => match.symbol.kind === kind);
-    }
-
-    return globalMatches.filter((match) => relatedUris.has(match.uri));
+    const relatedKeys = new Set(Array.from(relatedUris, (uri) => this.uriComparisonKey(uri)));
+    return this.workspaceIndex
+      .findByKind(name, kind)
+      .filter((match) => relatedKeys.has(this.uriComparisonKey(match.uri)));
   }
 
   public has(uri: string): boolean {
@@ -538,6 +537,23 @@ export class DocumentManager {
   }
 
   public async prepareRelatedIncludeUris(rootUri: string): Promise<void> {
+    // 選択されたrootのinclude構成を、現在編集中のファイルの解析スコープとして使う。
+    const hasSelectedRoot = this.selectedAnalysisRootUri !== undefined;
+    rootUri = this.selectedAnalysisRootUri ?? rootUri;
+
+    // rootが開いているのに解析待ちの場合、外部ファイルとして古い内容を読むのではなく、
+    // 開いているTextDocumentの最新versionを解析してからinclude graphを構築する。
+    const openRootDocument = this.documents.get(rootUri);
+    if (openRootDocument) {
+      const parsedRoot = this.parsedDocuments.get(rootUri);
+      if (!parsedRoot || this.parsingVersions.get(rootUri) !== openRootDocument.version) {
+        await this.update(openRootDocument);
+      }
+    } else if (hasSelectedRoot) {
+      // 未オープンのrootもディスクから読み込み、include graphを構築できるようにする。
+      await this.ensureExternalDocument(rootUri);
+    }
+
     if (this.relatedIncludeUrisCache.has(rootUri)) {
       return;
     }
@@ -580,9 +596,10 @@ export class DocumentManager {
 
     const rootDocument = this.documents.get(rootUri);
     const preparationGeneration = this.getIncludePreparationGeneration(rootUri);
-    const parsed = this.getParsed(rootUri);
+    const parsed = this.getParsed(rootUri) ?? this.externalDocuments.get(rootUri);
     if (!parsed) {
-      this.relatedIncludeUrisCache.set(rootUri, new Set([rootUri]));
+      // 一時的な解析待ちを空のinclude graphとしてキャッシュすると、後から警告が残り続ける。
+      // キャッシュせずに戻し、次のlanguage requestで再試行できるようにする。
       return;
     }
 
@@ -743,7 +760,17 @@ export class DocumentManager {
     return range.start.offset <= offset && offset <= range.end.offset;
   }
 
+  private uriComparisonKey(uri: string): string {
+    // URIの表記は保持し、ファイルURIを検索時にだけ大文字・小文字を無視して比較する。
+    if (!uri.toLowerCase().startsWith('file:')) {
+      return uri;
+    }
+    return uri.toLowerCase();
+  }
+
   public getRelatedIncludeUris(rootUri: string): Set<string> {
+    // root選択中は、直接includeされていないファイルからもroot配下のSymbolを参照可能にする。
+    rootUri = this.selectedAnalysisRootUri ?? rootUri;
     const cachedRelatedUris = this.relatedIncludeUrisCache.get(rootUri);
     if (cachedRelatedUris) {
       return cachedRelatedUris;

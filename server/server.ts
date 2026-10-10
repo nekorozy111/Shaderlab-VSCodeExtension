@@ -178,7 +178,7 @@ connection.onCompletion(async (params) => {
     return cached;
   }
 
-  const result = completionProvider.provideCompletion(uri, params.position);
+  const result = await completionProvider.provideCompletion(uri, params.position);
   setCachedRequest(key, version, result);
   return result;
 });
@@ -262,6 +262,23 @@ documents.onDidClose((event) => {
   documentManager.close(event.document);
 });
 connection.onRequest('urpShaderLab/memoryStats', () => documentManager.getMemoryStats());
+connection.onRequest('urpShaderLab/setAnalysisRoot', async (params: { uri?: string }) => {
+  documentManager.setSelectedAnalysisRoot(params?.uri);
+  if (params?.uri) {
+    await documentManager.prepareRelatedIncludeUris(params.uri);
+  }
+  invalidateRequestCache();
+  for (const document of documents.all()) {
+    connection.sendDiagnostics({
+      uri: document.uri,
+      diagnostics: diagnosticProvider.provideDiagnostics(document.uri),
+    });
+  }
+  return { uri: params?.uri ?? null };
+});
+connection.onRequest('urpShaderLab/getAnalysisRoot', () => ({
+  uri: documentManager.getSelectedAnalysisRoot() ?? null,
+}));
 
 connection.onShutdown(() => {
   for (const timer of pendingDocumentUpdates.values()) {
