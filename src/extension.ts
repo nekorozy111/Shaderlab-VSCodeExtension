@@ -166,87 +166,162 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
     return items;
   }
 
+  private removeComments(source: string): string {
+    // コメント内のincludeを誤認しないよう、文字列リテラルを維持してコメントだけを空白化する。
+    let result = '';
+    let state: 'code' | 'line' | 'block' | 'string' = 'code';
+    let quote = '';
+    let escaped = false;
+    for (let i = 0; i < source.length; i++) {
+      const current = source[i];
+      const next = source[i + 1];
+      if (state === 'line') {
+        if (current === '\n') {
+          result += '\n';
+          state = 'code';
+        } else {
+          result += ' ';
+        }
+        continue;
+      }
+      if (state === 'block') {
+        if (current === '*' && next === '/') {
+          result += '  ';
+          i++;
+          state = 'code';
+        } else {
+          result += current === '\n' ? '\n' : ' ';
+        }
+        continue;
+      }
+      if (state === 'string') {
+        result += current;
+        if (escaped) escaped = false;
+        else if (current === '\\') escaped = true;
+        else if (current === quote) state = 'code';
+        continue;
+      }
+      if (current === '"' || current === "'") {
+        quote = current;
+        state = 'string';
+        result += current;
+      } else if (current === '/' && next === '/') {
+        result += '  ';
+        i++;
+        state = 'line';
+      } else if (current === '/' && next === '*') {
+        result += '  ';
+        i++;
+        state = 'block';
+      } else {
+        result += current;
+      }
+    }
+    return result;
+  }
+
   private async findRoots(): Promise<vscode.Uri[]> {
-    // 現在アクティブなファイルを含む、開いているファイルだけをroot候補にする
+    // 開いているタブに依存せず、ワークスペース内のソースからincludeグラフを構築する。
     const active = vscode.window.activeTextEditor?.document.uri;
-    if (!active || active.scheme !== 'file') {
-      return [];
-    }
+    if (!active || active.scheme !== 'file') return [];
 
-    const extensions = new Set(['.hlsl', '.hlsli', '.cginc', '.compute', '.shader']);
-    const openFiles = new Map<string, vscode.Uri>();
-    for (const group of vscode.window.tabGroups.all) {
-      for (const tab of group.tabs) {
-        const input = tab.input as { uri?: vscode.Uri; modified?: vscode.Uri } | undefined;
-        const uri = input?.uri ?? input?.modified;
-        if (uri?.scheme === 'file' && extensions.has(path.extname(uri.fsPath).toLowerCase())) {
-          openFiles.set(uri.fsPath.toLowerCase(), uri);
+    const extensions = new Set(['.shader', '.hlsl', '.hlsli', '.cginc', '.compute']);
+    const excluded = new Set([
+      '.git',
+      '.svn',
+      '.hg',
+      'node_modules',
+      'Library',
+      'Temp',
+      'Obj',
+      'Logs',
+      'Build',
+      'Builds',
+      '.vs',
+    ]);
+    const files = new Map<string, vscode.Uri>();
+
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const pending = [folder.uri.fsPath];
+      while (pending.length > 0) {
+        const directory = pending.pop()!;
+        let entries: import('fs').Dirent[];
+        try {
+          entries = (await fs.readdir(directory, { withFileTypes: true })) as import('fs').Dirent[];
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          if (excluded.has(entry.name)) continue;
+          const fullPath = path.join(directory, entry.name);
+          if (entry.isDirectory()) {
+            pending.push(fullPath);
+          } else if (entry.isFile() && extensions.has(path.extname(entry.name).toLowerCase())) {
+            files.set(this.pathKey(fullPath), vscode.Uri.file(fullPath));
+          }
         }
       }
     }
 
-    const activePath = active.fsPath.toLowerCase();
-    const cachedRoots = this.rootCache.get(activePath);
-    if (cachedRoots && cachedRoots.activePath === activePath) return cachedRoots.roots;
-    // タブ情報からアクティブファイルを取得できない場合でも、開いているファイル自身をroot候補として扱う。
-    // そのファイルがincludeしている子ファイルのツリーを表示できるよう、ここでは早期returnしない。
+    const activeKey = this.pathKey(active.fsPath);
+    if (!files.has(activeKey)) files.set(activeKey, active);
 
-    // includeの推移的な到達関係を調べ、アクティブファイルの祖先だけを候補に残す
-    const memo = new Map<string, boolean>();
-    const reachesActive = async (uri: vscode.Uri, visiting: Set<string>): Promise<boolean> => {
-      const key = uri.fsPath.toLowerCase();
-      if (key === activePath) return true;
-      if (visiting.has(key)) return false;
-      const cached = memo.get(key);
-      if (cached !== undefined) return cached;
-      const nextVisiting = new Set(visiting);
-      nextVisiting.add(key);
-      for (const child of await this.readIncludes(uri)) {
-        if (await reachesActive(child, nextVisiting)) {
-          memo.set(key, true);
-          return true;
-        }
+    // 各ファイルが参照するincludeを一度ずつ解決し、参照先集合を作る。
+    const referenced = new Set<string>();
+    const graph = new Map<string, vscode.Uri[]>();
+    await Promise.all(
+      Array.from(files.values()).map(async (file) => {
+        const children = await this.readIncludes(file);
+        graph.set(this.pathKey(file.fsPath), children);
+        for (const child of children) referenced.add(this.pathKey(child.fsPath));
+      }),
+    );
+
+    // 他のソースから参照されていないファイルのうち、includeを持つものをroot候補にする。
+    // これによりincludeファイル自体がrootとして重複表示されるのを抑制する。
+    let roots = Array.from(files.values()).filter((file) => {
+      const key = this.pathKey(file.fsPath);
+      return !referenced.has(key) && (graph.get(key)?.length ?? 0) > 0;
+    });
+
+    // 現在のファイルがincludeグラフに属している場合は、その祖先rootだけに絞り込む。
+    const reaches = async (root: vscode.Uri, targetKey: string, seen: Set<string>): Promise<boolean> => {
+      const key = this.pathKey(root.fsPath);
+      if (key === targetKey) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      for (const child of graph.get(key) ?? []) {
+        if (await reaches(child, targetKey, seen)) return true;
       }
-      memo.set(key, false);
       return false;
     };
-
-    const ancestors: vscode.Uri[] = [];
-    for (const file of openFiles.values()) {
-      if (file.fsPath.toLowerCase() !== activePath && (await reachesActive(file, new Set()))) {
-        ancestors.push(file);
-      }
+    const activeRoots: vscode.Uri[] = [];
+    for (const root of roots) {
+      if (await reaches(root, activeKey, new Set())) activeRoots.push(root);
     }
 
-    // 候補同士で親子関係がある場合は最上位だけを表示し、ツリーで全構造を確認できるようにする
-    const ancestorPaths = new Set(ancestors.map((uri) => uri.fsPath.toLowerCase()));
-    const nested = new Set<string>();
-    for (const file of ancestors) {
-      for (const child of await this.readIncludes(file)) {
-        if (ancestorPaths.has(child.fsPath.toLowerCase())) {
-          nested.add(child.fsPath.toLowerCase());
-        }
+    if (activeRoots.length > 0) roots = activeRoots;
+    else if (graph.get(activeKey)?.length) roots = [active];
+    else {
+      // アクティブファイルが別rootから参照されるincludeなら、そのrootを候補にする。
+      const parents: vscode.Uri[] = [];
+      for (const file of files.values()) {
+        if (await reaches(file, activeKey, new Set())) parents.push(file);
       }
+      roots = parents.length > 0 ? parents : [active];
     }
-    const roots = ancestors
-      .filter((file) => !nested.has(file.fsPath.toLowerCase()))
-      .sort((a, b) => a.fsPath.localeCompare(b.fsPath));
 
-    // 選択中rootが現在のファイルを実際に含む場合だけ、そのrootを候補の先頭に維持する。
-    // 無関係なrootを混ぜると、別ファイルのツリーが表示されるため到達関係を必ず確認する。
+    // 選択中rootは、現在のファイルへ到達できる場合に限り先頭へ維持する。
     if (this.selectedRootPath && fsSync.existsSync(this.selectedRootPath)) {
       const selected = vscode.Uri.file(this.selectedRootPath);
-      if (await this.containsFile(selected, active, new Set())) {
-        const selectedKey = this.pathKey(this.selectedRootPath);
-        const ordered = [selected, ...roots.filter((root) => this.pathKey(root.fsPath) !== selectedKey)];
-        this.rootCache.set(activePath, { activePath, roots: ordered });
-        return ordered;
+      if (await reaches(selected, activeKey, new Set())) {
+        roots = [selected, ...roots.filter((item) => this.pathKey(item.fsPath) !== this.pathKey(selected.fsPath))];
       }
     }
-    // include祖先がないファイルは、そのファイル自身をrootにして子includeを表示する。
-    const result = roots.length > 0 ? roots : [active];
-    this.rootCache.set(activePath, { activePath, roots: result });
-    return result;
+
+    roots.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
+    this.rootCache.set(activeKey, { activePath: activeKey, roots });
+    return roots;
   }
 
   private isPackageCachePath(uri: vscode.Uri): boolean {
@@ -263,10 +338,18 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
       return cached;
     }
     let source = '';
-    try {
-      source = await fs.readFile(uri.fsPath, 'utf8');
-    } catch {
-      return [];
+    // 開いているファイルはディスクではなく、編集中の最新テキストを解析する。
+    const openDocument = vscode.workspace.textDocuments.find(
+      (document) => document.uri.scheme === 'file' && this.pathKey(document.uri.fsPath) === cacheKey,
+    );
+    if (openDocument) {
+      source = openDocument.getText();
+    } else {
+      try {
+        source = await fs.readFile(uri.fsPath, 'utf8');
+      } catch {
+        return [];
+      }
     }
     const result: vscode.Uri[] = [];
     const pattern = /^\s*#\s*include\s*[\"<]([^\">]+)[\">]/gm;
@@ -287,7 +370,10 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
         projectRoot = this.projectRootCache.get(workspaceKey);
       } else {
         while (true) {
-          if (fsSync.existsSync(path.join(parent, 'Assets')) && fsSync.existsSync(path.join(parent, 'ProjectSettings'))) {
+          if (
+            fsSync.existsSync(path.join(parent, 'Assets')) &&
+            fsSync.existsSync(path.join(parent, 'ProjectSettings'))
+          ) {
             projectRoot = parent;
             break;
           }
@@ -319,7 +405,8 @@ class IncludeTreeProvider implements vscode.TreeDataProvider<IncludeTreeItem> {
             const packageKey = packageCache.toLowerCase();
             let entries = this.packageCacheEntries.get(packageKey);
             if (!entries) {
-              entries = fsSync.readdirSync(packageCache, { withFileTypes: true })
+              entries = fsSync
+                .readdirSync(packageCache, { withFileTypes: true })
                 .filter((entry) => entry.isDirectory())
                 .map((entry) => entry.name);
               this.packageCacheEntries.set(packageKey, entries);

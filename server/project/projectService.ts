@@ -13,7 +13,6 @@ export class ProjectService {
     this.projectRoot.initialize(params);
   }
 
-
   /**
    * プロジェクト内のシェーダーソースを列挙する。
    * ディレクトリを逐次走査し、生成物や依存パッケージの巨大なキャッシュを避ける。
@@ -26,8 +25,17 @@ export class ProjectService {
 
     const extensions = new Set(['.shader', '.hlsl', '.hlsli', '.compute', '.cginc']);
     const excludedDirectories = new Set([
-      '.git', '.svn', '.hg', 'node_modules', 'Library', 'Temp', 'Obj',
-      'Logs', 'Build', 'Builds', '.vs',
+      '.git',
+      '.svn',
+      '.hg',
+      'node_modules',
+      'Library',
+      'Temp',
+      'Obj',
+      'Logs',
+      'Build',
+      'Builds',
+      '.vs',
     ]);
     const results: string[] = [];
     const pending: string[] = [root];

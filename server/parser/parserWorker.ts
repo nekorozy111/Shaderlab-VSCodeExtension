@@ -45,7 +45,7 @@ parentPort.on('message', (request: ParseRequest) => {
   } catch (error) {
     const response: ParseResponse = {
       id: request.id,
-      error: error instanceof Error ? error.stack ?? error.message : String(error),
+      error: error instanceof Error ? (error.stack ?? error.message) : String(error),
     };
     parentPort?.postMessage(response);
   }

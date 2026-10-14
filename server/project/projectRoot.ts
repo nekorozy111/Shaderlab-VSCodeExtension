@@ -64,7 +64,8 @@ export class ProjectRoot {
       return false;
     }
     const relative = path.relative(root, target);
-    const result = relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+    const result =
+      relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
     this.setInsideProjectCache(normalizedFilePath, result);
     return result;
   }
